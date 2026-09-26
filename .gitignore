@@ -1,0 +1,52 @@
+# Binaries for programs and plugins
+__pycache__
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+build/
+projs/
+repos/
+vendor/
+
+# Go workspace file
+go.work
+
+# Database
+*.db
+*.sqlite
+
+# Environment variables
+.air.toml
+.env
+
+# Agent working memory — never committed (AGENTS.md §1.1)
+.ai-memory/
+
+# IDE
+.arts/
+.codebuddy/
+.idea/
+.trae/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

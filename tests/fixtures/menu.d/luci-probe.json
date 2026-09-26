@@ -1,0 +1,142 @@
+{
+	"hidden": {
+		"title": "Hidden by depends.fs",
+		"order": 1,
+		"action": { "type": "view", "path": "hidden" },
+		"depends": { "fs": { "/nonexistent-molly-menu-probe": "file" } }
+	},
+	"present": {
+		"title": "Present via depends.fs",
+		"order": 200,
+		"action": { "type": "view", "path": "present" },
+		"depends": { "fs": { "/etc/hosts": "file" } }
+	},
+	"ucipage": {
+		"title": "UCI gated",
+		"order": 201,
+		"action": { "type": "view", "path": "ucipage" },
+		"depends": { "uci": { "network": { "lan": true } } }
+	},
+	"ucimissing": {
+		"title": "UCI gated missing section",
+		"order": 202,
+		"action": { "type": "view", "path": "ucimissing" },
+		"depends": { "uci": { "network": { "nope": true } } }
+	},
+
+	"fsabsent": {
+		"title": "FsAbsent",
+		"order": 203,
+		"action": { "type": "view", "path": "fsabsent" },
+		"depends": { "fs": { "/nonexistent-molly-menu-probe": "absent" } }
+	},
+	"fsand": {
+		"title": "FsAnd",
+		"order": 204,
+		"action": { "type": "view", "path": "fsand" },
+		"depends": { "fs": { "/etc/hosts": "file", "/nonexistent-molly-menu-probe": "file" } }
+	},
+	"fsarray": {
+		"title": "FsArray",
+		"order": 205,
+		"action": { "type": "view", "path": "fsarray" },
+		"depends": {
+			"fs": [ { "/nonexistent-molly-menu-probe": "file" }, { "/etc/hosts": "file" } ]
+		}
+	},
+	"fsdir": {
+		"title": "FsDirectory",
+		"order": 206,
+		"action": { "type": "view", "path": "fsdir" },
+		"depends": { "fs": { "/etc": "directory" } }
+	},
+	"fskind": {
+		"title": "FsKind",
+		"order": 207,
+		"action": { "type": "view", "path": "fskind" },
+		"depends": { "fs": { "/etc/hosts": "directory" } }
+	},
+	"fsexec": {
+		"title": "FsExecutable",
+		"order": 208,
+		"action": { "type": "view", "path": "fsexec" },
+		"depends": { "fs": { "/bin/sh": "executable" } }
+	},
+	"fsexecmiss": {
+		"title": "FsExecutableMissingBit",
+		"order": 209,
+		"action": { "type": "view", "path": "fsexecmiss" },
+		"depends": { "fs": { "/etc/hosts": "executable" } }
+	},
+	"fsstrform": {
+		"title": "FsStringForm",
+		"order": 210,
+		"action": { "type": "view", "path": "fsstrform" },
+		"depends": { "fs": [ "/etc/hosts" ] }
+	},
+
+	"ucitrue": {
+		"title": "UciTrue",
+		"order": 211,
+		"action": { "type": "view", "path": "ucitrue" },
+		"depends": { "uci": { "network": true } }
+	},
+	"uciemptycfg": {
+		"title": "UciEmptyConfig",
+		"order": 212,
+		"action": { "type": "view", "path": "uciemptycfg" },
+		"depends": { "uci": { "empty-config": true } }
+	},
+	"ucicfgmissing": {
+		"title": "UciConfigMissing",
+		"order": 213,
+		"action": { "type": "view", "path": "ucicfgmissing" },
+		"depends": { "uci": { "no-such-config": true } }
+	},
+	"uciaftype": {
+		"title": "UciAtType",
+		"order": 214,
+		"action": { "type": "view", "path": "uciaftype" },
+		"depends": { "uci": { "network": { "@switch": true } } }
+	},
+	"uciopt": {
+		"title": "UciOption",
+		"order": 215,
+		"action": { "type": "view", "path": "uciopt" },
+		"depends": { "uci": { "network": { "lan": { "proto": "static" } } } }
+	},
+	"ucioptmiss": {
+		"title": "UciOptionMismatch",
+		"order": 216,
+		"action": { "type": "view", "path": "ucioptmiss" },
+		"depends": { "uci": { "network": { "lan": { "proto": "dhcp" } } } }
+	},
+	"uciand": {
+		"title": "UciAnd",
+		"order": 217,
+		"action": { "type": "view", "path": "uciand" },
+		"depends": { "uci": { "network": true, "no-such-config": true } }
+	},
+	"ucistrform": {
+		"title": "UciStringForm",
+		"order": 218,
+		"action": { "type": "view", "path": "ucistrform" },
+		"depends": { "uci": [ "network.lan" ] }
+	},
+
+	"badfield": {
+		"title": "Bad field kept",
+		"order": "250",
+		"nonsense": true,
+		"action": { "type": "view", "path": "bad" }
+	},
+
+	"admin/status/logs/*": {
+		"title": "Logs (wildcard)",
+		"order": 50,
+		"action": { "type": "view", "path": "status/logs-arg" }
+	},
+	"admin/system/reboot": {
+		"action": { "type": "view", "path": "system/reboot" }
+	}
+}

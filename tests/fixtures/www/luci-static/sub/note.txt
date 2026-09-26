@@ -1,0 +1,1 @@
+深层目录映射验收：/luci-static/sub/note.txt 应落到这里。
