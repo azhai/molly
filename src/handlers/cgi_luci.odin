@@ -1,6 +1,7 @@
 package handlers
 
 import "core:mem"
+import "core:strings"
 
 import "molly:http"
 import "molly:luci"
@@ -11,8 +12,12 @@ import "molly:luci"
 // /cgi-bin/luci/ 都是空路径，走菜单树的 root firstchild；/cgi-bin/luci/admin/...
 // 才逐段下降。path 已经过 http.normalize_path，尾部 '/' 已被压掉。
 //
-// P2 只做 dispatcher 骨架（计划决策 6）：不认证、不校验 ACL、不渲染模板。
-// 认证与 ACL 是 P3 的范围，页面上会显式打出这条横幅。
+// P2 只做 dispatcher 骨架（计划决策 6）：不认证、不渲染模板。
+// P3-6 起菜单裁树会带上会话 ACL：会话 id 从 LuCI 写的 cookie 里取
+// （`sysauth_http` / `sysauth_https`，上游 dispatcher.uc:963-966），没有 cookie 就是
+// 「无会话」——带 `depends.acl` 的节点一律不可见（路径解析不到 → 404）。
+// **登录取会话本身**仍不在这里：上游由 dispatcher 渲染登录页，molly 按 ADR 0003
+// 把整个前缀交给设备 ucode（`--luci-cgi`），这里只认既有会话。
 
 LUCI_PREFIX :: "/cgi-bin/luci"
 
@@ -39,10 +44,11 @@ serve_luci :: proc(s: ^http.Server, conn: ^http.Connection, req: ^http.Request, 
 		// 菜单目录读不到：没有页面可服务，全部 404。load_tree 已经打过一行日志。
 		return http.respond(conn, .Not_Found, "not found\n", {
 			keep_alive = req.keep_alive,
+			head_only  = req.method == .Head,
 		})
 	}
 
-	page := luci.dispatch(tree, path[len(LUCI_PREFIX):], alloc)
+	page := luci.dispatch(tree, path[len(LUCI_PREFIX):], luci_sid_from_cookie(req), alloc)
 	switch page.kind {
 	case .Page:
 		return http.respond(conn, .OK, page.body, {
@@ -51,14 +57,51 @@ serve_luci :: proc(s: ^http.Server, conn: ^http.Connection, req: ^http.Request, 
 			head_only    = req.method == .Head,
 		})
 	case .NotFound:
+		// HEAD 也要「有头无体」：P3-6 起 404 是常态（ACL 裁掉的节点），不再只出现在
+		// 直接请求上——不设 head_only 会带一个 body 回去。
 		return http.respond(conn, .Not_Found, "not found\n", {
 			keep_alive = req.keep_alive,
+			head_only  = req.method == .Head,
 		})
 	case .Not_Implemented:
 		// 正文由 luci.dispatch 给（带 action.type / view / menu，便于在设备上定位）
 		return http.respond(conn, .Not_Implemented, page.body, {
 			keep_alive = req.keep_alive,
+			head_only  = req.method == .Head,
 		})
 	}
 	return false
+}
+
+// 从 `Cookie` 头里取 LuCI 的会话 id。上游按 `HTTPS` 二选一（`sysauth_https` /
+// `sysauth_http`，dispatcher.uc:963-966）——这里两个都收，谁在就用谁，省掉对
+// 代理链的猜测。cookie 之间用 ';' 分隔，取不到就回空串（调用方按「无会话」处理）。
+@(private)
+luci_sid_from_cookie :: proc(req: ^http.Request) -> string {
+	header, has_header := http.header_value(req, "Cookie")
+	if !has_header || len(header) == 0 {
+		return ""
+	}
+
+	for name in ([]string{"sysauth_https", "sysauth_http"}) {
+		rest := header
+		for len(rest) > 0 {
+			part: string
+			if idx := strings.index_byte(rest, ';'); idx >= 0 {
+				part, rest = rest[:idx], rest[idx + 1:]
+			} else {
+				part, rest = rest, ""
+			}
+			part = strings.trim_space(part)
+
+			eq := strings.index_byte(part, '=')
+			if eq <= 0 {
+				continue
+			}
+			if strings.equal_fold(part[:eq], name) {
+				return strings.trim_space(part[eq + 1:])
+			}
+		}
+	}
+	return ""
 }

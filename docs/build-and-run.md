@@ -92,7 +92,9 @@ build/molly: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamical
 启动时会打印监听地址、docroot，以及一行过渡期警告：
 
 ```
-WARN: transitional mode - ubus objects still provided by device rpcd
+[molly] ubus 对象已注册: molly.probe
+[molly] ubus 服务线程：注册 session 失败（rpcd 还在跑？先 /etc/init.d/rpcd stop），错误码 2
+（rpcd 停掉后这四行消失；P3-9 起不再打印 transitional WARN）
 ```
 
 ### 6.1 冒烟脚本（首选）
@@ -112,7 +114,7 @@ WARN: transitional mode - ubus objects still provided by device rpcd
 | 第 3 步（17 项） | 静态文件与 `index.html` 回落、MIME、路径逃逸（`..` / `%2e%2e` / NUL）、管道请求（一条连接上 POST 后紧跟 GET，数回包里有几个 `HTTP/1.1`） |
 | 第 4 步（17 项） | `/ubus` 前缀边界（如 `/ubus.html` 不能被 ubus 路由抢走）、方法限制、`/ubus/list` 形状 |
 | 第 5b 步（33 项） | 旧式 `POST /ubus` 与批请求、新式 `POST /ubus/call/<path>`、`Authorization: Bearer <sid>`、全部 JSON-RPC 错误码、`ubus_rpc_session` 拒绝、错误优先级 |
-| 第 6 步（23 项） | `/cgi-bin/luci` 前缀与尾斜杠、`Content-Type: text/html`、root `firstchild` 跳过 unsatisfied、指定路径、查询串剥离、「ACL 未实施」横幅与 `depends.acl` 只展示、中间层 `firstchild`、非 view → 501、通配段进 `request_args`、`depends.fs`/`depends.uci`、未知路径 404、POST → 405、HEAD 无 body |
+| 第 6 步（28 项） | `/cgi-bin/luci` 前缀与尾斜杠、`Content-Type: text/html`、root `firstchild` 跳过 unsatisfied、指定路径、查询串剥离、`depends.acl` 裁树（无 cookie → 404 / 只读会话 → 200 + `readonly=yes` / firstchild 跳过与恢复）、中间层 `firstchild`、非 view → 501、通配段进 `request_args`、`depends.fs`/`depends.uci`、未知路径 404、POST → 405、HEAD 无 body |
 | 第 6b 步（改写 4 条 + 新增 20 条） | **逐键 spec**：白名单外的键只忽略该键 → 200、`order` 写成 string 只忽略该键（节点用默认权重，root `firstchild` 不变）；**逐键合并**：同路径多文件时未出现的键保留（title 不被清空）；**通配**：无剩余段用 base action、有剩余段用 `wildcardaction`；**`depends.fs`**：file / executable / directory / absent 四类型判定、object-AND 与 array-OR、非 object 取值一律忽略；**`depends.uci`**：`true`（config 有 section）/ 具名 section / `@type` 命中匿名 section / option 值精确匹配 / config 存在但无 section / config 不存在 / object-AND / 非 object 取值忽略 |
 
 ### 6.2 手工抽查
@@ -128,7 +130,9 @@ curl -s -X POST http://127.0.0.1:8080/ubus/call/session \
   -H 'Authorization: Bearer 00000000000000000000000000000000' -d '{"jsonrpc":"2.0","id":1,"method":"list","params":{}}'
                                                             # result 是回复表本身，空则 null
 curl -sD- -o/dev/null http://127.0.0.1:8080/nope            # 404
-curl -s http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview   # dispatcher 占位页（带「ACL 未实施」横幅）
+curl -s http://127.0.0.1:8080/cgi-bin/luci/admin/status/logs       # dispatcher 占位页（含 readonly 行）
+curl -s -b "sysauth_http=$SID" \
+  http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview        # 带会话 cookie：ACL 门控路径（无 cookie 是 404）
 curl -sD- -o/dev/null http://127.0.0.1:8080/cgi-bin/luci/nope      # 未知菜单路径 404
 curl -sD- -o/dev/null http://127.0.0.1:8080/cgi-bin/luci/admin/status/routes  # 非 view → 501
 ```

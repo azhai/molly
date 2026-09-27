@@ -67,20 +67,39 @@ LUCI_SIG :: `{"getBlockInfo":{"name":"string","extended":"boolean"},` +
 
 // 对象路径 → 签名。顺序按路径排，模仿 ubus 的 avl 有序输出。
 @(private)
+// P3-5 起 molly 自持 luci-rpc（6 方法）。假对象表里必须有它，否则 /ubus 的
+// 「对象存在性」预检（P3-6 的 ACL 前一步）会把它判成不存在 → -32000。
+LUCI_RPC_SIG :: `{"getBoardJSON":{},` +
+	`"getDHCPLeases":{"family":"number"},` +
+	`"getDUIDHints":{},` +
+	`"getHostHints":{},` +
+	`"getNetworkDevices":{},` +
+	`"getWirelessDevices":{}}`
+
+// P3-7/P3-9：`molly.probe` 在 linux 上由 ubus 线程真注册（方法 `ping` + `notify`）。
+// darwin 这里也放一份，`notify` 直接推事件总线（没有 ubusd 可发），于是
+// `/ubus/subscribe` 的 SSE 链路在 macOS 上也能被端到端驱动——两个平台用**同一条命令**
+// （`ubus call molly.probe notify` / `POST /ubus/call/molly.probe method=notify`）。
+PROBE_SIG :: `{"notify":{},"ping":{}}`
+
 FAKE_OBJECTS :: [?]struct {
 	path: string,
 	sig:  string,
 }{
 	{"file", FILE_SIG},
 	{"luci", LUCI_SIG},
+	{"luci-rpc", LUCI_RPC_SIG},
+	{"molly.probe", PROBE_SIG},
 	{"session", SESSION_SIG},
 	{"uci", UCI_SIG},
 }
 
-// GET /ubus/list 的正文：把上面四段拼进一层对象名。用常量拼接（不是运行期
+// GET /ubus/list 的正文：把上面几段拼进一层对象名。用常量拼接（不是运行期
 // 拼字符串）保证两个端点永远一致，也省掉每请求的分配。
 FAKE_LIST :: `{"file":` + FILE_SIG +
 	`,"luci":` + LUCI_SIG +
+	`,"luci-rpc":` + LUCI_RPC_SIG +
+	`,"molly.probe":` + PROBE_SIG +
 	`,"session":` + SESSION_SIG +
 	`,"uci":` + UCI_SIG +
 	`}`
@@ -145,6 +164,28 @@ call_object :: proc(obj_path: string, method: string, params_json: string, sid: 
 			return {outcome = .Ok, ret = status}
 		}
 		return {outcome = .Ok, ret = 0, reply = reply}
+	}
+
+	// luci-rpc（P3-5 的 S1：getBoardJSON / getDHCPLeases；其余方法回 8）。
+	// 注意对象名是 `luci-rpc`（luci.c:2043），smoke 探针打在假对象 `luci` 上不受影响。
+	if obj_path == "luci-rpc" {
+		params := params_json
+		if len(sid) > 0 {
+			params = inject_rpc_session(params_json, sid, alloc)
+		}
+		reply, status := luci_call(method, params, alloc)
+		if status != 0 {
+			return {outcome = .Ok, ret = status}
+		}
+		return {outcome = .Ok, ret = 0, reply = reply}
+	}
+
+	// P3-7/P3-9：`molly.probe` 的 `notify` —— darwin 没有 ubusd，所以直接往事件总线
+	// 推一条（linux 侧是 `ubus_notify(ctx, &molly.probe, "ping", …)`，结果同形：
+	// 订阅者收到 `event: ping` + `data: {"hello":"world"}`）。
+	if obj_path == "molly.probe" && method == "notify" {
+		event_bus_publish("molly.probe", "ping", `{"hello":"world"}`, alloc)
+		return {outcome = .Ok, ret = 0, reply = `{"notified":"molly.probe"}`}
 	}
 
 	sig := ""
@@ -265,6 +306,27 @@ FAKE_UCI: []Fake_Config = {
 					{name = "password", values = []string{"$p$root"}},
 					{name = "read", is_list = true, values = []string{"*"}},
 					{name = "write", is_list = true, values = []string{"*"}},
+				},
+			},
+		},
+	},
+	// P3-5：getDHCPLeases 的 leasefile 发现走 uci `dhcp` config 的 `dnsmasq`/`odhcpd`
+	// section（luci.c:394-473）。leasefile 指向 /tmp 固定路径，测试自己写租约文件进去。
+	{
+		name = "dhcp",
+		sections = []Uci_Section{
+			{
+				name = "dnsmasq",
+				type_name = "dnsmasq",
+				options = []Uci_Option{
+					{name = "leasefile", values = []string{"/tmp/molly-dhcp.leases"}},
+				},
+			},
+			{
+				name = "odhcpd",
+				type_name = "odhcpd",
+				options = []Uci_Option{
+					{name = "leasefile", values = []string{"/tmp/molly-odhcpd.leases"}},
 				},
 			},
 		},
@@ -482,4 +544,47 @@ uci_list_configs :: proc(alloc: mem.Allocator) -> (names: []string, ok: bool) {
 		append(&out, c.name)
 	}
 	return out[:], true
+}
+
+// P3-5：getBoardJSON 读的板级描述文件。真机是 /etc/board.json（luci.c 的
+// blobmsg_add_json_from_file 路径）；darwin 用仓库里的 fixture（相对仓库根，
+// 测试从根目录跑）。
+luci_board_json_path :: proc() -> string {
+	return "tests/fixtures/board.json"
+}
+
+// P3-6：acl.d 目录。真机是 /usr/share/rpcd/acl.d（session.h 的 RPC_SESSION_ACL_DIR）；
+// darwin 用仓库 fixture（相对仓库根，测试从根目录跑）。
+session_acl_dir :: proc() -> string {
+	return "tests/fixtures/acl.d"
+}
+
+// P3-5 S2b：getNetworkDevices 绑定 sysfs（/sys/class/net），darwin 上没有——
+// 与 uci 写路径同一决策：linux-only，darwin 回 8。
+luci_network_devices_json :: proc(alloc: mem.Allocator) -> (string, int) {
+	return "", LUCI_STATUS_NOT_SUPPORTED
+}
+
+// P3-5 S2c：getWirelessDevices 代理 netifd 的 `network.wireless status`——
+// darwin 没有 netifd/ubusd，回 8。
+luci_wireless_devices_json :: proc(alloc: mem.Allocator) -> (string, int) {
+	return "", LUCI_STATUS_NOT_SUPPORTED
+}
+
+// P3-5 S2d：getHostHints 绑 netlink 邻居表 / /etc/ethers / ifaddrs——darwin 回 8。
+luci_host_hints_json :: proc(alloc: mem.Allocator) -> (string, int) {
+	return "", LUCI_STATUS_NOT_SUPPORTED
+}
+
+// ---------------------------------------------------------------------------
+// P3-7 S2 的平台钩子：darwin 没有 ubusd，事件由 `molly.probe/emit`（**测试专用**）
+// 直接推进 `event_bus_publish`，所以这里什么都不用做。
+// linux 侧要真的 register_subscriber + subscribe，见 linux.odin。
+// ---------------------------------------------------------------------------
+
+sse_watch_start :: proc(path: string) -> bool {
+	return true
+}
+
+sse_watch_stop :: proc(path: string) {
 }

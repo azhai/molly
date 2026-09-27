@@ -4,9 +4,12 @@ import "core:fmt"
 import "core:mem"
 import "core:strings"
 
-// P2 的「渲染」：不做模板、不读 view 文件，只把路由解析的结果显示出来。
-// 模板渲染属于 P3。这里存在的意义是让 dispatcher 的解析结果可被 curl 断言，
-// 同时把「认证 / ACL 未实施」这件事明明白白摆在页面上（计划决策 6、决胜点 7）。
+import "molly:backend"
+
+// 「渲染」：不做模板、不读 view 文件，只把路由解析的结果显示出来（生产走 ADR 0003 的
+// `--luci-cgi` → 设备 ucode；这份内置 dispatcher 是对照实现与回归基准）。
+// 它的价值是让解析结果可被 curl 断言：命中的节点、action、request_args、以及
+// **本会话是否只读**（P3-6 起 depends.acl 真的参与裁树）。
 
 Kind :: enum {
 	Page,            // 命中 action.type == "view" 的节点
@@ -22,7 +25,11 @@ Page :: struct {
 // 用 Druid 之外的纯 HTML 拼一个页面。所有插值都过 html_escape：title 来自
 // 设备上的 menu.d（可信度较高），但 request_args 来自 URL，是彻头彻尾的
 // 客户端输入——信任边界在这里，不能省（AGENTS.md §2.2）。
-render_placeholder :: proc(node: ^Node, action: Action, args: []string, alloc: mem.Allocator) -> string {
+//
+// readonly：本会话对这条路径上节点的 depends.acl 只有 read（上游 `resolved.node.readonly =
+// !perm`，dispatcher.uc:1002-1003）——页面照渲染，但明确标出来。P3-6 起这里**不再**打
+// 「ACL 未实施」横幅（那个横幅是 P2 的过渡声明，现在 ACL 真的生效了）。
+render_placeholder :: proc(node: ^Node, action: Action, args: []string, readonly: bool, alloc: mem.Allocator) -> string {
 	title := node.title
 	if len(title) == 0 {
 		title = node.action_path
@@ -33,19 +40,23 @@ render_placeholder :: proc(node: ^Node, action: Action, args: []string, alloc: m
 	strings.write_string(&b, "<meta charset=\"utf-8\">\n<title>")
 	html_escape(title, &b)
 	strings.write_string(&b, "</title>\n</head>\n<body>\n")
-	strings.write_string(&b, "<p class=\"banner\">ACL 未实施：P2 占位页，没有认证与权限校验，P3 由 molly 自持 acl.d 接管</p>\n")
 	strings.write_string(&b, "<h1>")
 	html_escape(title, &b)
 	strings.write_string(&b, "</h1>\n<dl>\n")
+
+	if readonly {
+		strings.write_string(&b, "<p class=\"banner read-only\">read-only：本会话对这条路径只有 read 权限（depends.acl）</p>\n")
+	}
 
 	// action 用 effective_action 的结果：通配层收下剩余段时是 wildcardaction
 	write_row(&b, "action.type", action.type)
 	write_row(&b, "view", action.path)
 
 	if node.has_depends {
-		// 明确标注「展示但不执行」：depends.acl 在 P2 不参与判定
-		write_row(&b, "depends (shown, not enforced)", node.depends_json)
+		// fs / uci / acl 都参与判定（acl 的那半按会话现算，见 menu.odin 的 node_visible）
+		write_row(&b, "depends", node.depends_json)
 	}
+	write_row(&b, "readonly", readonly ? "yes" : "no")
 
 	if len(args) > 0 {
 		strings.write_string(&b, "<dt>request_args</dt><dd>")
@@ -95,12 +106,19 @@ html_escape :: proc(s: string, b: ^strings.Builder) {
 //
 // PATH_INFO 是 `/cgi-bin/luci` **之后**的部分（上游 LuCI 的约定）：`""`、
 // `"/"`、`"/admin/status/overview"`。空路径走 root 的 firstchild。
-dispatch :: proc(tree: ^Node, path: string, alloc: mem.Allocator) -> Page {
-	r := resolve(tree, path, alloc)
+dispatch :: proc(tree: ^Node, path: string, sid: string, alloc: mem.Allocator) -> Page {
+	r := resolve(tree, path, sid, alloc)
 	if !r.found {
 		return {kind = .NotFound}
 	}
 	node := r.node
+
+	// 沿途的 depends.acl 组名并集（含 firstchild 当选支路与 alias 目标），
+	// 对应上游的 ctx.acls——最终用它判只读（dispatcher.uc:993-1004）。
+	groups := make([dynamic]string, 0, 4, alloc)
+	for g in r.acl_groups {
+		append(&groups, g)
+	}
 
 	// firstchild 下钻与 alias 回落。循环上限 4 是防 menu.d 写出来的环
 	// （A alias 到 B、B alias 回 A），不是性能考虑。
@@ -110,7 +128,7 @@ dispatch :: proc(tree: ^Node, path: string, alloc: mem.Allocator) -> Page {
 		}
 
 		if node.action_type == "firstchild" {
-			node = first_child(node)
+			node = first_child(node, sid, &groups, alloc)
 			continue
 		}
 
@@ -122,9 +140,12 @@ dispatch :: proc(tree: ^Node, path: string, alloc: mem.Allocator) -> Page {
 			if target[0] != '/' {
 				target = strings.concatenate({"/", target}, alloc)
 			}
-			alias := resolve(tree, target, alloc)
+			alias := resolve(tree, target, sid, alloc)
 			if !alias.found {
 				return {kind = .NotFound}
+			}
+			for g in alias.acl_groups {
+				append(&groups, g)
 			}
 			node = alias.node
 			continue
@@ -155,5 +176,9 @@ dispatch :: proc(tree: ^Node, path: string, alloc: mem.Allocator) -> Page {
 		return {kind = .Not_Implemented, body = body}
 	}
 
-	return {kind = .Page, body = render_placeholder(node, action, r.args, alloc)}
+	// 只读 = 并集里**没有任何一组**拿到 write（上游 `perm == false` → node.readonly）。
+	// 缺组的情况在下降时就裁掉了（404），所以这里只可能是 Writable / Read_Only。
+	readonly := backend.session_acl_level(sid, groups[:]) == .Read_Only
+
+	return {kind = .Page, body = render_placeholder(node, action, r.args, readonly, alloc)}
 }

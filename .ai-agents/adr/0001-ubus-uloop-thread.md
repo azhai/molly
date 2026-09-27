@@ -92,6 +92,9 @@ thread** that owns a **separate server `ubus_context`** and runs `uloop_run_time
       with method `ping`. Verify on the device with `ubus -v list` + `ubus call molly.probe ping`.
 - [ ] Decide the server ctx reconnect policy (`ubus_reconnect` vs `ubus_auto_conn`) before
       P3-2, and record it here or in a new ADR.
-- [ ] P3-7: SSE pipe plumbing + heartbeat timer.
+- [x] P3-7: SSE pipe plumbing + heartbeat timer（2026-09-26 完成）。
+      落在 `src/backend/event_bus.odin`（每订阅一根管道）+ `src/handlers/ubus_sse.odin`（SSE）
+      + `linux.odin` 的订阅命令队列与通知回调。**偏离**：命令通道用「轮询排空」而不是
+      「把命令管道挂进 uloop」；心跳由 HTTP 侧 30s 注释帧提供，没有绑 `uloop_timeout_set`。
 - [ ] Re-scope "template rendering": server-side ucode (`.ut`) subset vs. driving the LuCI
       JS client against our JSON API — needs its own ADR before any code (biggest unknown in P3).

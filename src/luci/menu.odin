@@ -14,8 +14,10 @@ import "molly:backend"
 // 复刻上游 `modules/luci-base/ucode/dispatcher.uc` 的 build_pagetree /
 // check_depends / resolve_page / resolve_firstchild 四段语义。
 //
-// P2 的边界（计划决策 6）：只建树、只解析路径。**认证、ACL、模板渲染都不在这里**；
-// `depends.acl` 被原样留存只为了在占位页上展示「它没有被执行」。
+// P3-6 起 `depends.acl` **参与裁树**（上游 apply_tree_acls，dispatcher.uc:435-445）：缺组的
+// 节点对本会话不可见（路径解析不到 → 404），只有 read 的会话把节点标成只读。判定靠
+// `backend.session_acl_level`，**每请求现算**——树是跨请求缓存的，节点上不能写会话状态。
+// 认证（登录/会话本身）与模板渲染仍不在这里：前者是 `/ubus` 一侧的事，后者仍由占位页代替。
 //
 // 内存：树与节点字符串全部放在 g_cache.arena 里（进程生命周期），所以这里的
 // proc 拿到的 alloc 参数有两个用途——一是「本次目录扫描的临时分配」（工作 arena，
@@ -56,8 +58,13 @@ Node :: struct {
 	// spec.firstchild_ineligible：不参与 firstchild 竞选
 	firstchild_ineligible: bool,
 
-	// depends 判定结果。depends.acl **不计入**（上游 check_depends 不看 acl）。
+	// depends 判定结果。只算 fs / uci（上游 check_depends 不看 acl）。
+	// acl 那半是**每请求现算**的（见 acl_groups）：树跨请求缓存，节点上不能写会话相关状态。
 	satisfied: bool,
+
+	// depends.acl 列出的组名（P3-6）。空 = 本节点没有 acl 要求。
+	// 解析在树 arena 里，判定在请求里（backend.session_acl_level）。
+	acl_groups: []string,
 
 	// 子节点。键是路径段，用 map 做 O(1) 下降；遍历顺序不确定，
 	// 需要顺序的地方（firstchild 竞选）用 (weight, 段名) 显式定序。
@@ -69,6 +76,10 @@ Resolved :: struct {
 	node:  ^Node,
 	args:  []string,
 	found: bool,
+
+	// 沿途（含通配层）所有节点的 depends.acl 组名并集——上游 ctx.acls（dispatcher.uc:460-461）。
+	// 最终判权用并集：其中**任一**组是 write 就不算只读（上游 check_acl_depends 返回 writable）。
+	acl_groups: []string,
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +298,17 @@ apply_spec :: proc(root: ^Node, path: string, spec: json.Object, alloc: mem.Allo
 		}
 	}
 
+	// depends.acl 与 satisfied 一样**后一份规格覆盖前一份**：没有 depends 就清空。
+	// acl 只解析存档（组名列表），判定留给每请求（见 Node.acl_groups 的注释）。
+	node.acl_groups = nil
+	if dep, has_dep := spec["depends"]; has_dep {
+		if dep_obj, dep_ok := dep.(json.Object); dep_ok {
+			if acl, has_acl := dep_obj["acl"]; has_acl {
+				node.acl_groups = parse_acl_groups(acl, alloc)
+			}
+		}
+	}
+
 	// 上游 :416 无条件重算：没有 depends（或 depends 不是 object）时 check_depends
 	// 返回 true，所以后一份规格会把 satisfied 重置回 true。
 	node.satisfied = check_depends(spec["depends"], alloc)
@@ -364,10 +386,37 @@ json_str_field :: proc(obj: json.Object, key: string) -> string {
 //   - array = 任一备选成立；object = 单个备选（其内部条目**全部**成立）；
 //   - 认不出的形态（要求类型不是四种之一、config 取值不是 true/object）→ 忽略。
 //
-// **depends.acl 不参与这里**——它只在 apply_tree_acls 里用来裁树（P2 不执行 ACL，
-// 计划决策 6），所以带 acl 的节点在 P2 一律 satisfied，占位页上把 acl 原文显示出来
-// 就是为了让这件事可见。
+// **depends.acl 不在 check_depends 里**：上游把它留给 apply_tree_acls（dispatcher.uc:435-445）。
+// molly 的树跨请求缓存，所以不学上游把结果写回节点，而是每请求现算（见 node_visible）。
 // ---------------------------------------------------------------------------
+
+// depends.acl 的组名列表。上游 `for (let group in require_groups)` 取的是**键**，所以
+// 对象形态（`{ "luci-base": ["status"] }`——真机 menu.d 里就有这种写法）与数组形态
+// （`["luci-base"]`）都要认；裸字符串也收一格（宽松一档，上游只吃数组/对象）。
+@(private)
+parse_acl_groups :: proc(val: json.Value, alloc: mem.Allocator) -> []string {
+	#partial switch v in val {
+	case json.Array:
+		out := make([dynamic]string, 0, len(v), alloc)
+		for el in v {
+			if s, is_str := el.(json.String); is_str {
+				append(&out, string(s))
+			}
+		}
+		return out[:]
+	case json.Object:
+		out := make([dynamic]string, 0, len(v), alloc)
+		for name, _ in v {
+			append(&out, name)
+		}
+		return out[:]
+	case json.String:
+		out := make([]string, 1, alloc)
+		out[0] = string(v)
+		return out
+	}
+	return nil
+}
 
 @(private)
 check_depends :: proc(depends: json.Value, alloc: mem.Allocator) -> bool {
@@ -679,21 +728,47 @@ directory_non_empty :: proc(path: string, alloc: mem.Allocator) -> bool {
 // 逐段下降；子节点不存在或 !satisfied 就停在上一层并报未命中。唯一的例外是
 // 「当前节点是通配层且下一段没有可用的实子节点」——这时把剩下的段全部当参数
 // 收下，算作命中。
-resolve :: proc(tree: ^Node, path: string, alloc: mem.Allocator) -> Resolved {
+// 节点在**本会话**下是否可见：depends（fs/uci）成立，且 depends.acl 要求的组没有缺的。
+// 上游把这两件事都折进 node.satisfied（apply_tree_acls 把缺组的节点标 satisfied=false）——
+// molly 的树是跨请求缓存的，节点上写会话相关状态会串会话，所以 acl 那半每请求现算（P3-6）。
+@(private)
+node_visible :: proc(n: ^Node, sid: string) -> bool {
+	if !n.satisfied {
+		return false
+	}
+	return !node_acl_missing(n, sid)
+}
+
+// depends.acl 缺失（上游 check_acl_depends 返回 null）→ 本会话看不到该节点。
+// 没有 acl 要求的节点恒为可见（session_acl_level 对空列表回 Writable）。
+@(private)
+node_acl_missing :: proc(n: ^Node, sid: string) -> bool {
+	if len(n.acl_groups) == 0 {
+		return false
+	}
+	return backend.session_acl_level(sid, n.acl_groups) == .Missing
+}
+
+resolve :: proc(tree: ^Node, path: string, sid: string, alloc: mem.Allocator) -> Resolved {
 	segs := split_segments(path, alloc)
 	node := tree
+	groups := make([dynamic]string, 0, 4, alloc)
 
 	for i := 0; i < len(segs); i += 1 {
 		next, has := child_of(node, segs[i])
-		if node.wildcard && (!has || !next.satisfied) {
-			return {node = node, args = segs[i:], found = true}
+		if node.wildcard && (!has || !node_visible(next, sid)) {
+			// 通配层自己已经在 groups 里（下降时收过），剩余段当 args
+			return {node = node, args = segs[i:], found = true, acl_groups = groups[:]}
 		}
-		if !has || !next.satisfied {
-			return {node = node, found = false}
+		if !has || !node_visible(next, sid) {
+			return {node = node, found = false, acl_groups = groups[:]}
+		}
+		for g in next.acl_groups {
+			append(&groups, g)
 		}
 		node = next
 	}
-	return {node = node, found = true}
+	return {node = node, found = true, acl_groups = groups[:]}
 }
 
 // 上游 :1006-1011：先用 node.action；**有剩余段**且存在 wildcardaction 时改用它。
@@ -716,22 +791,31 @@ effective_action :: proc(node: ^Node, args: []string) -> Action {
 //
 // 权重相同（menu.d 里 order 相等很常见）时按段名字典序取小——上游吃的是 ucode
 // 对象的插入序，我们这里换成显式规则，保证多次运行结果一致。
-first_child :: proc(node: ^Node) -> ^Node {
+first_child :: proc(node: ^Node, sid: string, groups: ^[dynamic]string, alloc: mem.Allocator) -> ^Node {
 	if node.children == nil {
 		return nil
 	}
 	best: ^Node = nil
 	best_weight := 0
 	best_name := ""
+	best_groups: [dynamic]string
 
 	for name, child in node.children {
-		if !child.satisfied || len(child.title) == 0 || child.firstchild_ineligible {
+		// 缺 depends.acl 的组 → 不参与竞选（上游 apply_tree_acls 已把它标 satisfied=false）
+		if !node_visible(child, sid) || len(child.title) == 0 || child.firstchild_ineligible {
 			continue
+		}
+
+		// 这条支路自己的 depends.acl 也要算进 ctx.acls（上游 resolve_firstchild 的 ctx_append）：
+		// 只有**当选**的那条支路才并进 groups，所以先收在候选自己的数组里。
+		cand_groups := make([dynamic]string, 0, 2, alloc)
+		for g in child.acl_groups {
+			append(&cand_groups, g)
 		}
 
 		candidate := child
 		if child.action_type == "firstchild" {
-			candidate = first_child(child)
+			candidate = first_child(child, sid, &cand_groups, alloc)
 			if candidate == nil {
 				continue // 没有可当选的后代 → 本节点不能当选
 			}
@@ -742,6 +826,13 @@ first_child :: proc(node: ^Node) -> ^Node {
 		w := node_weight(child)
 		if best == nil || w < best_weight || (w == best_weight && name < best_name) {
 			best, best_weight, best_name = candidate, w, name
+			best_groups = cand_groups
+		}
+	}
+
+	if best != nil && groups != nil {
+		for g in best_groups {
+			append(groups, g)
 		}
 	}
 	return best

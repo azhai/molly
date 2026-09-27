@@ -135,12 +135,14 @@ check "文件上的 POST → 405" "405" "$(status_of -X POST -d '' "$BASE/index.
 echo
 echo "== /ubus GET 路由与 list 正文 =="
 # 形状按上游 uhttpd 的 ubus 插件（ubus.c）复刻，见计划「已验证的事实」。
-# POST 的两种形态在下面的 JSON-RPC 段；GET /ubus/subscribe 按决策 8 留到 P3（501）。
+# POST 的两种形态在下面的 JSON-RPC 段；GET /ubus/subscribe 是 P3-7 的 SSE（单独一节）。
+# darwin 的假对象表里多一个 `molly.probe`（P3-7 的假事件源，**测试专用**——
+# linux 上它真的注册，但只有 `ping`，没有 `emit`），所以 list 里会看到它。
 list_all=$(curl -s "$BASE/ubus/list")
 list_sess=$(curl -s "$BASE/ubus/list/session")
 check "GET /ubus/list → 200" "200" "$(status_of "$BASE/ubus/list")"
 check "list Content-Type" "application/json" "$(header_of Content-Type "$BASE/ubus/list")"
-check "list 是合法 JSON 且对象齐全" "file,luci,session,uci" \
+check "list 是合法 JSON 且对象齐全" "file,luci,luci-rpc,molly.probe,session,uci" \
   "$(python3 -c 'import json,sys; print(",".join(sorted(json.loads(sys.argv[1]))))' "$list_all")"
 # uhttpd 的类型映射表只有这六个取值，多一个都说明形状跑偏了
 check "参数类型只用六种取值" "ok" \
@@ -160,7 +162,9 @@ check "未知对象 → 500" "500" "$(status_of "$BASE/ubus/list/nope")"
 check "500 正文是 JSON" "application/json" "$(header_of Content-Type "$BASE/ubus/list/nope")"
 check "GET /ubus → 404" "404" "$(status_of "$BASE/ubus")"
 check "GET /ubus/<其它> → 404" "404" "$(status_of "$BASE/ubus/nope")"
-check "GET /ubus/subscribe/* → 501" "501" "$(status_of "$BASE/ubus/subscribe/foo")"
+# P3-7：/ubus/subscribe 不再是 501——它现在是一条 SSE 连接（详见下面的 SSE 节）
+check "GET /ubus/subscribe/* → 200（不再是 501）" "200" \
+  "$(status_of "$BASE/ubus/subscribe/molly.probe")"
 check "OPTIONS /ubus → 200" "200" "$(status_of -X OPTIONS "$BASE/ubus")"
 check "OPTIONS 的 Content-Length 为 0" "0" "$(header_of Content-Length -X OPTIONS "$BASE/ubus")"
 # 上游的 ubus 插件只认 GET / POST / OPTIONS，其余一律 400
@@ -173,20 +177,43 @@ echo "== /ubus 旧式 POST（JSON-RPC 协议层）=="
 # 逐条对齐上游 ubus.c：result 恒为 [ret,{...}] 数组；解析/方法/对象/参数四类错误
 # 进 error 字段；HTTP 状态码恒为 200（上游在 invoke 之前就把响应头发掉了）。
 sid0="00000000000000000000000000000000"
+
+# P3-6 起 /ubus 的 call 先走 uhttpd 那道前置 ACL 校验（uh_ubus_allowed → session.access），
+# 哨兵会话只被 unauthenticated 组授予 session.access/login——所以**除了登录**，
+# 哨兵调用一律 -32002。下面先登一个会话（darwin fixture 的 login section 列了 '*'，
+# 于是 smoke-full 组也生效，足以放行各对象的**对象级**语义断言）。
+P2SID=$(curl -s -X POST "$BASE/ubus/call/session" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"login","params":{"username":"root","password":"test1234"}}' \
+  | jq1 - 'd["result"]["ubus_rpc_session"]' 2>/dev/null)
+if [ -z "$P2SID" ] || [ "$P2SID" = "" ]; then
+  P2SID=$(curl -s -X POST "$BASE/ubus/call/session" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"login","params":{"username":"root","password":"test1234"}}' \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"]["ubus_rpc_session"])')
+fi
+
 # 「透传探针」：拿一个**还没被 molly 接管**的对象来验 handler 把 object/method/sid/params
-# 原样送到了对象。session（P3-2）、uci（P3-3）都已是真实现，所以现在用 file/list——
-# P3-4 接管 file 时，这里的落点要换成下一个还是假数据的对象（luci），届时同步改。
-legacy_call='{"jsonrpc":"2.0","id":1,"method":"call","params":["'"$sid0"'","file","list",{"path":"/etc/hosts"}]}'
+# 原样送到了对象（现在用假对象 luci/getBoardJSON——真对象是 luci-rpc，见 P3-5 节）。
+legacy_call='{"jsonrpc":"2.0","id":1,"method":"call","params":["'"$P2SID"'","luci","getBoardJSON",{}]}'
 r=$(ubus_post /ubus "$legacy_call")
 check "旧式 POST 状态 200" "200" "$(status_of -X POST -d "$legacy_call" "$BASE/ubus")"
 check "旧式 POST Content-Type" "application/json" "$(header_of Content-Type -X POST -d "$legacy_call" "$BASE/ubus")"
 check "旧式 result 是数组 [0,…]" "0" "$(jq1 "$r" 'd["result"][0]')"
 check "旧式回显 object" "luci" "$(jq1 "$r" 'd["result"][1]["echo"]["object"]')"
 check "旧式回显 method" "getBoardJSON" "$(jq1 "$r" 'd["result"][1]["echo"]["method"]')"
-check "旧式 sid 取 params[0]" "$sid0" "$(jq1 "$r" 'd["result"][1]["echo"]["sid"]')"
+check "旧式 sid 取 params[0]" "$P2SID" "$(jq1 "$r" 'd["result"][1]["echo"]["sid"]')"
 check "id 原样回显" "1" "$(jq1 "$r" 'd["id"]')"
 check "缺 id 时回 null" "True" \
   "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","method":"list"}')" 'd["id"] is None')"
+
+# --- P3-6：前置 ACL 校验（uhttpd 的 uh_ubus_allowed）---
+check "哨兵调用非 session 对象 → -32002（取不到权限，fail-closed）" "-32002" \
+  "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","id":50,"method":"call","params":["'"$sid0"'","uci","configs",{}]}')" 'd["error"]["code"]')"
+check "哨兵 login → 放行（unauthenticated 组授了 session.login）" "32" \
+  "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","id":51,"method":"call","params":["'"$sid0"'","session","login",{"username":"root","password":"test1234"}]}')" 'len(d["result"][1]["ubus_rpc_session"])')"
+check "无效 sid → -32002（会话取不到 → fail-closed）" "-32002" \
+  "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","id":52,"method":"call","params":["deadbeefdeadbeefdeadbeefdeadbeef","uci","configs",{}]}')" 'd["error"]["code"]')"
+check "对象不存在优先于 ACL（哨兵 + 假对象）→ -32000" "-32000" \
+  "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","id":53,"method":"call","params":["'"$sid0"'","nope","frob",{}]}')" 'd["error"]["code"]')"
 
 # --- 错误码 ---
 check "未知对象 → -32000" "-32000" \
@@ -198,21 +225,21 @@ check "jsonrpc 非 2.0 → -32700" "-32700" \
 check "params 不足四项 → -32700" "-32700" \
   "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","id":5,"method":"call","params":["","session","list"]}')" 'd["error"]["code"]')"
 check "params 带 ubus_rpc_session → -32602" "-32602" \
-  "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","id":6,"method":"call","params":["","session","list",{"ubus_rpc_session":"x"}]}')" 'd["error"]["code"]')"
+  "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","id":6,"method":"call","params":["'"$P2SID"'","session","list",{"ubus_rpc_session":"x"}]}')" 'd["error"]["code"]')"
 check "正文非法 JSON → -32700" "-32700" \
   "$(jq1 "$(ubus_post /ubus '{oops')" 'd["error"]["code"]')"
 check "正文是标量 → -32700" "-32700" \
   "$(jq1 "$(ubus_post /ubus '42')" 'd["error"]["code"]')"
 
 # --- method:"list"（上游 uh_ubus_send_list）---
-check "list 无 params → 路径数组" "file,luci,session,uci" \
+check "list 无 params → 路径数组" "file,luci,luci-rpc,molly.probe,session,uci" \
   "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","id":7,"method":"list"}')" '",".join(d["result"])')"
 check "list 带 params → 详细表（查不到的忽略）" "session,uci" \
   "$(jq1 "$(ubus_post /ubus '{"jsonrpc":"2.0","id":8,"method":"list","params":["session","uci","nope"]}')" '",".join(sorted(d["result"]))')"
 
 # --- 批请求：数组正文 ---
-check "数组正文 → 批响应" "0,file,luci,session,uci" \
-  "$(jq1 "$(ubus_post /ubus '[{"jsonrpc":"2.0","id":9,"method":"call","params":["","uci","configs",{}]},{"jsonrpc":"2.0","id":10,"method":"list"}]')" \
+check "数组正文 → 批响应" "0,file,luci,luci-rpc,molly.probe,session,uci" \
+  "$(jq1 "$(ubus_post /ubus '[{"jsonrpc":"2.0","id":9,"method":"call","params":["'"$P2SID"'","uci","configs",{}]},{"jsonrpc":"2.0","id":10,"method":"list"}]')" \
     '",".join([str(d[0]["result"][0])] + d[1]["result"])')"
 check "空数组正文 → []" "[]" "$(ubus_post /ubus '[]')"
 
@@ -220,28 +247,32 @@ echo
 echo "== /ubus 新式 POST /ubus/call/<path>（JSON-RPC）=="
 # method 直接是 ubus 方法名；会话来自 `Authorization: Bearer <sid>` 头，
 # **不是** Ubus-Session 头（上游 uh_ubus_get_auth，ubus.c:120-137）。
-r=$(ubus_post /ubus/call/luci '{"jsonrpc":"2.0","id":11,"method":"getBoardJSON","params":{}}')
+AUTH="Authorization: Bearer $P2SID"
+new() { ubus_post "$1" "$2" -H "$AUTH"; }
+r=$(new /ubus/call/luci '{"jsonrpc":"2.0","id":11,"method":"getBoardJSON","params":{}}')
 check "新式状态 200" "200" \
-  "$(status_of -X POST -d '{"jsonrpc":"2.0","id":11,"method":"getBoardJSON"}' "$BASE/ubus/call/luci")"
+  "$(status_of -X POST -H "$AUTH" -d '{"jsonrpc":"2.0","id":11,"method":"getBoardJSON"}' "$BASE/ubus/call/luci")"
 check "新式 result 是对象（无外层数组）" "luci" "$(jq1 "$r" 'd["result"]["echo"]["object"]')"
 check "新式 method 就是 ubus 方法名" "getBoardJSON" "$(jq1 "$r" 'd["result"]["echo"]["method"]')"
-check "无 Authorization → 哨兵 sid" "$sid0" "$(jq1 "$r" 'd["result"]["echo"]["sid"]')"
-check "Bearer 头进 sid" "3653e6abc" \
-  "$(jq1 "$(ubus_post /ubus/call/luci '{"jsonrpc":"2.0","id":12,"method":"getBoardJSON"}' -H 'Authorization: Bearer 3653e6abc')" 'd["result"]["echo"]["sid"]')"
+check "Authorization 的 sid 原样送进对象" "$P2SID" "$(jq1 "$r" 'd["result"]["echo"]["sid"]')"
+check "无 Authorization（哨兵）→ -32002" "-32002" \
+  "$(jq1 "$(ubus_post /ubus/call/luci '{"jsonrpc":"2.0","id":12,"method":"getBoardJSON"}')" 'd["error"]["code"]')"
+check "无效 Bearer → -32002（fail-closed）" "-32002" \
+  "$(jq1 "$(ubus_post /ubus/call/luci '{"jsonrpc":"2.0","id":12,"method":"getBoardJSON"}' -H 'Authorization: Bearer 3653e6abc')" 'd["error"]["code"]')"
 check "无 params → 空参数表" "{}" \
-  "$(jq1 "$(ubus_post /ubus/call/luci '{"jsonrpc":"2.0","id":13,"method":"getBoardJSON"}')" 'json.dumps(d["result"]["echo"]["params"],sort_keys=True)')"
+  "$(jq1 "$(new /ubus/call/luci '{"jsonrpc":"2.0","id":13,"method":"getBoardJSON"}')" 'json.dumps(d["result"]["echo"]["params"],sort_keys=True)')"
 check "对象不存在 → -32000" "-32000" \
-  "$(jq1 "$(ubus_post /ubus/call/nope '{"jsonrpc":"2.0","id":14,"method":"frob"}')" 'd["error"]["code"]')"
+  "$(jq1 "$(ubuntu_dummy=1; new /ubus/call/nope '{"jsonrpc":"2.0","id":14,"method":"frob"}')" 'd["error"]["code"]')"
 check "未知方法 → ubus 返回码 3" "3" \
-  "$(jq1 "$(ubus_post /ubus/call/uci '{"jsonrpc":"2.0","id":15,"method":"frob"}')" 'd["error"]["code"]')"
+  "$(jq1 "$(new /ubus/call/uci '{"jsonrpc":"2.0","id":15,"method":"frob"}')" 'd["error"]["code"]')"
 check "params 非表 → -32602" "-32602" \
-  "$(jq1 "$(ubus_post /ubus/call/uci '{"jsonrpc":"2.0","id":16,"method":"configs","params":[1,2]}')" 'd["error"]["code"]')"
+  "$(jq1 "$(new /ubus/call/uci '{"jsonrpc":"2.0","id":16,"method":"configs","params":[1,2]}')" 'd["error"]["code"]')"
 check "params 为 null → -32602" "-32602" \
-  "$(jq1 "$(ubus_post /ubus/call/uci '{"jsonrpc":"2.0","id":17,"method":"configs","params":null}')" 'd["error"]["code"]')"
+  "$(jq1 "$(new /ubus/call/uci '{"jsonrpc":"2.0","id":17,"method":"configs","params":null}')" 'd["error"]["code"]')"
 check "对象不存在优先于参数错误" "-32000" \
-  "$(jq1 "$(ubus_post /ubus/call/nope '{"jsonrpc":"2.0","id":18,"method":"configs","params":[1]}')" 'd["error"]["code"]')"
+  "$(jq1 "$(new /ubus/call/nope '{"jsonrpc":"2.0","id":18,"method":"configs","params":[1]}')" 'd["error"]["code"]')"
 check "正文非法 JSON → -32700" "-32700" \
-  "$(jq1 "$(ubus_post /ubus/call/uci '{oops')" 'd["error"]["code"]')"
+  "$(jq1 "$(new /ubus/call/uci '{oops')" 'd["error"]["code"]')"
 
 echo
 echo "== /ubus POST 路由边界 =="
@@ -253,27 +284,100 @@ check "GET list 500 正文 code=4" "4" \
   "$(jq1 "$(curl -s "$BASE/ubus/list/nope")" 'd["code"]')"
 
 echo
-echo "== /cgi-bin/luci dispatcher（菜单树 + 路径解析）=="
+echo "== /ubus/subscribe（SSE，P3-7）=="
+# 上游 ubus.c:373-424：订阅的 ACL 点是伪方法 ":subscribe"（:382），**不是** call 的方法名；
+# 不过时回 200 + application/json + {"code":-13,"message":"Permission denied"}
+# （uh_ubus_posix_error：posix **负码**，与 /ubus/call 的 -32002 不是一回事）。
+# 成功后是 text/event-stream，帧格式 `event: <method>\ndata: <json>\n\n`（:345）。
+check "哨兵订阅 → 200（错误在正文里）" "200" \
+  "$(status_of "$BASE/ubus/subscribe/molly.probe")"
+check "哨兵订阅正文是 posix 负码 -13" "-13" \
+  "$(curl -s "$BASE/ubus/subscribe/molly.probe" \
+     | python3 -c 'import sys,json; print(json.load(sys.stdin)["code"])')"
+check "哨兵订阅的 Content-Type 是 json" "application/json" \
+  "$(header_of Content-Type "$BASE/ubus/subscribe/molly.probe")"
+# 授权会话（root 登录 → acl.d 的 smoke-full 组）→ 200 + text/event-stream
+check "授权订阅的 Content-Type 是 text/event-stream" "text/event-stream" \
+  "$(header_of Content-Type --max-time 2 -H "Authorization: Bearer $P2SID" \
+     "$BASE/ubus/subscribe/molly.probe")"
+check "授权会话订阅不存在的对象 → code 4" "4" \
+  "$(curl -s --max-time 2 -H "Authorization: Bearer $P2SID" "$BASE/ubus/subscribe/nope" \
+     | python3 -c 'import sys,json; print(json.load(sys.stdin)["code"])')"
+# 事件投递：后台挂一条订阅，再让探针对象发一条通知（`molly.probe` 的 `notify`：
+# linux 上是 `ubus_notify`，darwin 上直接推事件总线，两者同形），看帧有没有到
+SSE_OUT=$(mktemp)
+curl -sN --max-time 4 -H "Authorization: Bearer $P2SID" \
+  "$BASE/ubus/subscribe/molly.probe" > "$SSE_OUT" &
+SSE_PID=$!
+sleep 1
+curl -s -X POST "$BASE/ubus/call/molly.probe" -H "Authorization: Bearer $P2SID" \
+  -d '{"jsonrpc":"2.0","id":"ev1","method":"notify","params":{}}' >/dev/null
+wait $SSE_PID 2>/dev/null
+check "SSE 收到 event 帧" "1" "$(grep -c '^event: ping$' "$SSE_OUT")"
+check "SSE 帧带 data" "1" "$(grep -c '^data: {"hello":"world"}$' "$SSE_OUT")"
+rm -f "$SSE_OUT"
+
+echo
+echo "== /cgi-bin/luci dispatcher（菜单树 + 路径解析 + 会话 ACL）=="
 # 语义复刻上游 modules/luci-base/ucode/dispatcher.uc：menu.d → 树 → 逐段下降；
 # firstchild 选权重最小的可展示子节点；depends.fs / depends.uci 决定 satisfied；
-# depends.acl 只展示不执行（P2 不做 ACL）。
+# **P3-6 起 depends.acl 也参与裁树**（dispatcher.uc:435-445）：缺组的节点对本会话不可见
+# （路径解析不到 → 404），只有 read 的会话把页面标成只读（:1002-1003）。会话来自 LuCI
+# 写的 cookie（sysauth_http / sysauth_https）——下面用已登录的 P2SID 带上 `-b`；
+# 无 cookie / 只读会话 / firstchild 裁树的用例集中在下面「depends.acl」小节。
 # fixture 见 tests/fixtures/menu.d/（luci-base.json 先于 luci-probe.json 处理）。
-check "裸前缀 /cgi-bin/luci → 200" "200" "$(status_of "$BASE/cgi-bin/luci")"
-check "带尾斜杠 /cgi-bin/luci/ → 200" "200" "$(status_of "$BASE/cgi-bin/luci/")"
-check "占位页 Content-Type" "text/html; charset=utf-8" "$(header_of Content-Type "$BASE/cgi-bin/luci/")"
+LUCICOOKIE="sysauth_http=$P2SID"
+check "裸前缀 /cgi-bin/luci → 200" "200" "$(status_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci")"
+check "带尾斜杠 /cgi-bin/luci/ → 200" "200" "$(status_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/")"
+check "占位页 Content-Type" "text/html; charset=utf-8" \
+  "$(header_of Content-Type -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/")"
 # root 的 firstchild 必须跳过 depends.fs 未命中的 hidden（order 1，权重最小）
-check "root firstchild 跳过 unsatisfied" "Overview" "$(h1_of "$BASE/cgi-bin/luci/")"
-check "指定路径命中" "Overview" "$(h1_of "$BASE/cgi-bin/luci/admin/status/overview")"
-check "查询串被剥掉" "200" "$(status_of "$BASE/cgi-bin/luci/admin/status/overview?v=1")"
-check "占位页有 ACL 未实施横幅" "1" \
-  "$(curl -s "$BASE/cgi-bin/luci/admin/status/overview" | grep -c 'ACL 未实施')"
-# depends.acl 原样展示但不参与 satisfied（它出现在页面上，路径仍然 200）
-check "depends.acl 展示不执行" "1" \
-  "$(curl -s "$BASE/cgi-bin/luci/admin/status/overview" | grep -c 'luci-base')"
+check "root firstchild 跳过 unsatisfied" "Overview" "$(h1_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/")"
+check "指定路径命中" "Overview" \
+  "$(h1_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/overview")"
+check "查询串被剥掉" "200" \
+  "$(status_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/overview?v=1")"
+# P3-6：P2 那条「ACL 未实施」横幅已删（ACL 真的生效了）；depends 原样展示，
+# 并标出本会话不是只读
+check "占位页没有 ACL 未实施横幅" "0" \
+  "$(curl -s -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/overview" | grep -c 'ACL 未实施')"
+check "depends 原样展示" "1" \
+  "$(curl -s -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/overview" | grep -c 'luci-base')"
+check "登录会话（有 write）不是只读" "no" \
+  "$(curl -s -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/overview" \
+     | grep -o '<dt>readonly</dt><dd>[^<]*</dd>' | sed 's/.*<dd>//; s/<\/dd>//')"
 
 # --- 中间层的 firstchild ---
-check "/admin/status 走 firstchild" "Overview" "$(h1_of "$BASE/cgi-bin/luci/admin/status")"
-check "/admin/system 走 firstchild" "Reboot" "$(h1_of "$BASE/cgi-bin/luci/admin/system")"
+check "/admin/status 走 firstchild" "Overview" "$(h1_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status")"
+check "/admin/system 走 firstchild" "Reboot" "$(h1_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/system")"
+
+# --- depends.acl（P3-6：裁树 + 只读）---
+# fixture 的 admin/status/overview 带 `depends.acl: { "luci-base": ["status"] }`（对象形态）。
+# 判定按**会话**现算（树是跨请求缓存的，不能在节点上写会话状态），三态见上游
+# check_acl_depends（:312-331）：缺组 → 裁掉（路径 404 / firstchild 跳过）；
+# 只有 read → 可见但标只读；有 write → 正常。
+check "无 cookie：acl 门控路径 → 404" "404" \
+  "$(status_of "$BASE/cgi-bin/luci/admin/status/overview")"
+# 跳过 overview 后落到 logs（order 50）：注意它的 title 是 `Logs (wildcard)`——
+# luci-probe.json 里的 `admin/status/logs/*` 后处理，把 base 的 "Logs" 覆盖掉了
+# （逐键合并，后处理的文件胜），这一点是老行为，不是 ACL 带来的
+check "无 cookie：firstchild 跳过门控节点" "Logs (wildcard)" \
+  "$(h1_of "$BASE/cgi-bin/luci/admin/status")"
+# 只读会话：root 登录（fixture 的 login 列了 '*'，会拿到 luci-base 的 read+write）后
+# 把 write 撤掉，只剩 read → 可见但只读
+RO_SID=$(curl -s -X POST "$BASE/ubus/call/session" \
+  -d '{"jsonrpc":"2.0","id":"ro1","method":"login","params":{"username":"root","password":"test1234"}}' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"]["ubus_rpc_session"])')
+curl -s -X POST "$BASE/ubus/call/session" -H "Authorization: Bearer $RO_SID" \
+  -d '{"jsonrpc":"2.0","id":"ro2","method":"revoke","params":{"scope":"access-group","objects":[["luci-base","write"]]}}' \
+  >/dev/null
+check "只读会话：acl 门控路径 → 200" "200" \
+  "$(status_of -b "sysauth_http=$RO_SID" "$BASE/cgi-bin/luci/admin/status/overview")"
+check "只读会话：firstchild 恢复门控节点" "Overview" \
+  "$(h1_of -b "sysauth_http=$RO_SID" "$BASE/cgi-bin/luci/admin/status")"
+check "只读会话：页面标 readonly" "yes" \
+  "$(curl -s -b "sysauth_http=$RO_SID" "$BASE/cgi-bin/luci/admin/status/overview" \
+     | grep -o '<dt>readonly</dt><dd>[^<]*</dd>' | sed 's/.*<dd>//; s/<\/dd>//')"
 # 同一路径被两个文件定义 → **逐键**合并（dispatcher.uc:406-408 只拷 spec 里出现的键）：
 # base 给 title/order/cbi，probe 只给 action，于是 title 仍是 "Reboot"、order 仍是 10
 check "同路径逐键合并且未出现的键保留" "Reboot" \
@@ -326,13 +430,16 @@ check "白名单外的键只忽略该键 → 200" "200" "$(status_of "$BASE/cgi-
 # badfield 的 order 写成 string（真实样本 7 例的情形）→ 该键被忽略、节点用默认权重 9999；
 # 若它被当成 1，root firstchild 会变成 "Bad field kept"
 check "类型不符的键被忽略（root firstchild 仍是 Overview）" "Overview" \
-  "$(h1_of "$BASE/cgi-bin/luci/")"
+  "$(h1_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/")"
 
 # --- 路由边界 ---
 check "未命中路径 → 404" "404" "$(status_of "$BASE/cgi-bin/luci/nope")"
 check "/cgi-bin/luci/<未知> → 404" "404" "$(status_of "$BASE/cgi-bin/luci/admin/nope")"
 check "dispatcher 上的 POST → 405" "405" "$(status_of -X POST -d '' "$BASE/cgi-bin/luci/admin/status/overview")"
 check "HEAD 有完整头无 body" "0" \
+  "$(curl -s -I -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/overview" | awk 'BEGIN{b=0} /^\r?$/{f=1;next} f{b+=length($0)+1} END{print b}')"
+# P3-6：404 也可能是 ACL 裁掉的结果，HEAD 同样要「有头无体」
+check "HEAD 到被裁掉的路径也没有 body" "0" \
   "$(curl -s -I "$BASE/cgi-bin/luci/admin/status/overview" | awk 'BEGIN{b=0} /^\r?$/{f=1;next} f{b+=length($0)+1} END{print b}')"
 
 echo
@@ -427,23 +534,31 @@ check "get(keys) 只回命中的键" "abc" \
   "$(sess get '{"keys":["token","nope"]}' | jget '["result"]["values"]["token"]')"
 check "grant 后 access=true（fnmatch file/* 命中 read）" "True" \
   "$(sess grant '{"objects":[["file","*"]]}' >/dev/null; sess access '{"object":"file","function":"read"}' | jget '["result"]["access"]')"
+# P3-6 起登录会话带 acl.d 的 ACL：ubus.uci 的 set 被 luci-base 的 write 组授予，
+# 所以这里改用一个任何组都没授的函数来验「不命中即 false」。
+# smoke-full 组把 scope "ubus" 全放行了，所以负例要换一个**没被任何组**覆盖的 scope
 check "未授权的方法 access=false" "False" \
-  "$(sess access '{"object":"uci","function":"set"}' | jget '["result"]["access"]')"
+  "$(sess access '{"scope":"file","object":"nope","function":"frob"}' | jget '["result"]["access"]')"
+# acl.d 与 grant 的条目会合并进同一张表（scope→object→[function]）
 check "access 不给 object → 回 ACL 表（scope→object→[function]）" "True" \
-  "$(sess access '{}' | jget '["result"]["ubus"]["file"] == ["*"]')"
+  "$(jq1 "$(sess access '{}')" '"*" in d["result"]["ubus"]["file"] and "list" in d["result"]["ubus"]["file"]')"
 check "unset 后键消失" "None" \
   "$(sess unset '{"keys":["token"]}' >/dev/null; sess get '{"keys":["token"]}' | jget '["result"]["values"].get("token")')"
 check "list 带 sid → 单个会话 dump" "$SID" "$(sess list '{}' | jget '["result"]["ubus_rpc_session"]')"
 # 无 Authorization 时上游注入哨兵 sid（ubus.c 的 UBUS_DEFAULT_SID），HTTP 上永远走不到
 # 「缺 sid」分支——那条分支由 src/backend/session_test.odin 的单测覆盖。
-check "无 Authorization → 走哨兵会话（values 是空表）" "True" \
+# P3-6 起哨兵只被授 session.access/login：不带 Authorization 调 session.get → -32002
+check "哨兵调 session.get → -32002（unauthenticated 只授 access/login）" "-32002" \
   "$(curl -s -X POST "$BASE/ubus/call/session" -d '{"jsonrpc":"2.0","id":3,"method":"get","params":{}}' \
-     | jget '["result"]["values"] == {}')"
+     | jget '["error"]["code"]')"
 check "未知方法 → code 3（METHOD_NOT_FOUND）" "3" "$(sess nope '{}' | jget '["error"]["code"]')"
 
 sess destroy '{}' >/dev/null
-check "destroy 后 get → code 4（NOT_FOUND）" "4" "$(sess get '{}' | jget '["error"]["code"]')"
-check "默认会话不可销毁 → code 6" "6" \
+# 会话已销毁 → 前端 ACL 查不到会话（fail-closed）→ -32002；对象级的 4 在 HTTP 上观察不到
+check "destroy 后 get → -32002（会话没了，前端先拦）" "-32002" "$(sess get '{}' | jget '["error"]["code"]')"
+# 哨兵自己调 destroy：前端就拦下了（哨兵没有 ubus.session.destroy 权限）。
+# 对象级的「哨兵不可销毁 → 6」在 HTTP 上观察不到，由 session_test.odin 的单测覆盖。
+check "哨兵调 destroy → -32002（前端拦；对象级的 6 由单测覆盖）" "-32002" \
   "$(curl -s -X POST "$BASE/ubus/call/session" \
        -H 'Authorization: Bearer 00000000000000000000000000000000' \
        -d '{"jsonrpc":"2.0","id":4,"method":"destroy","params":{}}' \
@@ -466,18 +581,28 @@ uci0() { curl -s -X POST "$BASE/ubus/call/uci" -d "$1"; }                       
 uci1() { curl -s -X POST "$BASE/ubus/call/uci" -H "Authorization: Bearer $USID" -d "$1"; }
 usid1() { curl -s -X POST "$BASE/ubus/call/session" -H "Authorization: Bearer $USID" -d "$1"; }
 
-check "未授权（哨兵会话）读 → code 6" "6" \
+# 第二个登录会话：**不额外 grant**，只有 acl.d（luci-base 授的是 uci system/luci），
+# 用来验「没有该 config 的写权限 → 对象级 6」（USID 在后面会被 grant 上写权限）。
+USID2=$(curl -s -X POST "$BASE/ubus/call/session" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"login","params":{"username":"root","password":"test1234"}}' \
+  | jget '["result"]["ubus_rpc_session"]')
+uci2() { curl -s -X POST "$BASE/ubus/call/uci" -H "Authorization: Bearer $USID2" -d "$1"; }
+
+# P3-6 起这条在**前端**就被拦下了（哨兵没有 ubus.uci 权限）——不再是对象级的 6
+check "哨兵读 uci → -32002（前端 ACL 先拦）" "-32002" \
   "$(uci0 '{"jsonrpc":"2.0","id":2,"method":"get","params":{"config":"network"}}' | jget '["error"]["code"]')"
 
 # configs 上游不做 ACL 检查（它是方法表里唯一没有策略的）
-cfg0=$(uci0 '{"jsonrpc":"2.0","id":3,"method":"configs"}')
-check "configs 不检查 ACL（哨兵也能列）" "True" "$(jq1 "$cfg0" 'len(d["result"]["configs"]) > 0')"
-check "configs 列出 config 名（假数据含 rpcd/empty-config 两个 fixture）" "empty-config,network,rpcd,system" "$(jq1 "$cfg0" '",".join(sorted(d["result"]["configs"]))')"
+# configs 不查对象级 ACL，但**前端**要先放行——所以用已授权会话（USID）
+cfg0=$(uci1 '{"jsonrpc":"2.0","id":3,"method":"configs"}')
+check "configs 不检查对象级 ACL" "True" "$(jq1 "$cfg0" 'len(d["result"]["configs"]) > 0')"
+check "configs 列出 config 名（假数据含 rpcd/empty-config/dhcp 三个 fixture）" "dhcp,empty-config,network,rpcd,system" "$(jq1 "$cfg0" '",".join(sorted(d["result"]["configs"]))')"
 
 usid1 '{"jsonrpc":"2.0","id":4,"method":"grant","params":{"scope":"uci","objects":[["network","read"]]}}' >/dev/null
-# ACL 是按 config 名逐条授权的：只给了 network，读 system 照样被拒
-check "只 grant 了 network：读 system → code 6" "6" \
-  "$(uci1 '{"jsonrpc":"2.0","id":14,"method":"get","params":{"config":"system"}}' | jget '["error"]["code"]')"
+# ACL 是按 config 名逐条授权的。注意 P3-6 起登录会话带 acl.d：fixture 的 luci-base
+# 授了 uci 的 system/luci，所以这里换一个**任何组都没授**的 config（dhcp）。
+check "只 grant 了 network：读 dhcp → code 6" "6" \
+  "$(uci1 '{"jsonrpc":"2.0","id":14,"method":"get","params":{"config":"dhcp"}}' | jget '["error"]["code"]')"
 
 pkg=$(uci1 '{"jsonrpc":"2.0","id":5,"method":"get","params":{"config":"network"}}')
 check "get 整包：option 值" "static" "$(jq1 "$pkg" 'd["result"]["values"]["lan"]["proto"]')"
@@ -555,9 +680,9 @@ check "set 缺 values → code 2（校验先于一切）" "2" \
   "$(uci1 '{"jsonrpc":"2.0","id":32,"method":"set","params":{"config":"network","section":"lan"}}' | jget '["error"]["code"]')"
 check "add 缺 type → code 2" "2" \
   "$(uci1 '{"jsonrpc":"2.0","id":33,"method":"add","params":{"config":"network"}}' | jget '["error"]["code"]')"
-# 没授权的会话：set 应该先撞 ACL → 6（用哨兵会话，它没有任何 ACL）
+# 没有该 config 写权限的会话：set 先撞对象级 ACL → 6（用 USID2，它没被 grant）
 check "未授权会话 set → code 6" "6" \
-  "$(uci0 '{"jsonrpc":"2.0","id":34,"method":"set","params":{"config":"network","section":"lan","values":{"proto":"static"}}}' | jget '["error"]["code"]')"
+  "$(uci2 '{"jsonrpc":"2.0","id":34,"method":"set","params":{"config":"network","section":"lan","values":{"proto":"static"}}}' | jget '["error"]["code"]')"
 
 # --- S3：delete / rename / order 已实现（校验顺序同 set/add）---
 check "delete 缺 section/type/match → code 2" "2" \
@@ -572,9 +697,9 @@ check "rename（已授权）→ code 8" "8" \
   "$(uci1 '{"jsonrpc":"2.0","id":44,"method":"rename","params":{"config":"network","section":"lan","name":"lan2"}}' | jget '["error"]["code"]')"
 check "order（已授权）→ code 8" "8" \
   "$(uci1 '{"jsonrpc":"2.0","id":45,"method":"order","params":{"config":"network","sections":["wan","lan"]}}' | jget '["error"]["code"]')"
-# 语法校验在 ACL 之后：同一份非法请求，哨兵会话先撞 6
+# 语法校验在 ACL 之后：同一份非法请求，没有写权限的会话先撞 6
 check "未授权会话 delete（含非法 section）→ code 6" "6" \
-  "$(uci0 '{"jsonrpc":"2.0","id":46,"method":"delete","params":{"config":"network","section":"lan[0]"}}' | jget '["error"]["code"]')"
+  "$(uci2 '{"jsonrpc":"2.0","id":46,"method":"delete","params":{"config":"network","section":"lan[0]"}}' | jget '["error"]["code"]')"
 
 # --- S4：apply 系（apply / confirm / rollback / reload_config）---
 # 没有待确认的 apply 时 confirm/rollback 都是 5（NO_DATA）；apply 因为该会话没有 delta 目录 → 4；
@@ -591,11 +716,12 @@ check "reload_config → code 8（darwin 不 fork）" "8" \
   "$(uci1 '{"jsonrpc":"2.0","id":54,"method":"reload_config"}' | jget '["error"]["code"]')"
 
 echo
-echo "== P3-4 file 对象（第一批：路径/权限核心 + read）=="
+echo "== P3-4 file 对象（路径/权限核心 + read/stat/lstat/list/md5/write/remove）=="
 # 契约 rpcd@e37ed9d8 的 file.c：路径先做**文本**规范化（折掉 //、/./、/../），
 # 按文本路径查 ACL，再用 realpath 解析符号链接、对解析后的路径**再查一遍**
 # （file.c:261-359）——不做第三步的话，目录里放个符号链接就能绕过授权。
-# 权限是 session 的 ACL：session.access("file", <路径>, "read"/"write")。
+# 权限是 session 的 ACL，且**各方法的权限名不同**（照抄上游，file.c:512/664/734/829）：
+#   read/md5 → "read"、write/remove → "write"、list/stat/lstat → "list"。
 FILE_USID=$(curl -s -X POST "$BASE/ubus/call/session" \
   -d '{"jsonrpc":"2.0","id":1,"method":"login","params":{"username":"root","password":"test1234"}}' \
   | jget '["result"]["ubus_rpc_session"]')
@@ -604,43 +730,180 @@ file0() { curl -s -X POST "$BASE/ubus/call/file" -d "$1"; }
 file1() { curl -s -X POST "$BASE/ubus/call/file" -H "Authorization: Bearer $FILE_USID" -d "$1"; }
 fsid1() { curl -s -X POST "$BASE/ubus/call/session" -H "Authorization: Bearer $FILE_USID" -d "$1"; }
 
-check "无 file 权限读 → code 6" "6" \
-  "$(file1 '{"jsonrpc":"2.0","id":2,"method":"read","params":{"path":"/etc/hosts"}}' | jget '["error"]["code"]')"
 check "缺 path → code 2" "2" \
-  "$(file0 '{"jsonrpc":"2.0","id":3,"method":"read","params":{}}' | jget '["error"]["code"]')"
+  "$(file1 '{"jsonrpc":"2.0","id":3,"method":"read","params":{}}' | jget '["error"]["code"]')"
 
-# 只授权 /tmp 下的读（fnmatch 前缀）
+rm -rf /private/tmp/molly-file-dir
+mkdir -p /private/tmp/molly-file-dir
+printf 'molly-p3-4\n' > /private/tmp/molly-file-dir/probe.txt
+
+# 只授 read+write（不授 list）：md5（"read"）和 write（"write"）放行，stat（"list"）被拒。
+# 注：macOS 上 /tmp 是指向 /private/tmp 的符号链接，授权范围必须写真实路径；
+# 设备上 /tmp 是真目录，不受影响。
 fsid1 '{"jsonrpc":"2.0","id":4,"method":"grant","params":{"scope":"file","objects":[["/private/tmp/*","read"],["/private/tmp/*","write"]]}}' >/dev/null
-check "授权后读 /tmp → 4（文件不存在）" "4" \
-  "$(file1 '{"jsonrpc":"2.0","id":5,"method":"read","params":{"path":"/private/tmp/molly-not-exist"}}' | jget '["error"]["code"]')"
-check "授权范围外（/etc/hosts）→ code 6" "6" \
-  "$(file1 '{"jsonrpc":"2.0","id":6,"method":"read","params":{"path":"/etc/hosts"}}' | jget '["error"]["code"]')"
 
-# /tmp/../etc/hosts 会被**文本**规范化成 /etc/hosts → 落到授权范围外 → 6
+check "无权限读 /etc/hosts → code 6" "6" \
+  "$(file1 '{"jsonrpc":"2.0","id":5,"method":"read","params":{"path":"/etc/hosts"}}' | jget '["error"]["code"]')"
 check "路径规范化：/tmp/../etc/hosts → code 6" "6" \
   "$(file1 '{"jsonrpc":"2.0","id":7,"method":"read","params":{"path":"/tmp/../etc/hosts"}}' | jget '["error"]["code"]')"
 
-# 真读一个授权内的文件
-# 注：macOS 上 /tmp 是指向 /private/tmp 的符号链接，而 file 的 ACL 复查（realpath）会把
-# 授权范围换成解析后的真实路径——所以这里用 /private/tmp（设备上 /tmp 是真目录，不受影响）。
-printf 'molly-p3-4\n' > /private/tmp/molly-file-probe.txt
-check "读授权内的文件 → data" "molly-p3-4" \
-  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":8,"method":"read","params":{"path":"/private/tmp/molly-file-probe.txt"}}')" 'd["result"]["data"].strip()')"
-check "base64 读出同一个文件" "bW9sbHktcDMtNAo=" \
-  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":9,"method":"read","params":{"path":"/private/tmp/molly-file-probe.txt","base64":true}}')" 'd["result"]["data"].strip()')"
+check "md5 授权内文件（权限名 read）" "True" \
+  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":8,"method":"md5","params":{"path":"/private/tmp/molly-file-dir/probe.txt"}}')" 'd["result"]["md5"] == "'"$(md5 -q /private/tmp/molly-file-dir/probe.txt)"'"')"
+check "md5 对目录 → code 8（上游只认普通文件）" "8" \
+  "$(file1 '{"jsonrpc":"2.0","id":9,"method":"md5","params":{"path":"/private/tmp/molly-file-dir"}}' | jget '["error"]["code"]')"
 
-# 符号链接复查：链接本身在授权目录里，但指向授权范围外 → 必须 6
-rm -f /private/tmp/molly-file-link
-ln -s /etc/hosts /private/tmp/molly-file-link
+check "write 新建文件（权限名 write）" "True" \
+  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":10,"method":"write","params":{"path":"/private/tmp/molly-file-dir/new.txt","data":"hello write"}}')" '"error" not in d')"
+check "write 写出的内容可读回" "hello write" \
+  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":11,"method":"read","params":{"path":"/private/tmp/molly-file-dir/new.txt"}}')" 'd["result"]["data"]')"
+check "write append 不截断" "hello write+more" \
+  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":12,"method":"write","params":{"path":"/private/tmp/molly-file-dir/new.txt","data":"+more","append":true}}' >/dev/null ; file1 '{"jsonrpc":"2.0","id":13,"method":"read","params":{"path":"/private/tmp/molly-file-dir/new.txt"}}')" 'd["result"]["data"]')"
+check "write 缺 data → code 2" "2" \
+  "$(file1 '{"jsonrpc":"2.0","id":14,"method":"write","params":{"path":"/private/tmp/molly-file-dir/new.txt"}}' | jget '["error"]["code"]')"
+check "write base64 解码" "b64-ok" \
+  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":15,"method":"write","params":{"path":"/private/tmp/molly-file-dir/b64.txt","data":"YjY0LW9r","base64":true}}' >/dev/null ; file1 '{"jsonrpc":"2.0","id":16,"method":"read","params":{"path":"/private/tmp/molly-file-dir/b64.txt"}}')" 'd["result"]["data"]')"
+
+# P3-6 起登录会话带 acl.d 的 ACL：fixture 的 luci-base 授了 file 的 "/*" → list，
+# 所以要造「拒绝」场景得先把整个 file scope 撤掉（revoke 不带 objects = 清空 scope）。
+fsid1 '{"jsonrpc":"2.0","id":18,"method":"revoke","params":{"scope":"file"}}' >/dev/null
+check "清空 file scope：stat → code 6（stat 的权限名是 list！）" "6" \
+  "$(file1 '{"jsonrpc":"2.0","id":17,"method":"stat","params":{"path":"/private/tmp/molly-file-dir/probe.txt"}}' | jget '["error"]["code"]')"
+check "清空 file scope：list → code 6" "6" \
+  "$(file1 '{"jsonrpc":"2.0","id":18,"method":"list","params":{"path":"/private/tmp/molly-file-dir"}}' | jget '["error"]["code"]')"
+check "清空 file scope：read → code 6" "6" \
+  "$(file1 '{"jsonrpc":"2.0","id":18,"method":"read","params":{"path":"/private/tmp/molly-file-dir/probe.txt"}}' | jget '["error"]["code"]')"
+
+# 重新授权（read + write + list）后：stat / lstat / list / md5 / remove 全通
+fsid1 '{"jsonrpc":"2.0","id":19,"method":"grant","params":{"scope":"file","objects":[["/private/tmp/*","read"],["/private/tmp/*","write"],["/private/tmp/*","list"]]}}' >/dev/null
+
+st=$(file1 '{"jsonrpc":"2.0","id":20,"method":"stat","params":{"path":"/private/tmp/molly-file-dir/probe.txt"}}')
+check "stat：type/size/path" "file,11,/private/tmp/molly-file-dir/probe.txt" \
+  "$(jq1 "$st" 'd["result"]["type"] + "," + str(d["result"]["size"]) + "," + d["result"]["path"]')"
+check "stat：mode 含类型位（0o100644=33188）" "33188" \
+  "$(jq1 "$st" 'd["result"]["mode"]')"
+
+rm -f /private/tmp/molly-file-dir/link
+ln -s probe.txt /private/tmp/molly-file-dir/link
+check "lstat 符号链接 → type=symlink（不解析）" "symlink" \
+  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":21,"method":"lstat","params":{"path":"/private/tmp/molly-file-dir/link"}}')" 'd["result"]["type"]')"
+check "stat 符号链接 → 跟随到目标（file）" "file" \
+  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":22,"method":"stat","params":{"path":"/private/tmp/molly-file-dir/link"}}')" 'd["result"]["type"]')"
+
+lst=$(file1 '{"jsonrpc":"2.0","id":23,"method":"list","params":{"path":"/private/tmp/molly-file-dir"}}')
+check "list：条目齐（. / .. 被跳过）" "True" \
+  "$(jq1 "$lst" 'sorted(e["name"] for e in d["result"]["entries"]) == ["b64.txt","link","new.txt","probe.txt"]')"
+check "list：符号链接条目带 target（name+type）" "probe.txt,file" \
+  "$(jq1 "$lst" '(lambda e: e["target"]["name"] + "," + e["target"]["type"])(next(e for e in d["result"]["entries"] if e["name"]=="link"))')"
+check "list 对普通文件 → code 2（opendir ENOTDIR）" "2" \
+  "$(file1 '{"jsonrpc":"2.0","id":24,"method":"list","params":{"path":"/private/tmp/molly-file-dir/probe.txt"}}' | jget '["error"]["code"]')"
+check "list 不存在的目录 → code 4" "4" \
+  "$(file1 '{"jsonrpc":"2.0","id":25,"method":"list","params":{"path":"/private/tmp/molly-file-dir/nope"}}' | jget '["error"]["code"]')"
+
+check "remove 文件（权限名 write）" "True" \
+  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":26,"method":"remove","params":{"path":"/private/tmp/molly-file-dir/new.txt"}}')" '"error" not in d')"
+check "remove 后 read → code 4" "4" \
+  "$(file1 '{"jsonrpc":"2.0","id":27,"method":"read","params":{"path":"/private/tmp/molly-file-dir/new.txt"}}' | jget '["error"]["code"]')"
+check "remove 递归删除目录" "True" \
+  "$(jq1 "$(file1 '{"jsonrpc":"2.0","id":28,"method":"remove","params":{"path":"/private/tmp/molly-file-dir"}}')" '"error" not in d')"
+check "remove 后 stat → code 4" "4" \
+  "$(file1 '{"jsonrpc":"2.0","id":29,"method":"stat","params":{"path":"/private/tmp/molly-file-dir"}}' | jget '["error"]["code"]')"
+
+# 符号链接复查防退化：链接在授权目录里但指向外 → 6
+rm -rf /private/tmp/molly-file-dir2
+mkdir -p /private/tmp/molly-file-dir2
+ln -s /etc/hosts /private/tmp/molly-file-dir2/escape
 check "符号链接指向授权外 → code 6（复查 realpath）" "6" \
-  "$(file1 '{"jsonrpc":"2.0","id":10,"method":"read","params":{"path":"/private/tmp/molly-file-link"}}' | jget '["error"]["code"]')"
+  "$(file1 '{"jsonrpc":"2.0","id":30,"method":"read","params":{"path":"/private/tmp/molly-file-dir2/escape"}}' | jget '["error"]["code"]')"
+rm -rf /private/tmp/molly-file-dir2
 
-# 未实现的方法：一律 8（绝不半成品地改文件系统）
-for m in write list lstat stat md5 remove exec; do
-  fbody=$(printf '{"jsonrpc":"2.0","id":11,"method":"%s","params":{"path":"/private/tmp/molly-file-probe.txt"}}' "$m")
-  check "file.$m 待实现 → code 8" "8" "$(file1 "$fbody" | jget '["error"]["code"]')"
+# exec：带会话的调用不允许 env（file.c:1047，先于 ACL/查找）
+check "exec 带 env + 会话 → code 6" "6" \
+  "$(file1 '{"jsonrpc":"2.0","id":31,"method":"exec","params":{"command":"echo","env":{"A":"1"}}}' | jget '["error"]["code"]')"
+# 未授权 → 6（ACL 查的是 PATH 解析后的可执行文件路径）
+check "exec 未授权 → code 6" "6" \
+  "$(file1 '{"jsonrpc":"2.0","id":32,"method":"exec","params":{"command":"echo"}}' | jget '["error"]["code"]')"
+check "exec 不存在的命令 → code 4（PATH 找不到）" "4" \
+  "$(file1 '{"jsonrpc":"2.0","id":33,"method":"exec","params":{"command":"molly-definitely-not-here"}}' | jget '["error"]["code"]')"
+
+# 授权 /bin/echo 的 exec（路径对象）
+fsid1 '{"jsonrpc":"2.0","id":34,"method":"grant","params":{"scope":"file","objects":[["/bin/echo","exec"]]}}' >/dev/null
+ex=$(file1 '{"jsonrpc":"2.0","id":35,"method":"exec","params":{"command":"echo","params":["hello exec"]}}')
+check "exec echo：code 0 + stdout" "0,hello exec" \
+  "$(jq1 "$ex" 'str(d["result"]["code"]) + "," + d["result"]["stdout"].strip()')"
+
+# 第二种授权形态：整条命令行字符串（file.c:1081——exe 路径没过 ACL 时，再查 "exe 参数…"）
+FS_USID2=$(curl -s -X POST "$BASE/ubus/call/session" \
+  -d '{"jsonrpc":"2.0","id":36,"method":"login","params":{"username":"root","password":"test1234"}}' \
+  | jget '["result"]["ubus_rpc_session"]')
+file2() { curl -s -X POST "$BASE/ubus/call/file" -H "Authorization: Bearer $FS_USID2" -d "$1"; }
+f2sid() { curl -s -X POST "$BASE/ubus/call/session" -H "Authorization: Bearer $FS_USID2" -d "$1"; }
+f2sid '{"jsonrpc":"2.0","id":37,"method":"grant","params":{"scope":"file","objects":[["/bin/echo only-this","exec"]]}}' >/dev/null
+check "命令行 ACL：精确串匹配 → 放行" "only-this" \
+  "$(jq1 "$(file2 '{"jsonrpc":"2.0","id":38,"method":"exec","params":{"command":"echo","params":["only-this"]}}')" 'd["result"]["stdout"].strip()')"
+check "命令行 ACL：参数不同 → code 6" "6" \
+  "$(file2 '{"jsonrpc":"2.0","id":39,"method":"exec","params":{"command":"echo","params":["other"]}}' | jget '["error"]["code"]')"
+
+
+echo
+echo "== P3-5 luci-rpc 对象（S1：getBoardJSON / getDHCPLeases）=="
+# 契约：luci@d6167ea 的 libs/rpcd-mod-luci/src/luci.c。对象名是 **luci-rpc**（:2043）；
+# 这两个方法没有 ACL 检查（policy 无 session 字段）。S2 的 4 个方法回 8。
+# 租约文件路径来自 darwin FAKE_UCI 的 dhcp config（真机是 uci dhcp 的 leasefile option）。
+printf '4000000000 aa:bb:cc:dd:ee:ff 192.168.1.123 phone 01:11:22:33:44:55:66\n' > /tmp/molly-dhcp.leases
+printf '# br-lan 0001000100004c1faabbccddeeff 1 host6 4000000000 0 128 fd00::1234\n' > /tmp/molly-odhcpd.leases
+
+# P3-6 起 /ubus 先过前端 ACL：luci-rpc 的方法要授权才放行（真机上是
+# luci-base-network-status 之类的组；darwin fixture 里由 smoke-full 组覆盖）。
+lc() { curl -s -X POST "$BASE/ubus/call/luci-rpc" -H "Authorization: Bearer $P2SID" -d "$1"; }
+
+check "getBoardJSON：model 名" "Molly Mock Board" \
+  "$(jq1 "$(lc '{"jsonrpc":"2.0","id":1,"method":"getBoardJSON"}')" 'd["result"]["model"]["name"]')"
+check "getBoardJSON：network.lan.protocol" "static" \
+  "$(jq1 "$(lc '{"jsonrpc":"2.0","id":1,"method":"getBoardJSON"}')" 'd["result"]["network"]["lan"]["protocol"]')"
+
+lb4=$(lc '{"jsonrpc":"2.0","id":2,"method":"getDHCPLeases","params":{"family":4}}')
+check "getDHCPLeases family=4：只有 dhcp_leases 键" "True" \
+  "$(jq1 "$lb4" '"dhcp6_leases" not in d["result"]')"
+check "family=4：v4 条目字段（macaddr/hostname/ipaddr/hostname）" "aa:bb:cc:dd:ee:ff,phone,192.168.1.123" \
+  "$(jq1 "$lb4" 'd["result"]["dhcp_leases"][0]["macaddr"] + "," + d["result"]["dhcp_leases"][0]["hostname"] + "," + d["result"]["dhcp_leases"][0]["ipaddr"]')"
+check "family=4：01: 前缀 clientid 不覆盖行内 MAC（上游 if(!ea)）" "aa:bb:cc:dd:ee:ff" \
+  "$(jq1 "$lb4" 'd["result"]["dhcp_leases"][0]["macaddr"]')"
+check "family=4：expires 是正数（未到期）" "True" \
+  "$(jq1 "$lb4" 'd["result"]["dhcp_leases"][0]["expires"] > 0')"
+
+lb6=$(lc '{"jsonrpc":"2.0","id":3,"method":"getDHCPLeases","params":{"family":6}}')
+check "family=6：只有 dhcp6_leases 键" "True" \
+  "$(jq1 "$lb6" '"dhcp_leases" not in d["result"]')"
+check "family=6：odhcpd 条目（interface/ip6addr/duid2ea 兜底的 MAC）" "br-lan,fd00::1234,aa:bb:cc:dd:ee:ff" \
+  "$(jq1 "$lb6" 'd["result"]["dhcp6_leases"][0]["interface"] + "," + d["result"]["dhcp6_leases"][0]["ip6addr"] + "," + d["result"]["dhcp6_leases"][0]["macaddr"]')"
+
+lb0=$(lc '{"jsonrpc":"2.0","id":4,"method":"getDHCPLeases"}')
+check "family 缺省 → 两个键都有" "True" \
+  "$(jq1 "$lb0" '"dhcp_leases" in d["result"] and "dhcp6_leases" in d["result"]')"
+# blobmsg 的 policy 行为：family 类型不符 → 当作缺省 0，而不是 2
+check "family 类型不符 → 当作缺省（两键都有）" "True" \
+  "$(jq1 "$(lc '{"jsonrpc":"2.0","id":5,"method":"getDHCPLeases","params":{"family":"4"}}')" '"dhcp_leases" in d["result"] and "dhcp6_leases" in d["result"]')"
+check "family=5 → code 2" "2" \
+  "$(lc '{"jsonrpc":"2.0","id":6,"method":"getDHCPLeases","params":{"family":5}}' | jget '["error"]["code"]')"
+
+# getDUIDHints：v6+duid 的租约按 duid%iaid 去重（无 ACL）
+lh=$(lc '{"jsonrpc":"2.0","id":8,"method":"getDUIDHints"}')
+check "getDUIDHints：key 是 duid%iaid" "True" \
+  "$(jq1 "$lh" '"0001000100004c1faabbccddeeff%1" in d["result"]')"
+check "getDUIDHints：条目字段（interface/duid/iaid/hostname/macaddr）" "br-lan,0001000100004c1faabbccddeeff,1,host6,aa:bb:cc:dd:ee:ff" \
+  "$(jq1 "$lh" '(lambda e: e["interface"] + "," + e["duid"] + "," + e["iaid"] + "," + e["hostname"] + "," + e["macaddr"])(d["result"]["0001000100004c1faabbccddeeff%1"])')"
+check "getDUIDHints：v4 租约不出现" "True" \
+  "$(jq1 "$lh" 'all("phone" != e.get("hostname") for e in d["result"].values())')"
+
+# getNetworkDevices（S2b，sysfs）/getWirelessDevices（S2c，netifd 代理）/getHostHints（S2d，
+# netlink 五源合并）都是 linux-only：macOS 上走 darwin 的 provider 回 8——这里断言的是
+# 「绑设备的方法不在 darwin 上假装实现」，与「未实现」区分开。
+for m in getNetworkDevices getWirelessDevices getHostHints; do
+  # 正文用 printf 拼（双层引号里写 \" 会被 shell 吃掉反斜杠 → -32700，file.exec 时踩过）
+  lbody2=$(printf '{"jsonrpc":"2.0","id":9,"method":"%s"}' "$m")
+  check "luci-rpc.$m linux-only → darwin 回 code 8" "8" "$(lc "$lbody2" | jget '["error"]["code"]')"
 done
-rm -f /private/tmp/molly-file-probe.txt /private/tmp/molly-file-link
+rm -f /tmp/molly-dhcp.leases /tmp/molly-odhcpd.leases
 
 echo
 echo "通过 ${PASS}，失败 ${FAIL}"

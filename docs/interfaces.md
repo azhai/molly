@@ -20,7 +20,8 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 
 - **参数错误**（未知参数、缺参数、地址无法解析、监听失败）：stderr 打印原因 + 用法，**退出码 2**。
 - **启动输出**（stdout）：`[molly] 监听 …`、`[molly] docroot: …`、`[molly] menu.d: …`，
-  以及一行过渡期警告 `WARN: transitional mode - ubus objects still provided by device rpcd`（决策 7）。
+  以及**逐对象**的注册诊断（rpcd 还占着同名对象时会出现；P3-9 起不再有整行的
+  「transitional mode」警告）。
 - **信号**：启动即忽略 `SIGPIPE`（客户端提前断开不能让进程被杀，风险 R3）；P2 不处理
   `SIGTERM`/`SIGHUP`（优雅退出与重载属 P3）。
 - **多 listener**：当前只支持一个 `--listen`；上游 uhttpd 是 `0.0.0.0` + `::` 双 listener，
@@ -40,7 +41,7 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 | 411 | `Transfer-Encoding: chunked`（不支持），或 POST 无 `Content-Length` |
 | 413 | 请求头超 8KB，或 `Content-Length` 超 64KB |
 | 500 | `GET /ubus/list` 查询失败（正文是 ubus 自己的错误码，不是 JSON-RPC 码） |
-| 501 | 命中菜单但 `action.type` 不是 `view`（`cbi`/`form`/`template`/`function`）；`GET /ubus/subscribe/*` |
+| 501 | 命中菜单但 `action.type` 不是 `view`（`cbi`/`form`/`template`/`function`） |
 | 503 | 并发连接超过 32（响应带 `Connection: close`） |
 
 ### 2.2 头语义
@@ -87,7 +88,7 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 | `GET /ubus/list/<path>` | 200，正文是该对象的签名（**没有**外层对象名） |
 | `GET /ubus/list/<未知>` | **500**，正文 `{"code":<ubus errno>,"message":"<ubus 文案>"}`（`ubus.c:249-253`、`:210-213`） |
 | `GET /ubus`、`GET /ubus/<其它>` | 404，空正文 |
-| `GET /ubus/subscribe/*` | 501（SSE 需要 uloop 事件线程，决策 8） |
+| `GET /ubus/subscribe/<path>` | SSE：`200` + `text/event-stream`；ACL 不过或对象不存在时是 `200` + `application/json` + `{"code":…}`（详见 §4.7） |
 
 ### 4.2 POST：旧式 `POST /ubus`
 
@@ -150,6 +151,43 @@ curl -s -X POST http://127.0.0.1:8080/ubus/call/session \
 **已知偏差**：请求体超 64KB 时 molly 回 HTTP 413，而上游 ubus 插件回 200 + `-32700` 并关连接。
 这是 HTTP 层的既有决策（`MAX_BODY_BYTES` 是契约类的，映射方式不是）。
 
+### 4.7 `GET /ubus/subscribe/<path>`（SSE，P3-7）
+
+权威来源 `/tmp/uhttpd-ubus.c:373-424`（`uh_ubus_handle_get_subscribe`），逐条对齐：
+
+1. sid 从 `Authorization: Bearer` 取（`:380`），缺失回退哨兵 `0000…`。
+2. ACL 点是**伪方法** `:subscribe`（`:382`）——不是 `call` 的方法名，别混用。
+   不过 → `200` + `application/json` + `{"code":-13,"message":"Permission denied"}`
+   （`uh_ubus_posix_error`：posix **负码**，与 `/ubus/call` 的 `-32002` 不是一个体系）。
+3. 对象不存在（上游 `ubus_lookup_id`）→ `200` + json + `{"code":4,"message":"Not found"}`。
+4. 成功 → `200` + `Content-Type: text/event-stream`，随后是事件帧：
+   ```
+   event: <method>\ndata: <json>\n\n
+   ```
+5. 客户端断开 → 注销订阅（`:366-371`）。
+
+**molly 的实现差异**（都不是可观测的语义差异，但 golden 对比时要看）：
+
+| 项 | 上游 | molly |
+| --- | --- | --- |
+| 通知回调在哪个线程 | uloop 单线程，直接写 socket | ubus 线程回调 → **每订阅一根管道** → HTTP 线程 poll（ADR 0001 第 3 条） |
+| 正文分帧 | chunked（`ops->chunk_printf`） | 裸流（无 `Content-Length`，`Connection: close`） |
+| 心跳 | 无（靠 uhttpd 的连接超时） | 每 30s 一条注释帧 `: heartbeat\n\n` |
+| `retry:` 行 | 配了 `-e` 才发 | 不发（没有对应选项） |
+| 写端满了 | 单线程下会阻塞 | 非阻塞，**丢事件**（不把 ubus 线程卡死） |
+| subscriber 的粒度 | 每条 SSE 连接一个（`du` 是 per-client 的） | 按 **对象路径**一个（发布本来就按 path 匹配） |
+| 命令通道（HTTP → ubus 线程） | 不存在（单线程） | HTTP 线程排命令，ubus 线程在 `uloop_run_timeout(100)` 的间隙排空；ADR 0001 写的是「把命令管道挂进 uloop」，这里是轮询——少一个 uloop fd 绑定，命令延迟 ≤ 100ms |
+
+**linux 侧（S2）的实现要点**：`src/backend/linux.odin` 里每个被订阅的 path 对应一个
+`ubus_subscriber`；通知回调（`proc "c"`，**没有 context、不能分配**）只把
+`(path, method, json)` 搬进一条定长环形槽，由 ubus 线程主循环排空并调
+`event_bus_publish`——所以发布路径上没有任何分配。
+`ubus_unregister_subscriber` 是 `static inline`（`libubus.h:329-335`，.so 里没有符号），
+按源码复刻在 `bindings/ubus.odin`（与 `ubus_add_uloop` 同一套路）。
+
+订阅上限 32（与 HTTP 的并发连接上限一致），满了按 `UNKNOWN_ERROR` 回。
+darwin 的事件源是 `molly.probe` 的 `emit` 方法（**测试专用**，真机没有）。
+
 ## 5. `/cgi-bin/luci` 契约
 
 ### 5.1 PATH_INFO
@@ -183,18 +221,21 @@ curl -s -X POST http://127.0.0.1:8080/ubus/call/session \
 ### 5.3 占位页结构（脚本可断言）
 
 ```html
-<!DOCTYPE html>…<p class="banner">ACL 未实施：P2 占位页，没有认证与权限校验，P3 由 molly 自持 acl.d 接管</p>
-<h1>{title}</h1>
+<!DOCTYPE html>…<h1>{title}</h1>
 <dl>
   <dt>action.type</dt><dd>{type}</dd>
   <dt>view</dt><dd>{path}</dd>
-  <dt>depends (shown, not enforced)</dt><dd>{depends 原文 JSON}</dd>   <!-- 仅当该节点有 depends -->
+  <dt>depends</dt><dd>{depends 原文 JSON}</dd>                        <!-- 仅当该节点有 depends -->
+  <dt>readonly</dt><dd>yes|no</dd>
   <dt>request_args</dt><dd>{args，以 " / " 连接}</dd>                  <!-- 仅当有剩余段 -->
 </dl>
+<!-- 只读会话额外一行：<p class="banner read-only">read-only：本会话对这条路径只有 read 权限（depends.acl）</p> -->
 ```
 
 - `title` 为空时回落到 `action.path`。
-- `depends` 只展示**不执行**（ACL 属 P3）；页面上的 `depends.acl` 出现即证明这件事可见。
+- `depends` 的 `fs`/`uci` 由 `satisfied` 决定、`acl` 按会话现算（见 §11.2）——三部分都真的执行。
+- `readonly` 反映本会话对**这条路径**上节点的 `depends.acl` 是否只有 read（上游
+  `resolved.node.readonly`，`dispatcher.uc:1002-1003`）。
 - 所有插值都做 HTML 转义（`request_args` 是彻头彻尾的客户端输入）。
 
 ### 5.5 CGI 模式（`--luci-cgi`，ADR 0003 的 T1）
@@ -322,9 +363,9 @@ molly 从 P3-2 起**自己提供** ubus 对象。设备上接管的前提是 rpc
 2. `set` / `unset` / `destroy`：上游**不回数据**，molly 回一个空表（信封里是 `{}`）。
 3. 过期是**惰性**的：下一次访问时清理，上游用 uloop 定时器到点销毁。可观测行为一致
    （过期会话查不到），内存回收时机不同。
-4. **ACL 来源不完整**：本轮只有 `grant`/`revoke`。`/usr/share/rpcd/acl.d/*.json` 与
-   login section 的 `read`/`write` 组加载属 **P3-6**——登录成功但 `acls` 为空，
-   P3-6 之前不要拿登录态去跑需要 ACL 的调用。
+4. **ACL 来源已完整**（P3-6 补上）：登录时按 `/usr/share/rpcd/acl.d/*.json` 与 login
+   section 的 `read`/`write` 组加载；默认/哨兵会话只吃 `unauthenticated` 组。
+   匹配细节与 `/ubus` 的前置校验见 §11。
 5. **会话不落盘**：上游把会话 freeze 到 `/var/run/rpcd/sessions/<id>`，重启后 thaw 恢复；
    molly 重启即所有会话失效。P3-9 收尾时评估。
 
@@ -489,16 +530,279 @@ molly 从 P3-2 起**自己提供** ubus 对象。设备上接管的前提是 rpc
    `glob(GLOB_PERIOD)`（那个会把 `.`/`..` 也算进结果，所以 rpcd 里有 `gl_pathc < 3` 这种
    拐弯判断）。效果等价：一个可用的 delta 文件都没有 → `5`。
 
-## 9. 契约的权威来源与验证方式
+## 9. ubus 对象契约：`file`（P3-4，8 方法全实现）
+
+权威来源：`rpcd@e37ed9d8` 的 `file.c`（8 方法）。实现 `src/backend/file_object.odin`
+（平台无关），linux 的注册在 `linux.odin`；darwin 的 `/ubus/call/file` 路由走同一实现
+（`realpath` 绑定在 `bindings/libc.odin`（linux）与 `libc_darwin.odin`（darwin））。
+
+### 9.1 方法
+
+| 方法 | 权限名 | 入参 | 成功回复 | 备注 |
+| --- | --- | --- | --- | --- |
+| `read` | `read` | `path`、`base64?` | `{"data":…}` | 空/读不到 → `5`；≥256KB → `8` |
+| `write` | `write` | `path`、`data`（缺 → 2）、`append?`、`mode?`、`base64?` | **无回复数据** | 默认 `O_TRUNC`；`mode` 只在建新文件时生效（`& 0777`，默认 0666） |
+| `list` | `list` | `path` | `{"entries":[…]}` | 每条目 **lstat**；符号链接带 `target`（`name`+stat，坏链 `type:"broken"`） |
+| `lstat` | `list` | `path` | `{"path":…, stat…}` | **不解析符号链接**（看链接本身） |
+| `stat` | `list` | `path` | `{"path":…, stat…}` | 跟随符号链接 |
+| `md5` | `read` | `path` | `{"md5":"<32 hex>"}` | 只对普通文件，其它 → `8` |
+| `remove` | `write` | `path` | **无回复数据** | **不解析符号链接**（unlink no-follow）；目录 → 递归，**每个条目单独过 write ACL**（`file.c:792`） |
+| `exec` | `exec`（路径对象）或**整条命令行字符串** | `command`、`params?`、`env?` | `{"code":N,"stdout?":…,"stderr?":…}` | 见下 |
+
+**权限名按方法各不相同**（照抄上游，`file.c:512/664/734/756/829`）：
+`read`/`md5` → `"read"`、`write`/`remove` → `"write"`、`list`/`stat`/`lstat` → `"list"`。
+注意 `stat`/`lstat` 用的也是 `"list"` 而不是 `"read"`——这是上游的实际行为，改「合理化」了 golden 就对不上。
+
+**`exec` 的语义**（`file.c:846-1203`）：
+- `command` 缺 → `2`；PATH 查找不到 → `4`（无 `PATH` 环境时用 `/bin:/usr/bin:/sbin:/usr/sbin`）。
+- **带会话的调用不允许 `env`**（`file.c:1047`，先于 ACL/查找）→ `6`。
+- ACL 两层：先查可执行文件路径（PATH 解析后）`session.access("file", <exe>, "exec")`；
+  不过再把**整条命令行**（`"exe arg1 arg2…"`，≤1024B、≤255 参数）当作第二个对象查一次——
+  所以 ACL 既可以授权「该可执行文件带任意参数」，也可以授权「这条精确命令行」。
+- 子进程：stdin → `/dev/null`，stdout/stderr → 两条管道，`execv`（**不做 shell 拼接**）；
+  参数数组里非字符串条目跳过。
+- 超时 120s（`RPC_EXEC_DEFAULT_TIMEOUT`，`exec.h:27`）→ `SIGKILL` + `7`（TIMEOUT）；
+  单条流输出超 64KB → `8`。
+- 回复：`code` 是退出码（被信号杀死 → `0xff`，上游此值未定义）；`stdout`/`stderr` 仅在
+  非空时出现。
+
+stat 类回复的字段（`file.c:634-651`）：`type`（`file`/`directory`/`symlink`/`fifo`/`socket`/
+`block`/`char`/`unknown`）、`size`、`mode`（**完整 st_mode**，含类型位）、`atime`/`mtime`/`ctime`
+（epoch 秒）、`inode`（截到 32 位）。
+
+### 9.2 路径与权限核心（所有方法共用，`file.c:180-359`）
+
+1. **文本规范化**（`file.c:189-248`，纯函数 `file_canonicalize_path`）：折掉重复 `/`、`/./`、
+   `/../`（`..` 后接 `/` 或结尾时折叠）与结尾 `/`；空路径 → `2`。
+2. **ACL 检查**（`file.c:180-187`）：`session.access("file", <规范化路径>, "read"/"write")`
+   ——复用 session 的 ACL 引擎，按路径做前缀 + `fnmatch` 匹配。
+3. **符号链接复查**（`file.c:261-359`）：`realpath` 解析后与文本路径比较，不同则对
+   **解析后的路径再查一遍 ACL**。不做第三步的话，授权目录里放个指向 `/etc/shadow` 的
+   符号链接就能绕过授权。悬空符号链接（realpath 失败）→ `6`。
+
+`read` 的成功回复：`{"data": "…", "size": N}`（`base64` 时 `data` 是编码后的文本）；
+路径不存在 → `4`，无权限 → `6`，缺 `path` → `2`。
+
+### 9.3 已知偏离（真机 golden 对比时核对）
+
+1. `exec` 是**同步**实现（在 ubus/HTTP 线程里等到进程退出，最长 120s）；上游用 uloop +
+   ubus 延迟回复异步回包、不阻塞其它请求。调用方可观测行为一致，服务端并发行为不同。
+   输出超限时 molly 会 `SIGKILL` 子进程，上游不杀（请求照样完成）。
+2. `stat` 类回复**没有** `uid`/`gid`/`user`/`group`（上游用 `getpwuid`/`getgrgid` 补用户名；
+   Odin 的 `File_Info` 不含 uid/gid）——Luci 的文件浏览主要用 type/size/mode，需要时在
+   真机 golden 对比后补 libc 绑定。
+3. `write` 用 `os.sync`（fsync 单文件），**没有**上游的全局 `sync()`；`mode` 参数只影响
+   新建文件（与上游一致），权限位映射用 Odin `Permissions` 的位号（与 unix 位一一对应）。
+4. `read`/`md5` 整文件读入内存：`md5` 没有大小上限（上游流式 `md5sum`），超大文件行为不同。
+5. ENOTDIR → `2`（与上游 `rpc_errno_status` 一致）；`list` 对普通文件回 `2` 而不是 `9`。
+
+## 10. ubus 对象契约：`luci-rpc`（P3-5，6 方法全实现）
+
+权威来源：`luci@d6167ea` 的 `libs/rpcd-mod-luci/src/luci.c`（6 方法，`luci.c:2033-2040`）。
+**对象名是 `luci-rpc`**。实现 `src/backend/luci_object.odin`（平台无关），linux 的注册在
+`linux.odin`、darwin 的 `/ubus/call/luci-rpc` 路由在 `darwin.odin`。
+
+### 10.1 已实现（S1）
+
+| 方法 | 入参 | 成功回复 | 失败码 |
+| --- | --- | --- | --- |
+| `getBoardJSON` | 无 | `/etc/board.json` 的内容原样（provider 提供） | 9 |
+| `getDHCPLeases` | `family?`（0/4/6；其它整数 → 2） | `{"dhcp_leases":[…]}` / `{"dhcp6_leases":[…]}` | 2 |
+| `getDUIDHints` | 无 | `{ "<duid>" 或 "<duid>%<iaid>": {interface?, duid, iaid?, hostname?, macaddr?} }` | — |
+
+`getDUIDHints`（`luci.c:1831-1900`）：只取 **v6 且有 duid** 的租约，按 `duid`（无 iaid）或
+`duid%iaid` 键去重；回复是以该键为键的**对象**，字段序 interface?/duid/iaid?/hostname?/macaddr?。
+复用 S1 的 leasefile 发现与解析，**可移植**（darwin 也能端到端测）。
+
+- **这两个方法没有 ACL 检查**（policy 无 session 字段，handler 也不查）。
+- `getBoardJSON` 失败（打不开/非 JSON/空对象）→ `9`。
+- `getDHCPLeases`：family **类型不符**（如字符串）按 blobmsg policy 规则当作缺省 0，
+  而不是 `2`；只有整数值不在 {0,4,6} 才回 `2`。
+- leasefile 发现（`luci.c:394-473`）：uci `dhcp` 的 `dnsmasq`/`odhcpd` section 的
+  `leasefile` option；没有对应 section → 回退 `/tmp/dhcp.leases`、`/tmp/odhcpd.leases`；
+  打不开的文件跳过。
+- 行格式与 `expires` 语义见计划 P3-5 节。两个关键点：**dnsmasq 的 ts==0 是永久（-1），
+  odhcpd 的 ts==0 是过期（0）**；`01:` 前缀的 clientid 只在行内 MAC 解析失败时才兜底
+  （上游 `if (!ea)`）。
+- 每条回复按序：`expires`（-1 与过期都渲染成 0）、`interface?`、`hostname?`、`macaddr?`、
+  `duid?`、`iaid?`、`ipaddr`/`ip6addr`（只回第一个地址）。
+
+### 10.2.1 已实现（S2b，linux-only）
+
+`getNetworkDevices`（`luci.c:648-896`）：逐 `/sys/class/net` 条目生成一张表（键是设备名）：
+`name`、bridge 族的 `bridge`/`ports`/`id`/`stp`（brif 目录存在时）、`master`、`wireless`、
+`up`、`mtu?`、`qlen?`、`devtype`（uevent 的 DEVTYPE=，缺省 "ethernet"）、
+`ipaddrs[]`/`ip6addrs[]`（getifaddrs：address/netmask/remote?/broadcast?）、
+`mac?`/`type`/`ifindex`/`parent?`（AF_PACKET，第一个匹配项）、
+`stats`（十个 u64 计数器）、`flags`（七个位）、`link`（speed?/duplex?/carrier/changes/up_count/down_count）。
+
+实现细节与偏离：
+- 新绑定 `getifaddrs`/`freeifaddrs`（`bindings/libc.odin`，linux-only）。
+- **iwinfo 字段未实现**（上游 dlopen libiwinfo 给无线设备加 hwmodes/crypto 等）——
+  无线设备的 golden 对比会缺这些键，S2b′ 补。
+- sysfs 文件打不开时按空串处理（与上游 readstr 一致，个别字段因此有上游同款的怪值，
+  如 bridge 无 stp_state 时 stp=1）。
+- darwin 回 `8`（无 sysfs；与 uci 写路径同一决策）。
+
+### 10.2.2 已实现（S2c，linux-only）
+
+`getWirelessDevices`（`luci.c:1098-1190`）：**对 netifd `network.wireless status` 的代理**
+——`ubus_lookup_id("network.wireless")` + `ubus_invoke("status")`，把结果重塑为
+「radio 名 → 该 radio 的字段」：跳过 `iwinfo` 键、`interfaces` 数组逐条去掉 `iwinfo`、
+其余原样。netifd 对象不存在 → `4`（上游 `:1187`）。
+
+实现细节与偏离：
+- molly 用**同步** `ubus_invoke`（`bindings.ubus_invoke_fd`，在 ubus 服务线程里等回包）；
+  上游用 async + `defer_request` 延迟回复（避免在方法回调里重入 uloop）。调用方可观测
+  行为一致，服务端并发行为不同。
+- **iwinfo（S2b′/S2c′）已实现**：`src/backend/iwinfo.odin` 运行时 dlopen
+  `/usr/lib/libiwinfo.so*` + dlsym（`iwinfo_backend`/`iwinfo_close`/`iwinfo_format_hwmodes`
+  与六张名字表），按接口（`phy_only=false`）与 radio（`phy_only=true`）两次取字段：
+  signal/noise/channel/country/phy/txpower(+offset)/frequency(+offset)、`hwmodes`+`hwmodes_text`、
+  `htmodes`、`hardware{id[],name}`、station 级的 quality/quality_max/bitrate/mode/ssid/bssid、
+  `encryption{enabled, wep[]|wpa[]+authentication[], ciphers[]}`。
+  **注意**：iwinfo 只在 `getWirelessDevices` 里用，`getNetworkDevices` 不调它。
+- **版本敏感 + 失效保护**：`struct iwinfo_ops` 的字段顺序与名字表长度随 iwinfo 版本变
+  （本实现按 iwinfo master 的 `include/iwinfo.h` 对齐）。为保证**绝不吐垃圾**：
+  `ops.name` 必须是已知后端名（wext/nl80211/madwifi/wl/unknown），且 hwmodes 位不越过
+  80211 表、mode 落在 OPMODE 表内——任一不满足就当作「没有 iwinfo」，一个字段都不加
+  （与上游 dlopen 失败同路）。真机 golden 对比要专门核对这条。
+- linux-only；darwin 回 8（darwin 的 provider 直接返回，不碰 iwinfo）。
+
+### 10.2.3 已实现（S2d，linux-only）
+
+`getHostHints`（`luci.c:1192-1828`）：五源按优先级合并（**数字越大越靠前**）——
+netlink 邻居表 10、`/etc/ethers` 50、dhcp 租约 100、getifaddrs 200、uci 静态租约 250。
+回复是以 **MAC 文本为键**的对象：`{ipaddrs:[v4 文本], ip6addrs:[v6 文本], name?}`；
+同族地址按（prio DESC，地址字节 ASC）排序，同一地址保留优先级更高者。
+
+实现细节与偏离：
+- **netlink 用裸 socket**（`RTM_GETNEIGH` dump + 自己解 nlmsghdr/ndmsg/nlattr），不引
+  libnl——少一个设备端运行时依赖。过滤：family v4/v6，`state & ~NUD_NOARP != 0`。
+- **rrdns**（`network.rrdns` `lookup`）同步调用补主机名：v6 只在缺主机名时填、v4 **覆盖**；
+  对象不存在时静默跳过（与上游 `invoke` 失败同样继续）。
+- **照抄的上游行为**：uci 静态租约的 `ip` **实际从不生效**——上游类型判断写成
+  `!= UCI_TYPE_STRING`（`:1499-1503`），正常 STRING 选项必然走 else → 不添加地址；
+  所以静态租约只贡献 MAC + hostname。golden 对比会看到这一点。
+- linux-only（netlink/ifaddrs）；darwin 回 8。
+
+**S2b 的修正**：`sockaddr_ll` 的字段偏移第一版写错了（把 `sll_protocol` 当 `hatype`、
+`ifindex` 取错位置）——真实布局是 family 0-1 / protocol 2-3 / ifindex 4-7 / hatype 8-9 /
+pkttype 10 / halen 11 / addr 12-19（`linux/if_packet.h`），S2d 实现 ifaddrs 来源时发现并
+一并修正（同一次提交）。
+
+### 10.3 已知偏离（真机 golden 对比时核对）
+
+1. IPv6 地址校验是**宽松**的（至少两个冒号 + hex），上游 `inet_pton` 严格——只影响
+   「跳过非法行」的判定，租约文件是机器写的。
+2. `duid2ea` 只实现了 DUID-LLT（`00010001`，len 28）与 `00030001`（len 20）两种；
+   上游 switch 里可能还有其它 case，真机 golden 发现后补。
+3. 输出超限、缓冲行为等 blobmsg/ustream 细节不适用（molly 直接回 JSON 文本）。
+
+## 11. 入站 ACL（P3-6，molly 自持 `/usr/share/rpcd/acl.d/*.json`）
+
+权威来源：`rpcd@e37ed9d8` 的 `session.c`（`rpc_login_setup_acls` `:1112-1125`、ACL 匹配引擎）
+与上游 uhttpd 的 `ubus.c`（`json_errors` `:80-106`、`uh_ubus_allowed`）。实现分两层：
+`src/backend/session.odin`（**S1**：acl.d 加载 + 匹配）、
+`src/handlers/ubus_http.odin`（**S2**：`/ubus` 入口的前置校验）。
+
+### 11.1 S1：acl.d 的加载与匹配
+
+- **加载时机**：`login` 成功后按登录 section 的 `read`/`write` 组列表加载；**默认/哨兵会话**
+  （没有 login section）只加载 `unauthenticated` 组——所以 `login` 本身也要先过前置校验。
+- **组名匹配**：`fnmatch`（`luci-n*` 命中 `luci-network`）；`!` 前缀取反（`!luci-base`
+  即使出现在 read 列表里，问 write 也被拒）；**write 蕴含 read**。
+- **一份 acl.d 里两种形态都要认**：
+  - 表形态 `"ubus": { "file": [ "list" ] }` → scope `ubus`、object `file`、functions = 列表；
+  - 数组形态 `"uci": [ "system", "luci" ]` → scope `uci`、object = 数组元素、
+    function 就是权限名（`read`/`write`）。
+- **`access-group` 元 scope**（`session.c:1101-1103`）：组名自身也被授一条，供反查。
+- ACL 与 `grant`/`revoke` 写进**同一张表**（`scope → object → [function]`）——
+  `session.access` 不带 `object` 时回的就是这张表。
+
+### 11.2 S2：`/ubus` 的前置校验（fail-closed）
+
+上游 uhttpd 的顺序，逐条对齐：
+
+1. 对象查找失败 → `-32000`；
+2. `uh_ubus_allowed(sid, <对象>, <方法>)` 不过 → `-32002`（`Access denied`）；
+3. 才轮到参数表校验 → `-32602`。
+
+判定委托 session 的 ACL 引擎（scope `"ubus"`，object = ubus 对象名、function = 方法名）。
+**fail-closed**：会话表里查不到 sid（例如已销毁）一律 `-32002`，不是放行。
+
+与对象层 `6` 的区别：`-32002` 是**入口层**拒绝（HTTP 上是 JSON-RPC 的 `error.code`），
+`6` 是**对象自己**的 `session.access` 拒绝（如 `uci`/`file` 各自的权限名检查）。
+
+### 11.3 第三层：dispatcher 的 `depends.acl` 裁树（P3-6 收尾）
+
+上游把 `depends.acl` 折进 `node.satisfied` / `node.readonly`（`apply_tree_acls`，`:435-445`），
+但 molly 的菜单树是**跨请求缓存**的（`g_cache` + arena），会话相关的状态不能写在节点上——
+所以改成**每请求按 sid 现算**（`src/luci/menu.odin` 的 `node_visible` / `node_acl_missing`）：
+
+| 会话对要求的组 | 上游 | molly（`/cgi-bin/luci`） |
+| --- | --- | --- |
+| 一个都没拿到 | `check_acl_depends` → `null`，`satisfied=false`（裁出菜单） | 该节点**对本会话不可见**：直接请求 → `404`；`firstchild` 竞选跳过它 |
+| 只有 read | `false`，节点保留、`readonly = true` | 可见；页面 `<dt>readonly</dt><dd>yes</dd>` + 只读提示横幅 |
+| 任一组有 write | `true` | 正常（`readonly=no`） |
+
+- **会话来源**：LuCI 写的 cookie（`sysauth_http` / `sysauth_https`，上游 `:963-966`），由
+  `src/handlers/cgi_luci.odin` 解析后交给 `luci.dispatch`；没有 cookie 就是「无会话」。
+- **判权口径**：路径上所有节点的组名取**并集**（上游 `ctx.acls`），其中**任一**有 write 就不算
+  只读（上游 `check_acl_depends` 返回的是 `writable`）。
+- **`firstchild` 当选的那条支路**也并进并集（上游 `resolve_firstchild` 里的 `ctx_append`）。
+- **授权按键精确命中**：`access-group` 的名字就是 acl.d 的文件名，不套 `fnmatch`（上游查的是
+  acl dump 映射的键）。
+- 判定入口是 `backend.session_acl_level(sid, groups)`，三态 `Missing` / `Read_Only` / `Writable`
+  与上游 `null` / `false` / `true` 一一对应。
+
+### 11.4 测试与 fixture
+
+`tests/fixtures/acl.d/`（darwin 的 `session_acl_dir()` 指向它）三个文件：
+`unauthenticated.json`（真机同款：只授 `session` 的 `access`/`login`）、
+`luci-base.json`（真机 `luci-base` 的裁剪版）、`smoke-full.json`（**测试专用组，真机不存在**：
+把 `/ubus` 的前置校验放行，好让既有断言继续验各对象的对象级语义）。
+
+单元：`src/backend/session_test.odin` 的 `test_session_login_test_permission`
+（组列表判定：`fnmatch`、`!` 取反、write 蕴含 read）、`test_session_load_acls_from_fixtures`
+（表/数组两种形态）、`test_session_default_session_acls`（哨兵会话只有 unauthenticated）；
+`src/luci/menu_test.odin` 的 `test_acl_prunes_and_readonly` 与
+`test_acl_first_child_skips_and_marks_readonly`（同一棵缓存树、不同会话给出不同可见性/只读）。
+
+`tests/http_smoke.sh` 的 dispatcher 节：带 cookie 的登录会话用 `-b "sysauth_http=$P2SID"`，
+并有一小节专门验「无 cookie → 404 / 只读会话 → 200 + `readonly=yes` / 撤销 write 后恢复可见」。
+
+### 11.5 已知偏离（真机 golden 对比时核对）
+
+1. **缺组时的状态码**：上游在「节点已经被算进 `ctx.path`」这个角上会回 `403 Forbidden`
+   （`dispatcher.uc:996-1000`）；molly 把缺组一律当「节点不可见」→ `404`。上游下降时
+   `!satisfied` 就 `break`，所以那条 403 分支实际上很难走到；molly 的模型里两者同源，
+   语义更自洽。真机 golden 对比时留意这个差异。
+2. **登录页不在这里**：上游 dispatcher 自己渲染 `sysauth` 视图并 `Set-Cookie`
+   （`:955-970`）；molly 的内置 dispatcher 只认**既有** cookie（登录页属 `--luci-cgi` 的
+   ucode 侧，ADR 0003）。所以无会话访问带 `depends.acl` 的路径得到的是 404，而不是跳登录页。
+3. **测试专用组**：`smoke-full.json` 在真机上不存在，golden 对比时会看到差异。
+4. **ACL 的存储格式**：molly 沿用 JSON 化的 `acls`（上游是 blobmsg 数组），
+   对 `session.access` 的可观测结果一致。
+5. **写单元测试时不要用 fixture 的 root 登录去断言「未授权 = false」**：root 的
+   `read/write = '*'`（与真机 `rpcd.config` 的默认值一致）在 P3-6 起会把 acl.d 里的
+   **全部**组加载进来，包括测试专用的 `smoke-full`（`ubus: *`）——那样任何 `access`
+   都是 `true`。要测「acl.d 驱动的窄 ACL」，用 `acl_test_login` 自己构造窄列表
+   （见 `session_test.odin` 的 `test_session_acl_grant_revoke_access`）。
+
+## 12. 契约的权威来源与验证方式
 
 | 契约 | 权威来源 | molly 的验证 |
 |---|---|---|
 | `/ubus` 各形态、错误码、会话来源 | 上游 uhttpd 的 `ubus.c`（25.12.2 对应提交） | `tests/http_smoke.sh` 的 `/ubus` 两节 + `-32000/-32601/-32700/-32602` 断言 |
-| dispatcher 语义 | `modules/luci-base/ucode/dispatcher.uc`（luci `d6167ea`） | `tests/http_smoke.sh` 的 dispatcher 节 + `src/luci/menu_test.odin` + `.ai-memory/r8_probe.py` |
+| dispatcher 语义（建树、`depends.fs`/`uci`、firstchild、通配、alias、**`depends.acl` 裁树与只读**） | `modules/luci-base/ucode/dispatcher.uc`（luci `d6167ea`） | `tests/http_smoke.sh` 的 dispatcher 节 + `src/luci/menu_test.odin` + `.ai-memory/r8_probe.py` |
 | HTTP 层上限与 keep-alive | uhttpd 行为（部分自定，风险 R7） | `tests/http_smoke.sh` 的「上限与错误码」「keep-alive」「管道请求」节 |
 | 静态文件与 MIME | uhttpd 行为 | `tests/http_smoke.sh` 静态节 + `src/http/mime_test.odin` |
+| `luci-rpc` 对象（6 方法：board/leases/duid/network/wireless/host hints） | `luci@d6167ea` 的 `luci.c` | `src/backend/luci_object_test.odin`（4 用例组）+ `tests/http_smoke.sh` 的「P3-5 luci-rpc 对象」节（17 项）；S2b/c/d 三个设备绑定方法只能交叉编译 + 设备验证 |
+| `file` 对象（8 方法、各方法的权限名、符号链接复查、exec 的两层 ACL） | `rpcd@e37ed9d8` 的 `file.c` | `src/backend/file_object_test.odin`（2 用例组）+ `tests/http_smoke.sh` 的「P3-4 file 对象」节（26 项） |
 | `uci` 对象（S1：`configs`/`get` 的回复形状、`.index`、`match`/`type`、ACL 钩子；S2：`changes` 的三形态、`state`/`commit`/`revert` 的状态码、savedir 清理；S3：五个写操作的参数校验、写计划与错误聚合；S4：apply 系的中性路径（5/4/2 与状态码顺序）） | `rpcd@e37ed9d8` 的 `uci.c` | `src/backend/uci_object_test.odin` + `uci_write_test.odin`（11 用例组）+ `tests/http_smoke.sh` 的「P3-3 uci 对象」节（36 项） |
-| `session` 对象（10 方法、状态码、dump 形状、ACL 匹配） | `rpcd@e37ed9d8` 的 `session.c` | `src/backend/session_test.odin`（10 用例）+ `tests/http_smoke.sh` 的「P3-2 session 对象」节（13 项） |
+| `session` 对象（10 方法、状态码、dump 形状、ACL 匹配） | `rpcd@e37ed9d8` 的 `session.c` | `src/backend/session_test.odin`（11 用例）+ `tests/http_smoke.sh` 的「P3-2 session 对象」节（13 项） |
+| 入站 ACL（acl.d 两种形态与加载、`!` 取反、`/ubus` 前置校验顺序与 `-32002`、dispatcher 的 `depends.acl` 裁树与只读） | `rpcd@e37ed9d8` 的 `session.c` + 上游 uhttpd 的 `ubus.c` + `dispatcher.uc` 的 `check_acl_depends` | `src/backend/session_test.odin`（3 用例）+ `src/luci/menu_test.odin`（2 用例）+ `tests/http_smoke.sh` 的 `/ubus`、P3-2、dispatcher 三处 ACL 断言 |
 | 真机 golden 对比 | 原厂固件响应样本 | **待第 7 步**（替换前须先在设备上抓全量样本存档） |
 
 其它文档：[`build-and-run.md`](build-and-run.md)（配置与部署运行）、

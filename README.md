@@ -20,18 +20,25 @@
 | P2 第 6b 步 | dispatcher 语义对齐：spec 逐键处理、`depends.fs` 四类型 / `depends.uci` 全形态、通配 `wildcardaction`（对齐上游 `dispatcher.uc`） | 已完成 |
 | P2 第 7 步 | 真机联调与 RSS 压测 | 待设备 |
 | P3-1 | ubus 服务线程（专用 uloop 线程）+ 探针对象 `molly.probe` | 已完成（设备验收待做） |
-| P3-2 | `session` 对象（十方法，契约按 `rpcd@e37ed9d8` 的 `session.c`）：molly 自持会话、ACL 匹配、login | 已完成（真实 `/etc/shadow`+`crypt` 路径待真机；ACL 的 `acl.d` 加载属 P3-6） |
+| P3-2 | `session` 对象（十方法，契约按 `rpcd@e37ed9d8` 的 `session.c`）：molly 自持会话、ACL 匹配、login | 已完成（真实 `/etc/shadow`+`crypt` 路径待真机；`acl.d` 加载已由 P3-6 补上） |
+| P3-4 | `file` 对象：8 方法全实现（路径规范化 + ACL + 符号链接复查；`exec` 同步版，PATH 查找 + 两层 ACL + 120s 超时） | 已完成（真机 golden 待对比） |
 | P3-3 | `uci` 对象：**15 个方法在 linux 上全部实现**（S1 只读、S2 delta、S3 五个写操作、S4 apply 系含 60s 回滚窗口）。写路径与 apply 系按决策只在 linux 上实现，**尚未真机验证**；darwin 上平台相关路径回 4/5/8 | 已完成（待真机验证） |
+| P3-5 | `luci-rpc` 对象：6 方法全实现 + iwinfo（dlopen libiwinfo，带版本失效保护） | 已完成（真机 golden 待对比） |
+| P3-6 | 入站 ACL：自持 `/usr/share/rpcd/acl.d/*.json`（权限组 + `!` 取反 + 表/数组两形态）+ `/ubus` 前置校验（对象查找 `-32000` → ACL `-32002` → 参数 `-32602`，fail-closed）+ dispatcher 的 `depends.acl` 裁树（缺组 → 404；只有 read → 只读） | 已完成（真机 golden 待对比） |
 | P3-8″-T1 | `/cgi-bin/luci` 子进程桥接（复刻 uhttpd 的 ucode CGI 兜底形态，`--luci-cgi`） | 已完成（设备 golden 对比待做） |
-| P3 | 继续：`uci`/`file`/`luci` 对象、入站 ACL（P3-6）、`/ubus/subscribe` SSE（P3-7） | 进行中 |
+| P3-7 | `/ubus/subscribe`（SSE：ACL 点 `:subscribe` + 事件总线 + 分帧推送；linux 侧真 ubus 订阅已实现，darwin 侧端到端可验） | 已完成（linux 的真订阅待真机验证） |
+| P3-9 | 收尾：移除 transitional 模式（启动 WARN）、真机验收脚本（`tests/device_smoke.sh` + `tests/golden.sh`）、P4 清单 | 代码侧已完成（真机项待跑） |
+| P3 | 继续：真机 golden 轮（`./tests/golden.sh device <host>` → 接管 → `compare`）与 `./tests/device_smoke.sh` | 进行中 |
 
-> **过渡期提示（务必先读）**
-> P3-1 起 molly 会注册 `molly.probe`；**P3-2 起 molly 能自己提供 `session` 对象**，但设备上 rpcd 还在跑时
-> 同名对象注册会失败（非致命，只打一行日志）——要接管就先 `/etc/init.d/rpcd stop`。
-> `uci`/`file`/`luci` 仍由 rpcd 提供（P3-3…P3-5），启动时会打印
-> `WARN: transitional mode - ubus objects still provided by device rpcd`。
-> 入站 ACL 尚未实施（P3-6），dispatcher 的占位页会带「ACL 未实施」横幅：**不要**把这个阶段的产物
-> 当成可对外暴露的服务。
+> **接管步骤（务必先读）**
+> molly 现在自己提供 `session`/`uci`/`file`/`luci-rpc`（P3-2…P3-5）、`/ubus` 的**入站 ACL**
+> （P3-6，按 `/usr/share/rpcd/acl.d/*.json`，含 dispatcher 的 `depends.acl` 裁树）与
+> `/ubus/subscribe` 的 SSE（P3-7）。设备上 rpcd 还占着同名对象时，molly 的注册会失败
+> （非致命，**逐对象**打一行诊断）——要接管就先 `/etc/init.d/rpcd stop`，再重启 molly。
+> 接管后跑 `./tests/device_smoke.sh` 一把验收（含真实 crypt 登录、uci 写路径、SSE）。
+> 启动时不再有「transitional mode」这回事（P3-9 删掉了那条 WARN）。
+> 生产渲染走 ADR 0003 的 `--luci-cgi`（设备 ucode），内置 dispatcher 是对照实现；
+> 两者都还没有**登录页**（无会话访问带 ACL 的路径是 404，不是跳登录）。
 
 ## 快速开始
 
@@ -54,8 +61,8 @@ curl -s               http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview  
 门禁（按顺序，见 `AGENTS.md` §4.1）：
 
 ```bash
-./tests/unit.sh                                          # 单元测试：odin test（47 个用例 / 4 个包）
-./tests/http_smoke.sh                                    # 集成 + 接口验收 191 项（内置 dispatcher 模式）
+./tests/unit.sh                                          # 单元测试：odin test（65 个用例 / 4 个包）
+./tests/http_smoke.sh                                    # 集成 + 接口验收 259 项（内置 dispatcher 模式）
 ./tests/cgi_smoke.sh                                     # /cgi-bin/luci 子进程桥接验收 30 项（桩 CGI，无需 ucode）
 ```
 
@@ -64,7 +71,7 @@ curl -s               http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview  
 - `--menu-dir` 默认 `/usr/share/luci/menu.d`；macOS 上要显式指向 `tests/fixtures/menu.d`。
 - `--luci-cgi` 非空时，`/cgi-bin/luci` **整个前缀**交给该子进程执行；设备上填
   `"/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc"` 即复刻 uhttpd 的 `ucode_prefix` 接线（ADR 0003）。
-  留空则用内置的 Odin dispatcher：只出占位页（带「ACL 未实施」横幅），认证 / ACL / 渲染属 P3。
+  留空则用内置的 Odin dispatcher：只出占位页（会按会话 ACL 裁树、标只读），模板渲染仍属 P3。
 
 目标机产物（`build/molly` 是 aarch64 ELF）：
 

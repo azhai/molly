@@ -2,6 +2,7 @@ package backend
 
 import "base:runtime"
 import "core:encoding/json"
+import "core:fmt"
 import "core:mem"
 import "core:strings"
 import "core:os"
@@ -24,6 +25,7 @@ import "core:time"
 //
 // 本文件是**平台无关**的逻辑；两个平台特有的东西由 provider 提供同名 proc：
 //   session_verify_password(hash, password, alloc) -> bool   （linux: shadow+crypt；darwin: 测试替身）
+//   session_acl_dir() -> string                              （linux: /usr/share/rpcd/acl.d；darwin: fixtures）
 // ACL 的来源（acl.d/*.json）与 uhttpd 侧的前置校验属 P3-6：本轮 login 只建立会话与
 // data.username，acls 只有 grant/revoke 与后续 P3-6 填。
 // ---------------------------------------------------------------------------
@@ -194,7 +196,8 @@ session_do_get :: proc(params: json.Object, alloc: mem.Allocator) -> (string, in
 		return "", SESSION_STATUS_NOT_FOUND
 	}
 
-	values := json.Object{}
+	// 显式带 alloc：零值 map 的插入会落到 context.allocator（设备上每请求泄漏）
+	values := make(json.Object, len(ses.data), alloc)
 	if keys, has_keys := params["keys"]; has_keys {
 		// 只挑 keys 里出现的、且值类型是字符串的键（session.c:729-742）
 		if arr, is_arr := keys.(json.Array); is_arr {
@@ -383,7 +386,8 @@ session_do_login :: proc(params: json.Object, alloc: mem.Allocator) -> (string, 
 		return "", SESSION_STATUS_INVALID_ARGUMENT
 	}
 
-	if !session_login_check(username, password, alloc) {
+	login, ok := session_login_check(username, password, alloc)
+	if !ok {
 		return "", SESSION_STATUS_PERMISSION_DENIED
 	}
 
@@ -397,34 +401,183 @@ session_do_login :: proc(params: json.Object, alloc: mem.Allocator) -> (string, 
 		return "", SESSION_STATUS_UNKNOWN_ERROR
 	}
 	ses.data["username"] = session_marshal(json.Value(json.String(username)), session_store_allocator())
+
+	// session.c:1204：会话建立后按 login section 的 read/write 组加载 acl.d
+	session_load_acls(ses, login, session_store_allocator())
+
 	return session_dump(ses, true, alloc), SESSION_STATUS_OK
 }
 
 // /etc/config/rpcd 的 login section 校验（session.c:855-924）。
 // 没有匹配的 login section → 拒绝（这正是「默认配置里 root/$p$root」能用的原因）。
 @(private)
-session_login_check :: proc(username, password: string, alloc: mem.Allocator) -> bool {
+session_login_check :: proc(username, password: string, alloc: mem.Allocator) -> (^Uci_Section, bool) {
 	sections, ok := uci_config_sections("rpcd", alloc)
 	if !ok {
-		return false
+		return nil, false
 	}
-	for s in sections {
+	for i in 0 ..< len(sections) {
+		s := &sections[i]
 		if s.type_name != "login" {
 			continue
 		}
-		name, has_name := section_option_string(s, "username")
+		name, has_name := section_option_string(s^, "username")
 		if !has_name || name != username {
 			continue
 		}
-		hash, has_hash := section_option_string(s, "password")
+		hash, has_hash := section_option_string(s^, "password")
 		if !has_hash {
 			continue // 没有 password 选项 → 这一条不匹配（session.c:910-915）
 		}
 		if session_verify_password(hash, password, alloc) {
-			return true
+			return s, true
 		}
 	}
+	return nil, false
+}
+
+// ---------------------------------------------------------------------------
+// acl.d 加载（session.c:990-1125）
+//
+// `/usr/share/rpcd/acl.d/*.json` 的格式：
+//   { "<组名>": { "description": "...",
+//                 "read":  { "<scope>": { "<object>": ["<function>", …] } },
+//                 "write": { … } } }
+// scope 的值有两种形态：
+//   **表**（上面这种，显式列 object→functions）；
+//   **数组**（`"uci": ["system","luci"]`）——此时函数名就是权限名（read/write）本身。
+// 组是否生效取决于 login section 的列表选项：`list read '<组名>'` / `list write '<组名>'`
+// （`rpc_login_test_permission`，支持 `!组名` 取反与 fnmatch）。
+// 另外每个生效的 (组, 权限) 还会 grant 到元 scope `access-group`
+// （格式 `{"<组名>": ["<权限>"]}`），供前端查「这个会话属于哪些组」。
+// ---------------------------------------------------------------------------
+
+// rpc_login_test_permission（session.c:930-990）：
+//   login == NULL（默认会话）→ 只认 "unauthenticated" 组；
+//   先看列表里的 `!pattern`，命中即**拒绝**；再看正模式，命中即**允许**；
+//   都没命中且求的是 read → 用 write 再问一遍（**write 蕴含 read**）。
+@(private)
+session_login_test_permission :: proc(login: ^Uci_Section, perm, group: string) -> bool {
+	if login == nil {
+		return group == "unauthenticated"
+	}
+
+	for o in login.options {
+		if !o.is_list || o.name != perm {
+			continue
+		}
+		// 取反的模式优先判定
+		for v in o.values {
+			if len(v) == 0 || v[0] != '!' {
+				continue
+			}
+			p := strings.trim_space(v[1:])
+			if len(p) == 0 {
+				continue
+			}
+			if fnmatch(p, group) {
+				return false
+			}
+		}
+		for v in o.values {
+			if len(v) == 0 || v[0] == '!' {
+				continue
+			}
+			if fnmatch(v, group) {
+				return true
+			}
+		}
+	}
+
+	// write 蕴含 read
+	if perm == "read" {
+		return session_login_test_permission(login, "write", group)
+	}
 	return false
+}
+
+// rpc_session_grant 的等价物（session.odin 里已有 session_acl_grant）
+@(private)
+session_load_acl_file :: proc(ses: ^Session, login: ^Uci_Section, path: string, alloc: mem.Allocator) {
+	data, err := os.read_entire_file(path, alloc)
+	if err != nil {
+		return
+	}
+	doc: json.Value
+	if jerr := json.unmarshal(data, &doc, .JSON, alloc); jerr != nil {
+		return // 解析失败只跳过这个文件（上游打一行 stderr，见 session.c:1051-1054）
+	}
+	groups, is_obj := doc.(json.Object)
+	if !is_obj {
+		return
+	}
+
+	for group_name, group_val in groups {
+		group, group_ok := group_val.(json.Object)
+		if !group_ok {
+			continue
+		}
+		// 只认 read / write 两个权限对象
+		for perm in ([]string{"read", "write"}) {
+			perm_val, has := group[perm]
+			if !has {
+				continue
+			}
+			perm_obj, perm_ok := perm_val.(json.Object)
+			if !perm_ok {
+				continue // 上游要求 TABLE（session.c:1060-1061）
+			}
+			if !session_login_test_permission(login, perm, group_name) {
+				continue
+			}
+
+			for scope_name, scope_val in perm_obj {
+				#partial switch sv in scope_val {
+				case json.Object:
+					// 表形态：object → [function…]
+					for obj_name, funcs_val in sv {
+						funcs, funcs_ok := funcs_val.(json.Array)
+						if !funcs_ok {
+							continue
+						}
+						for fv in funcs {
+							if f, is_str := fv.(json.String); is_str {
+								session_acl_grant(ses, scope_name, obj_name, string(f), alloc)
+							}
+						}
+					}
+				case json.Array:
+					// 数组形态：object 列表，函数名 = 权限名本身
+					for ov in sv {
+						if o, is_str := ov.(json.String); is_str {
+							session_acl_grant(ses, scope_name, string(o), perm, alloc)
+						}
+					}
+				case:
+					// 其它类型跳过（上游只在 TABLE/ARRAY 两种里做）
+				}
+			}
+
+			// access-group 元 scope（session.c:1101-1103）
+			session_acl_grant(ses, "access-group", group_name, perm, alloc)
+		}
+	}
+}
+
+// rpc_login_setup_acls（session.c:1112-1125）：glob `session_acl_dir()/*.json` 逐个加载。
+// login == nil 时（默认/哨兵会话）只有 unauthenticated 组会生效。
+session_load_acls :: proc(ses: ^Session, login: ^Uci_Section, alloc: mem.Allocator) {
+	dir := session_acl_dir()
+	entries, err := os.read_directory_by_path(dir, -1, alloc)
+	if err != nil {
+		return // 目录不存在：与上游 glob 失败同路，一个组都不给
+	}
+	for e in entries {
+		if e.name == "." || e.name == ".." || !strings.has_suffix(e.name, ".json") {
+			continue
+		}
+		session_load_acl_file(ses, login, fmt.aprintf("%s/%s", dir, e.name, allocator = alloc), alloc)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +687,84 @@ session_random_sid :: proc(alloc: mem.Allocator) -> (string, bool) {
 // ---------------------------------------------------------------------------
 
 // scope 命中 + 前缀剪枝 + fnmatch(object) + fnmatch(function)。
+// HTTP 侧（/ubus 的 uhttpd 那道前置校验，uh_ubus_allowed）用的入口：
+// sid 取不到会话 → false（上游 fail-closed：session.access 对未知 sid 回 access=false）。
+session_access_ubus :: proc(sid, object, function: string) -> bool {
+	// 与 session_call 同一把锁：这条路径由 HTTP 线程走，会和 ubus 线程的
+	// session_call 并发读同一个 store。
+	sync.lock(&g_session_lock)
+	defer sync.unlock(&g_session_lock)
+
+	// 哨兵（默认）会话是懒创建的（session_call 里那一次）——前置 ACL 校验会**先于**
+	// 任何 session_call 发生（连 login 都要先过这道），所以这里也兜一次。
+	session_ensure_default()
+
+	ses := session_get(sid)
+	if ses == nil {
+		return false
+	}
+	return session_acl_allowed(ses, "ubus", object, function)
+}
+
+// `depends.acl` 的三态，对齐上游 `check_acl_depends`（dispatcher.uc:312-331）：
+//   Writable  → true  （要求的组里**至少一个**拿到了 write）→ 正常
+//   Read_Only → false （全组都只有 read）                    → 节点可见但只读
+//   Missing   → null  （有组一个都没拿到）                   → 节点裁掉 / 403
+Acl_Level :: enum {
+	Missing,
+	Read_Only,
+	Writable,
+}
+
+// 会话对 `depends.acl` 列出的组的权限档位。groups 为空 = 该节点没有 acl 要求 → Writable。
+//
+// 上游查的是 acl dump 里的 `access-group` 映射**按键精确命中**（`'read' in groups?.[group]`），
+// 不走 fnmatch——组名就是 acl.d 的文件名，不会有通配。sid 取不到会话 → Missing（fail-closed，
+// 与 session_access_ubus 同一取舍：没登录就什么组都没有）。
+session_acl_level :: proc(sid: string, groups: []string) -> Acl_Level {
+	if len(groups) == 0 {
+		return .Writable
+	}
+
+	// 与 session_call 同一把锁：这条路径由 HTTP 线程走（dispatcher 的菜单裁树）。
+	sync.lock(&g_session_lock)
+	defer sync.unlock(&g_session_lock)
+
+	session_ensure_default()
+
+	ses := session_get(sid)
+	if ses == nil {
+		return .Missing
+	}
+	entries, found := ses.acls["access-group"]
+	if !found {
+		return .Missing
+	}
+
+	writable := false
+	for g in groups {
+		read := acl_group_has(entries, g, "read")
+		write := acl_group_has(entries, g, "write")
+		if !read && !write {
+			return .Missing // 上游：任一组缺失即 null
+		}
+		if write {
+			writable = true
+		}
+	}
+	return writable ? .Writable : .Read_Only
+}
+
+@(private)
+acl_group_has :: proc(entries: [dynamic]Acl_Entry, group, perm: string) -> bool {
+	for e in entries {
+		if e.object == group && e.function == perm {
+			return true
+		}
+	}
+	return false
+}
+
 @(private)
 session_acl_allowed :: proc(ses: ^Session, scope, object, function: string) -> bool {
 	entries, found := ses.acls[scope]
@@ -808,7 +1039,8 @@ session_dump :: proc(ses: ^Session, with_acls: bool, alloc: mem.Allocator) -> st
 		doc["acls"] = parse_json_value(acls_text, alloc)
 	}
 
-	values := json.Object{}
+	// 同上：零值 map 的插入走 context.allocator，必须显式带 alloc
+	values := make(json.Object, len(ses.data), alloc)
 	for key, text in ses.data {
 		values[key] = parse_json_value(text, alloc)
 	}
@@ -842,6 +1074,9 @@ session_dump_acls_json :: proc(ses: ^Session, alloc: mem.Allocator) -> string {
 			list, found := functions[e.object]
 			if !found {
 				append(&order, e.object)
+				// 从 map 取出的零值 dynamic array **不带分配器**，直接 append 会落到
+				// context.allocator（设备上每次 dump 泄漏、单测里报 `leak`）——显式建。
+				list = make([dynamic]json.Value, 0, 4, alloc)
 			}
 			append(&list, json.Value(json.String(e.function)))
 			functions[e.object] = list
@@ -881,7 +1116,8 @@ urandom_read :: proc(buf: []byte) -> bool {
 
 // 惰性建默认会话（session.c:1380-1390：启动时建 000…0 并挂 unauthenticated 组）。
 // 默认会话 timeout = 0（永不过期），且不可被 destroy（见 session_do_destroy）。
-// P3-6 会在这里补 acl.d 的 unauthenticated 组；本轮 ACL 为空。
+// 默认（哨兵）会话：session.c:1380-1387 用 `rpc_login_setup_acls(ses, NULL)`，
+// 即**只**加载 acl.d 里的 `unauthenticated` 组（rpc_login_test_permission 的 login==NULL 分支）。
 @(private)
 session_ensure_default :: proc() {
 	alloc := session_store_allocator()
@@ -896,5 +1132,6 @@ session_ensure_default :: proc() {
 	ses.timeout = 0
 	ses.data = make(map[string]string, 0, alloc)
 	ses.acls = make(map[string][dynamic]Acl_Entry, 0, alloc)
+	session_load_acls(ses, nil, alloc)
 	g_sessions[ses.id] = ses
 }

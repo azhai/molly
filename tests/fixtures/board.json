@@ -1,0 +1,22 @@
+{
+	"model": {
+		"id": "molly-mock",
+		"name": "Molly Mock Board"
+	},
+	"network": {
+		"lan": {
+			"device": "br-lan",
+			"protocol": "static"
+		},
+		"wan": {
+			"device": "eth1",
+			"protocol": "dhcp"
+		}
+	},
+	"system": {
+		"cfg040dd": {
+			"hostname": "MollyMock",
+			"_invoked": "system"
+		}
+	}
+}

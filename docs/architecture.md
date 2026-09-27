@@ -9,7 +9,7 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 | 上游组件 | 职责 | molly 的对应物 | P2 状态 |
 |---|---|---|---|
 | `uhttpd` | HTTP/1.1 服务 + `/ubus` 插件 + CGI 转发 | `src/http/`（传输）+ `src/handlers/{static,ubus_http,cgi_luci}.odin` | 已实现 |
-| `rpcd` | ubus 上的 `session` / `uci` / `file` / `luci` 对象（认证、会话、配置、ACL） | `src/backend/` —— **只做 HTTP 侧转发** | 过渡期：对象仍由设备上的 rpcd 提供，P3 才由 molly 注册（决策 7） |
+| `rpcd` | ubus 上的 `session` / `uci` / `file` / `luci` 对象（认证、会话、配置、ACL） | `src/backend/` —— 对象实现（`session`/`uci`/`file`/`luci-rpc`）+ 入站 ACL | P3：molly 已自持四个对象（P3-2…P3-5）与入站 ACL（P3-6，`/usr/share/rpcd/acl.d/*.json`）；设备 rpcd 仅作参照（决策 7） |
 | `ucode` dispatcher | `menu.d` → 菜单树 → 路径解析 → 渲染 | `src/luci/`（`menu.odin` 语义 + `render.odin` 占位页） | 已实现（模板渲染属 P3） |
 
 **不动**：`/etc/config`（uci 数据）、`ubusd`（消息总线）、`/www`（静态文件）。
@@ -171,11 +171,21 @@ molly 用「段名字典序」替代——语义等价性以可复现为先（`m
 
 ## 8. P2 的边界与已知偏差
 
-- **过渡期**：不注册任何 ubus 对象，启动打印 `WARN: transitional mode - ubus objects still
-  provided by device rpcd`；占位页带「ACL 未实施」横幅。**不要把这个阶段的产物当可对外暴露的服务。**
+- **过渡期已是历史（P3-9）**：P3-1 起注册 `molly.probe`，P3-2…P3-5 陆续自持
+  `session`/`uci`/`file`/`luci-rpc`，P3-6 起 `/ubus` 的**入站 ACL** 由 molly 按
+  `/usr/share/rpcd/acl.d/*.json` 校验（不过就是 `-32002`，fail-closed）、dispatcher 的菜单
+  也按会话 ACL 裁树（缺组 → 404、只有 read → 只读），P3-7 起 `/ubus/subscribe` 是真 SSE。
+  device 上 rpcd 未停时同名对象注册失败（非致命，**逐对象**打一行诊断）——要接管就先
+  `/etc/init.d/rpcd stop`。**不再有** transitional 提示行，也**不再有**占位页的
+  「ACL 未实施」横幅。
+  **尚未收口**：登录页（上游由 dispatcher 渲染 `sysauth`；这里走 `--luci-cgi` 的 ucode 侧）
+  以及**真机 golden 对比 / 真机验收**（`tests/golden.sh` + `tests/device_smoke.sh`，
+  在设备上跑）。
 - **不写 `/tmp/luci-indexcache`**：改用进程内 mtime 失效缓存，避免与真 LuCI 的缓存格式打架。
-- **一连接一线程 vs uloop**：`/ubus/subscribe`（SSE）与 P3 的 ubus 对象注册都需要 uloop 事件线程，
-  P2 明确回 501；这是 P3 前必须重新评估的架构分叉点（计划风险 R4）。
+- **一连接一线程 vs uloop**（风险 R4，已按 ADR 0001 解决）：ubus 对象注册与事件都在
+  **专用 ubus 线程**里跑 uloop；`/ubus/subscribe` 的 SSE 用**每订阅一根管道**把通知从
+  ubus 线程交回 HTTP 线程（`src/backend/event_bus.odin` + `src/handlers/ubus_sse.odin`），
+  HTTP 层因此不需要改成事件驱动。P3-7 的 S2 只差把真正的 ubus 订阅接进这条总线。
 - **请求体超 64KB**：molly 回 413，上游 ubus 插件回 200 + `-32700` 并关连接——这是 HTTP 层的既有决策。
 - **linux 侧只做到编译校验**：`uci_config_sections` 的遍历与 `#assert` 的布局断言都不等于运行期正确性，
   真机行为属第 7 步。

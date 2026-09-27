@@ -125,12 +125,77 @@ foreign ubus {
 	ubus_send_reply    :: proc(ctx: ^Ubus_Context, req: ^Ubus_Request_Data, msg: ^Blob_Attr) -> c.int ---
 	// handler 返回 >0 时表示「稍后回复」，必须再调这个把请求收尾
 	ubus_complete_deferred_request :: proc(ctx: ^Ubus_Context, req: ^Ubus_Request_Data, ret: c.int) ---
+
+	// ---- 订阅（P3-7 S2，libubus.h:145-152 + libubus-sub.c:77-132）----
+	// ubus_register_subscriber 内部会 `obj->methods = &watch_method; n_methods = 1`
+	// 再 ubus_add_object（libubus-sub.c:86-89），所以调用方只需填 cb（对象名可为空，
+	// ubus_add_object 对 name == NULL 是允许的，见 libubus-obj.c:227）。
+	ubus_register_subscriber   :: proc(ctx: ^Ubus_Context, sub: ^Ubus_Subscriber) -> c.int ---
+	ubus_subscribe             :: proc(ctx: ^Ubus_Context, sub: ^Ubus_Subscriber, id: u32) -> c.int ---
+	ubus_unsubscribe           :: proc(ctx: ^Ubus_Context, sub: ^Ubus_Subscriber, id: u32) -> c.int ---
+	// ubus_unregister_subscriber 是 static inline（libubus.h:329-335），.so 里没有
+	// 符号——复刻在下面（与 ubus_add_uloop 同一个套路）。
+
+	// libubus.h:427-428：给对象的所有订阅者发一条通知。
+	// timeout < 0 表示**不等**订阅者回复（libubus.h:424-426）——SSE 只需要单向推送。
+	ubus_notify :: proc(
+		ctx: ^Ubus_Context,
+		obj: ^Ubus_Object,
+		type_: cstring,
+		msg: ^Blob_Attr,
+		timeout: c.int,
+	) -> c.int ---
 }
+
+// libubus.h:53-54：void (*)(ubus_context*, ubus_subscriber*, uint32_t id)
+Ubus_Remove_Handler :: proc "c" (ctx: ^Ubus_Context, sub: ^Ubus_Subscriber, id: u32)
+
+// libubus.h:51（new_obj_cb 的实参是 `obj->path`，libubus-sub.c:73）
+Ubus_New_Object_Handler :: proc "c" (ctx: ^Ubus_Context, sub: ^Ubus_Subscriber, path: cstring)
+
+// struct ubus_subscriber（libubus.h:145-152）= 160
+//   list_head 16 + ubus_object 120 + 三个回调 24
+//
+// `obj` 的偏移（16）是硬约束：libubus 的订阅回调里
+// `container_of(obj, struct ubus_subscriber, obj)`（libubus-sub.c:23）就是按它反推的，
+// molly 在通知回调里也要按同一个偏移找回自己的订阅结构。
+Ubus_Subscriber :: struct {
+	list:       Uci_List, // 0   struct list_head（next/prev，16 字节）
+	obj:        Ubus_Object, // 16
+	cb:         Ubus_Handler, // 136
+	remove_cb:  Ubus_Remove_Handler, // 144
+	new_obj_cb: Ubus_New_Object_Handler, // 152
+}
+#assert(size_of(Ubus_Subscriber) == 160, "Ubus_Subscriber 必须与 C 的 ubus_subscriber 同为 160 字节")
+#assert(offset_of(Ubus_Subscriber, obj) == 16, "container_of(obj, ubus_subscriber, obj) 依赖这个偏移")
 
 // libubus.h:289 的 static inline，逐字复刻：
 //     uloop_fd_add(&ctx->sock, ULOOP_BLOCKING | ULOOP_READ);
 ubus_add_uloop :: proc "contextless" (ctx: ^Ubus_Context) {
 	uloop_fd_add(&ctx.sock, ULOOP_BLOCKING | ULOOP_READ)
+}
+
+// libubus.h:329-335 的 static inline，逐字复刻：
+//     if (!list_empty(&obj->list)) list_del_init(&obj->list);
+//     return ubus_remove_object(ctx, &obj->obj);
+//
+// `list_empty` = `next == &list`（INIT_LIST_HEAD 后自指）；`list_del_init` = 摘链
+// 再 INIT_LIST_HEAD。molly 不用 new_obj_cb（不会进 auto_subscribers 链表），
+// 所以这段实际恒为「已是空链 → 直接 remove_object」，但照样照抄，免得将来加了
+// new_obj_cb 时语义悄悄跑偏。
+ubus_unregister_subscriber :: proc "contextless" (ctx: ^Ubus_Context, sub: ^Ubus_Subscriber) -> c.int {
+	self := &sub.list
+	if sub.list.next != nil && sub.list.next != self {
+		if sub.list.prev != nil {
+			sub.list.prev.next = sub.list.next
+		}
+		if sub.list.next != nil {
+			sub.list.next.prev = sub.list.prev
+		}
+		sub.list.next = self
+		sub.list.prev = self
+	}
+	return ubus_remove_object(ctx, &sub.obj)
 }
 
 // 故意**不**绑定 ubus_strerror：错误文案由共享层 backend.ubus_error_message 提供。

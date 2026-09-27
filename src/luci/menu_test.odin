@@ -1,8 +1,12 @@
 package luci
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:mem"
+import "core:strings"
 import "core:testing"
+
+import "molly:backend"
 
 // 单元测试：dispatcher 的建树与 depends 语义。
 //
@@ -60,7 +64,7 @@ test_apply_spec_skips_only_the_bad_key :: proc(t: ^testing.T) {
 	// order 写成 string（真实样本 7 例）、外加一个 schema 之外的键（13 例里的另外几例）
 	add(t, root, "a/b", `{"title":"B","order":"5","nonsense":true,"action":{"type":"view","path":"b"}}`, alloc)
 
-	r := resolve(root, "/a/b", alloc)
+	r := resolve(root, "/a/b", "", alloc)
 	testing.expect(t, r.found, "整条规格不该被丢弃（上游只忽略该键）")
 	testing.expect_value(t, r.node.title, "B")
 	testing.expect_value(t, r.node.order, 9999) // 类型不符 → 忽略该键，保留默认权重
@@ -77,7 +81,7 @@ test_apply_spec_merges_per_key :: proc(t: ^testing.T) {
 	// 后一份只写 action：title / order 必须保留（上游只拷 spec 里出现的键）
 	add(t, root, "p/x", `{"action":{"type":"view","path":"x-2"}}`, alloc)
 
-	r := resolve(root, "/p/x", alloc)
+	r := resolve(root, "/p/x", "", alloc)
 	testing.expect(t, r.found)
 	testing.expect_value(t, r.node.title, "X")
 	testing.expect_value(t, r.node.order, 10)
@@ -94,12 +98,12 @@ test_apply_spec_keeps_wildcard_action_separate :: proc(t: ^testing.T) {
 	add(t, root, "wv", `{"title":"Wbase","action":{"type":"view","path":"wild-base"}}`, alloc)
 	add(t, root, "wv/*", `{"title":"Wcard","action":{"type":"view","path":"wild-card"}}`, alloc)
 
-	base := resolve(root, "/wv", alloc)
+	base := resolve(root, "/wv", "", alloc)
 	testing.expect(t, base.found)
 	testing.expect_value(t, len(base.args), 0)
 	testing.expect_value(t, effective_action(base.node, base.args).path, "wild-base") // :1006-1011 无剩余段
 
-	with_args := resolve(root, "/wv/a/b", alloc)
+	with_args := resolve(root, "/wv/a/b", "", alloc)
 	testing.expect(t, with_args.found)
 	testing.expect_value(t, len(with_args.args), 2)
 	testing.expect_value(t, effective_action(with_args.node, with_args.args).path, "wild-card")
@@ -124,11 +128,11 @@ test_apply_spec_without_depends_resets_satisfied :: proc(t: ^testing.T) {
 	defer drop_arena(ar)
 	root := empty_tree(alloc)
 	add(t, root, "p/h", `{"title":"H","action":{"type":"view","path":"h"},"depends":{"fs":{"/nonexistent-molly-test":"file"}}}`, alloc)
-	testing.expect(t, !resolve(root, "/p/h", alloc).found, "depends 不满足 → 未命中")
+	testing.expect(t, !resolve(root, "/p/h", "", alloc).found, "depends 不满足 → 未命中")
 
 	// 上游 :416 无条件重算 check_depends(spec)：后一份没写 depends → 重新变回 true
 	add(t, root, "p/h", `{"title":"H2"}`, alloc)
-	testing.expect(t, resolve(root, "/p/h", alloc).found)
+	testing.expect(t, resolve(root, "/p/h", "", alloc).found)
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +265,7 @@ test_first_child_order_tiebreak_and_skips :: proc(t: ^testing.T) {
 	// 没有 title 的不参选
 	add(t, root, "p/notitle", `{"action":{"type":"view","path":"nt"}}`, alloc)
 
-	sel := first_child(root.children["p"])
+	sel := first_child(root.children["p"], "", nil, alloc)
 	testing.expect(t, sel != nil)
 	testing.expect_value(t, sel.title, "A") // 权重相同 → 按段名字典序，结果必须确定
 }
@@ -279,7 +283,7 @@ test_first_child_recurses_and_requires_eligible_descendant :: proc(t: ^testing.T
 	add(t, root, "p/dead", `{"title":"Dead","order":0,"action":{"type":"firstchild"}}`, alloc)
 	add(t, root, "p/dead/x", `{"order":1,"action":{"type":"view","path":"x"}}`, alloc) // 无 title
 
-	sel := first_child(root.children["p"])
+	sel := first_child(root.children["p"], "", nil, alloc)
 	testing.expect(t, sel != nil)
 	testing.expect_value(t, sel.title, "Leaf")
 }
@@ -301,4 +305,156 @@ test_at_section_type :: proc(t: ^testing.T) {
 
 	_, ok_underscore := at_section_type("@switch_0")
 	testing.expect(t, ok_underscore, "下划线与数字是合法字符")
+}
+
+// ---------------------------------------------------------------------------
+// depends.acl（P3-6）：按会话裁树与只读
+//
+// 上游 check_acl_depends（dispatcher.uc:312-331）是三态：要求的组里有**任何一个没拿到**
+// → null，apply_tree_acls（:435-445）据此把节点 satisfied=false（从菜单里裁掉、路径解析
+// 不到）；全组只有 read → false（节点保留，但 `resolved.node.readonly = true`，:1002-1003）；
+// 任一组有 write → true（正常）。
+// molly 的树跨请求缓存，所以不学上游把结果写回节点，而是每请求现算（menu.odin 的
+// node_visible）——这里的用例正是钉住「同一个缓存树、不同会话给出不同结果」。
+// ---------------------------------------------------------------------------
+
+// 造一个会话并按需授 access-group 权限（只走 session 对象的公开方法，不碰内部结构）。
+// read 与 write 是**两条独立条目**（上游分别看 `'read' in groups[group]` 与 `'write' in ...`），
+// 所以 write_groups 不会顺带授 read。
+@(private)
+acl_session :: proc(t: ^testing.T, read_groups, write_groups: []string, alloc: mem.Allocator) -> string {
+	reply, status := backend.session_call("create", "{}", alloc)
+	if !testing.expectf(t, status == 0, "session.create 失败：status=%d", status) {
+		return ""
+	}
+
+	doc := parse(t, reply, alloc)
+	obj, is_obj := doc.(json.Object)
+	if !testing.expectf(t, is_obj, "create 的回复不是对象：%s", reply) {
+		return ""
+	}
+	sid_v, has_sid := obj["ubus_rpc_session"]
+	sid_str, is_str := sid_v.(json.String)
+	if !testing.expectf(t, has_sid && is_str, "create 的回复里没有 ubus_rpc_session：%s", reply) {
+		return ""
+	}
+	sid := string(sid_str)
+
+	for g in read_groups {
+		acl_grant(t, sid, g, "read", alloc)
+	}
+	for g in write_groups {
+		acl_grant(t, sid, g, "write", alloc)
+	}
+	return sid
+}
+
+@(private)
+acl_grant :: proc(t: ^testing.T, sid, group, perm: string, alloc: mem.Allocator) {
+	// 注意 `{{` / `}}`：本仓库的 Odin fmt 用它转义字面大括号（全库惯例），
+	// 写成 `{` 会被当成格式指令，拼出来的 JSON 直接解析失败（表现为 status=2）。
+	params := fmt.aprintf(
+		`{{"ubus_rpc_session":"%s","scope":"access-group","objects":[["%s","%s"]]}}`,
+		sid,
+		group,
+		perm,
+		allocator = alloc,
+	)
+	_, status := backend.session_call("grant", params, alloc)
+	testing.expectf(t, status == 0, "grant %s/%s 失败：status=%d params=%s", group, perm, status, params)
+}
+
+// 小树：/a 下 gated（要求 g1，数组形态）、ro（要求 g2，**对象形态**——真机 menu.d 里就是
+// `{ "luci-base": ["status"] }` 这种写法）、open（没有 acl 要求）。三个都给 title，
+// 好参与 firstchild 竞选。
+@(private)
+acl_tree :: proc(t: ^testing.T, alloc: mem.Allocator) -> ^Node {
+	root := new(Node, alloc)
+	root.children = make(map[string]^Node, 0, alloc)
+
+	add(t, root, "a", `{"title":"A","order":10,"action":{"type":"firstchild"}}`, alloc)
+	add(
+		t,
+		root,
+		"a/gated",
+		`{"title":"Gated","order":10,"action":{"type":"view","path":"gated"},"depends":{"acl":["g1"]}}`,
+		alloc,
+	)
+	add(
+		t,
+		root,
+		"a/ro",
+		`{"title":"Ro","order":20,"action":{"type":"view","path":"ro"},"depends":{"acl":{"g2":["status"]}}}`,
+		alloc,
+	)
+	add(t, root, "a/open", `{"title":"Open","order":30,"action":{"type":"view","path":"open"}}`, alloc)
+	return root
+}
+
+@(test)
+test_acl_prunes_and_readonly :: proc(t: ^testing.T) {
+	alloc, ar := mk_arena()
+	defer drop_arena(ar)
+
+	root := acl_tree(t, alloc)
+
+	// 无会话（sid=""）：缺组的节点裁掉 → 路径解析不到（等价上游 satisfied=false）
+	testing.expect(t, !resolve(root, "/a/gated", "", alloc).found, "无会话 → 要 g1 的节点不可见")
+	testing.expect(t, resolve(root, "/a/open", "", alloc).found, "没有 depends.acl 的节点不受影响")
+
+	// 授 g1 的 write：可见、不是只读
+	sid1 := acl_session(t, nil, []string{"g1"}, alloc)
+	testing.expect(t, resolve(root, "/a/gated", sid1, alloc).found)
+	page := dispatch(root, "/a/gated", sid1, alloc)
+	testing.expect_value(t, page.kind, Kind.Page)
+	testing.expect(t, strings.contains(page.body, "readonly</dt><dd>no"), page.body)
+
+	// 只授别的组：一样不可见（上游按键精确命中），连「只读」都谈不上 → 404
+	sid2 := acl_session(t, []string{"g2"}, nil, alloc)
+	testing.expect(t, !resolve(root, "/a/gated", sid2, alloc).found)
+	testing.expect_value(t, dispatch(root, "/a/gated", sid2, alloc).kind, Kind.NotFound)
+
+	// 只授 g2 的 read（对象形态的 depends.acl）：可见但只读（上游 perm=false）
+	testing.expect(t, resolve(root, "/a/ro", sid2, alloc).found)
+	page2 := dispatch(root, "/a/ro", sid2, alloc)
+	testing.expect_value(t, page2.kind, Kind.Page)
+	testing.expect(t, strings.contains(page2.body, "readonly</dt><dd>yes"), page2.body)
+
+	// 后一份规格没有 depends → acl 要求被清掉（与 satisfied 同一规则，上游 :416 无条件重算）
+	add(t, root, "a/gated", `{"action":{"type":"view","path":"gated2"}}`, alloc)
+	testing.expect(t, resolve(root, "/a/gated", "", alloc).found, "后一份规格清掉了 acl 要求")
+}
+
+@(test)
+test_acl_first_child_skips_and_marks_readonly :: proc(t: ^testing.T) {
+	alloc, ar := mk_arena()
+	defer drop_arena(ar)
+
+	root := acl_tree(t, alloc)
+
+	// 无会话：firstchild 跳过 gated(10) 与 ro(20)，选 open(30)
+	sel := first_child(root.children["a"], "", nil, alloc)
+	testing.expect(t, sel != nil)
+	testing.expect_value(t, sel.action_path, "open")
+
+	// 只授 g1 的 read：gated 恢复竞选（order 最小）→ 当选，且当选支路的组进 groups
+	sid := acl_session(t, []string{"g1"}, nil, alloc)
+	groups := make([dynamic]string, 0, 4, alloc)
+	sel2 := first_child(root.children["a"], sid, &groups, alloc)
+	testing.expect(t, sel2 != nil)
+	testing.expect_value(t, sel2.action_path, "gated")
+	testing.expect_value(t, len(groups), 1)
+	testing.expect_value(t, groups[0], "g1")
+
+	// /a 是 firstchild：落到 gated，页面标只读（dispatch 把当选支路的组并进判权）
+	page := dispatch(root, "/a", sid, alloc)
+	testing.expect_value(t, page.kind, Kind.Page)
+	testing.expect(t, strings.contains(page.body, "view</dt><dd>gated"), page.body)
+	testing.expect(t, strings.contains(page.body, "readonly</dt><dd>yes"), page.body)
+
+	// 无会话走同一条路径 → 落到 open，不是只读
+	page_open := dispatch(root, "/a", "", alloc)
+	testing.expect_value(t, page_open.kind, Kind.Page)
+	testing.expect(t, strings.contains(page_open.body, "view</dt><dd>open"), page_open.body)
+	testing.expect(t, strings.contains(page_open.body, "readonly</dt><dd>no"), page_open.body)
 }

@@ -11,13 +11,14 @@ import "molly:http"
 
 // /ubus —— HTTP 侧的 ubus 转发，对应上游 uhttpd 的 ubus 插件（`ubus.c`）。
 //
-// P2 只做转发（计划决策 7）：molly 不注册任何 ubus 对象，session / uci / file /
-// luci 仍是设备上 rpcd 提供的。因此这里**没有**上游那道 `session.access` 前置
-// ACL 校验（`uh_ubus_allowed`），ACL 留到 P3 换成 molly 自持的 acl.d。
+// P3-6 起这里补上了上游那道前置 ACL 校验（uhttpd 的 `uh_ubus_allowed` →
+// `session.access`）：`call` 先查 sid 的 ACL（scope "ubus"，object=对象名、
+// function=方法名），不过就回 -32002（HTTP 仍 200）。`list` 与上游一样**不查**
+// ACL。ACL 来源是 `/usr/share/rpcd/acl.d/*.json`（session.odin 的 session_load_acls）。
 //
 // 本文件覆盖的协议面（全部逐条对齐 `/tmp/uhttpd-ubus.c`）：
 //   GET  /ubus/list、/ubus/list/<path>     列对象/签名
-//   GET  /ubus/subscribe/*                 501（决策 8，要 uloop 事件线程，留到 P3）
+//   GET  /ubus/subscribe/<path>            SSE（P3-7：ACL `:subscribe` → 订阅 → 事件流）
 //                                          POST 同一个前缀走「/ubus/<非 call>」→ 404（同上游）
 //   POST /ubus                             旧式：body 是 JSON-RPC，method 为 "call"/"list"
 //   POST /ubus/call/<path>                 新式：method 直接是 ubus 方法名
@@ -42,8 +43,8 @@ UBUS_DEFAULT_SID :: "00000000000000000000000000000000"
 // JSON-RPC 错误码
 // ---------------------------------------------------------------------------
 
-// 上游 `ubus.c:80-106` 的 json_errors 表。只列 P2 会回的六个——session / access /
-// timeout 要等 P3 接管 rpcd 的 session 对象与 ACL 才有意义。
+// 上游 `ubus.c:80-106` 的 json_errors 表。P3-6 起 `Access` 用上了（uhttpd 的
+// `uh_ubus_allowed` 那道前置 ACL 校验）；`Session`/`Timeout` 还没有对应实现。
 @(private)
 Rpc_Error :: enum {
 	Parse,    // -32700
@@ -52,6 +53,7 @@ Rpc_Error :: enum {
 	Params,   // -32602
 	Internal, // -32603
 	Object,   // -32000
+	Access,   // -32002
 }
 
 @(private)
@@ -69,6 +71,7 @@ RPC_ERRORS := [Rpc_Error]Rpc_Error_Def{
 	.Params   = {-32602, "Invalid parameters"},
 	.Internal = {-32603, "Internal error"},
 	.Object   = {-32000, "Object not found"},
+	.Access   = {-32002, "Access denied"},
 }
 
 // 旧式与新式的 result 形状不同，所以调用侧要说明自己是谁（上游靠 `du->legacy`）。
@@ -126,9 +129,9 @@ ubus_get :: proc(conn: ^http.Connection, req: ^http.Request, path: string) -> bo
 	case strings.has_prefix(path, UBUS_LIST_PREFIX):
 		return ubus_list(conn, req, path[len(UBUS_LIST_PREFIX):])
 	case strings.has_prefix(path, UBUS_SUBSCRIBE_PREFIX):
-		// 计划决策 8：SSE 要一个 uloop 事件线程，与「一连接一线程」不兼容，
-		// 留到 P3 和 ubus 对象注册一起解决。
-		return not_implemented(conn, req)
+		// P3-7：SSE。事件源在 ubus 线程，经「每订阅一根管道」交回 HTTP 线程
+		// （ADR 0001 第 3 条），实现在 ubus_sse.odin。
+		return serve_subscribe(conn, req, path[len(UBUS_SUBSCRIBE_PREFIX):])
 	}
 	// 上游对 GET /ubus 与其它 /ubus/<x> 都回 404，且不带 body
 	return http.respond(conn, .Not_Found, "", {
@@ -172,14 +175,6 @@ json_response :: proc(conn: ^http.Connection, req: ^http.Request, body: string) 
 	return http.respond(conn, .OK, body, {
 		content_type = "application/json",
 		keep_alive   = req.keep_alive,
-	})
-}
-
-// 501 是 P2 的占位，上游没有这个状态码。/ubus/subscribe 一直留在这里直到 P3。
-@(private)
-not_implemented :: proc(conn: ^http.Connection, req: ^http.Request) -> bool {
-	return http.respond(conn, .Not_Implemented, "not implemented\n", {
-		keep_alive = req.keep_alive,
 	})
 }
 
@@ -402,6 +397,19 @@ invoke :: proc(
 	shape: Rpc_Shape,
 	alloc: mem.Allocator,
 ) -> string {
+	// 上游 uh_ubus_call / uh_ubus_handle_request_object 的顺序：
+	//   1) `ubus_lookup_id` 找不到对象 → -32000；
+	//   2) `uh_ubus_allowed(sid, <对象>, <方法>)` 不过 → -32002（fail-closed）；
+	//   3) 才轮到参数表校验（`uh_ubus_send_request` 里的 -32602）。
+	// ACL 判定委托给 session 的 ACL 引擎（"ubus" scope：object=ubus 对象名、
+	// function=方法名）——与上游 uhttpd 调 `session.access` 等价。
+	if _, _, ok := backend.list_objects(path, alloc); !ok {
+		return rpc_error_json(.Object, id_json, alloc)
+	}
+	if !backend.session_access_ubus(sid, path, method) {
+		return rpc_error_json(.Access, id_json, alloc)
+	}
+
 	params_json := ""
 	if has_params {
 		table, is_table := params.(json.Object)
@@ -459,6 +467,8 @@ invoke :: proc(
 // 保证同一份请求在两个实现下回同一个错误码。
 @(private)
 invalid_params_json :: proc(path, id_json: string, alloc: mem.Allocator) -> string {
+	// invoke 已经先查过对象存在性（上游顺序：lookup → ACL → 参数），这里保留同样
+	// 的判断只是让这个助手单独看也自洽。
 	if _, _, ok := backend.list_objects(path, alloc); !ok {
 		return rpc_error_json(.Object, id_json, alloc)
 	}

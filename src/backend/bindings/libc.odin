@@ -32,4 +32,33 @@ foreign libc {
 	// 与 crypt 同理走 system:c —— musl 与 glibc 都导出它。
 	@(link_name = "realpath")
 	c_realpath :: proc(path: cstring, resolved: [^]u8) -> cstring ---
+
+	// getifaddrs(3)：P3-5 S2b（getNetworkDevices）用它拿 v4/v6/PACKET 地址。
+	// 成功时 *start 指向链表，用 freeifaddrs 释放。
+	@(link_name = "getifaddrs")
+	getifaddrs :: proc(start: ^^Ifaddrs) -> c.int ---
+
+	@(link_name = "freeifaddrs")
+	freeifaddrs :: proc(start: ^Ifaddrs) ---
+
+}
+
+// struct ifaddrs（ifaddrs.h，64 位 glibc 布局：7 个 8 字节字段 = 56 字节）。
+// dstaddr 与 broadaddr 是同一字段的联合名。
+Ifaddrs :: struct {
+	next:    ^Ifaddrs,
+	name:    cstring,
+	flags:   c.uint,
+	addr:    ^Sockaddr_Base,
+	netmask: ^Sockaddr_Base,
+	dstaddr: ^Sockaddr_Base,
+	data:    rawptr,
+}
+
+// struct sockaddr 的头两个字节是 sa_family；后面按家族解释
+// （in 的地址在偏移 4、in6 的在偏移 8——见 linux.odin 的取用）。
+// data 取 26 字节：连偏移 2 一起够放 sockaddr_in6（28 字节）。
+Sockaddr_Base :: struct {
+	family: u16,
+	data:   [26]u8,
 }

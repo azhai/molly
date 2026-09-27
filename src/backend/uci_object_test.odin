@@ -54,7 +54,7 @@ u_get :: proc(reply: string, path: []string, alloc: mem.Allocator) -> string {
 				append(&parts, string(s))
 			}
 		}
-		return strings.join(parts[:], ",")
+		return strings.join(parts[:], ",", alloc)
 	}
 	return "<other>"
 }

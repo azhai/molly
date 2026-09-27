@@ -211,23 +211,37 @@ test_session_acl_grant_revoke_access :: proc(t: ^testing.T) {
 	alloc, ar := mk_arena()
 	defer drop_arena(ar)
 
-	sid := t_login("root", "test1234", alloc)
-	testing.expect(t, len(sid) > 0)
-
-	// 一开始没有任何 ACL
+	// **故意不用 t_login**：darwin fixture 的 root login section 列了 `read/write = '*'`
+	// （与真机 `rpcd.config` 的默认值一致），P3-6 起 acl.d 会在登录时全量加载，于是
+	// **测试专用的 smoke-full 组**（`"ubus": {"*": ["*"]}`）也生效——那样任何 access 都是
+	// true，"未授权→false" 的断言就失去意义。这里直接建会话 + 只按 luci-base 的窄列表
+	// 加载 acl.d，测的是 acl.d 驱动的**初始 ACL**（登录→acl.d 的整链路由
+	// test_session_login_test_permission / test_session_load_acls_from_fixtures 覆盖）。
+	ses := session_new(SESSION_DEFAULT_TIMEOUT)
+	testing.expect(t, ses != nil)
+	if ses == nil {
+		return
+	}
+	login := acl_test_login([]string{"luci-base"}, []string{}, alloc)
+	session_load_acls(ses, &login, session_store_allocator())
+	sid := ses.id
 	reply, _ := t_call("access", t_sid_params(sid, `"object":"uci","function":"get"`), alloc)
+	testing.expect(t, reply == `{"access":true}`, reply)
+
+	// 同一 scope 下没被 acl.d 授予的函数仍是 false（后面 grant/revoke 用它做往返）
+	reply, _ = t_call("access", t_sid_params(sid, `"object":"uci","function":"state"`), alloc)
 	testing.expect(t, reply == `{"access":false}`, reply)
 
 	// grant：[[object, function], …]（session.c:571-592）
-	_, g := t_call("grant", t_sid_params(sid, `"objects":[["uci","get"],["file","*"]]`), alloc)
+	_, g := t_call("grant", t_sid_params(sid, `"objects":[["uci","state"],["file","*"]]`), alloc)
 	testing.expect_value(t, g, SESSION_STATUS_OK)
 
 	// 精确命中
-	reply, _ = t_call("access", t_sid_params(sid, `"object":"uci","function":"get"`), alloc)
+	reply, _ = t_call("access", t_sid_params(sid, `"object":"uci","function":"state"`), alloc)
 	testing.expect(t, reply == `{"access":true}`, reply)
 
 	// 同 scope 下的其它方法不命中
-	reply, _ = t_call("access", t_sid_params(sid, `"object":"uci","function":"state"`), alloc)
+	reply, _ = t_call("access", t_sid_params(sid, `"object":"uci","function":"frob"`), alloc)
 	testing.expect(t, reply == `{"access":false}`, reply)
 
 	// fnmatch 通配：file/*
@@ -251,7 +265,7 @@ test_session_acl_grant_revoke_access :: proc(t: ^testing.T) {
 	// revoke 不给 objects → 清空整个 scope（session.c:496-502）
 	_, r2 := t_call("revoke", t_sid_params(sid), alloc)
 	testing.expect_value(t, r2, SESSION_STATUS_OK)
-	reply, _ = t_call("access", t_sid_params(sid, `"object":"uci","function":"get"`), alloc)
+	reply, _ = t_call("access", t_sid_params(sid, `"object":"uci","function":"state"`), alloc)
 	testing.expect(t, reply == `{"access":false}`, reply)
 
 	// grant 不给 objects → INVALID_ARGUMENT（session.c:568-569）
@@ -331,5 +345,116 @@ test_session_create_timeout :: proc(t: ^testing.T) {
 				testing.expect(t, i64(n) <= 60)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P3-6：acl.d 加载与权限组判定
+// ---------------------------------------------------------------------------
+
+// login section 的列表选项就是权限组清单；这里手工构造，不依赖 fixtures 里的 rpcd 配置。
+// 分配走调用方给的 alloc（测试自己的 arena）——**不要**用 context.allocator：那样每个调用点
+// 都要手工 delete，漏一个就是一条 `leak` 警告（P3-6 时踩过）。
+@(private)
+acl_test_login :: proc(read_groups: []string, write_groups: []string, alloc: mem.Allocator) -> Uci_Section {
+	// 定长 2、按需填（Odin 的 slice make 没有 cap 参数）
+	opts := make([]Uci_Option, 2, alloc)
+	n := 0
+	if len(read_groups) > 0 {
+		opts[n] = Uci_Option{name = "read", is_list = true, values = read_groups}
+		n += 1
+	}
+	if len(write_groups) > 0 {
+		opts[n] = Uci_Option{name = "write", is_list = true, values = write_groups}
+		n += 1
+	}
+	return Uci_Section {
+		name = "login",
+		type_name = "login",
+		options = opts[:n],
+	}
+}
+
+@(test)
+test_session_login_test_permission :: proc(t: ^testing.T) {
+	alloc, ar := mk_arena()
+	defer drop_arena(ar)
+
+	// login == NULL（默认/哨兵会话）只认 unauthenticated
+	testing.expect(t, session_login_test_permission(nil, "read", "unauthenticated"))
+	testing.expect(t, !session_login_test_permission(nil, "read", "luci-base"))
+
+	// 列表里列出的组
+	login := acl_test_login([]string{"luci-base"}, []string{"!luci-base", "luci-write"}, alloc)
+	testing.expect(t, session_login_test_permission(&login, "read", "luci-base"))
+	testing.expect(t, !session_login_test_permission(&login, "read", "other-group"))
+
+	// fnmatch：`luci-n*` 匹配 luci-network
+	login2 := acl_test_login([]string{"luci-n*"}, []string{}, alloc)
+	testing.expect(t, session_login_test_permission(&login2, "read", "luci-network"))
+	testing.expect(t, !session_login_test_permission(&login2, "read", "luci-base"))
+
+	// write 蕴含 read：write 列表里的组，问 read 也允许
+	testing.expect(t, session_login_test_permission(&login, "read", "luci-write"))
+
+	// 取反优先：write 列表里的 `!luci-base` 即使 read 列表有它，问 write 也被拒
+	testing.expect(t, !session_login_test_permission(&login, "write", "luci-base"))
+}
+
+@(test)
+test_session_load_acls_from_fixtures :: proc(t: ^testing.T) {
+	alloc, ar := mk_arena()
+	defer drop_arena(ar)
+
+	// 只授 read 的 luci-base：表的 ubus 形态、数组的 uci 形态都该生效
+	// （options 分配在本用例的 arena 上，函数尾 drop_arena 一起回收）
+	login := acl_test_login([]string{"luci-base"}, []string{}, alloc)
+
+	ses := new(Session, session_store_allocator())
+	ses.id = "test-acl-session"
+	ses.data = make(map[string]string, 0, session_store_allocator())
+	ses.acls = make(map[string][dynamic]Acl_Entry, 0, session_store_allocator())
+	session_load_acls(ses, &login, session_store_allocator())
+
+	// 表形态：ubus.uci 的 read 函数
+	testing.expect(t, session_acl_allowed(ses, "ubus", "uci", "changes"))
+	testing.expect(t, session_acl_allowed(ses, "ubus", "uci", "get"))
+	// 数组形态：scope "uci" 的对象列表 + 函数名=权限名
+	testing.expect(t, session_acl_allowed(ses, "uci", "system", "read"))
+	// 数组形态的顶层 scope（cgi-io 在 write 里，本次没授 write）
+	testing.expect(t, !session_acl_allowed(ses, "ubus", "uci", "set"))
+	testing.expect(t, !session_acl_allowed(ses, "cgi-io", "upload", "write"))
+	// 元 scope：access-group
+	testing.expect(t, session_acl_allowed(ses, "access-group", "luci-base", "read"))
+	testing.expect(t, !session_acl_allowed(ses, "access-group", "luci-base", "write"))
+	// 未授的组一个条目都没有
+	testing.expect(t, !session_acl_allowed(ses, "ubus", "session", "login"))
+
+	// 授 write：write 条目与 cgi-io 数组形态都生效
+	login2 := acl_test_login([]string{}, []string{"luci-base"}, alloc)
+	ses2 := new(Session, session_store_allocator())
+	ses2.id = "test-acl-session-2"
+	ses2.data = make(map[string]string, 0, session_store_allocator())
+	ses2.acls = make(map[string][dynamic]Acl_Entry, 0, session_store_allocator())
+	session_load_acls(ses2, &login2, session_store_allocator())
+	testing.expect(t, session_acl_allowed(ses2, "ubus", "uci", "set"))
+	testing.expect(t, session_acl_allowed(ses2, "cgi-io", "upload", "write"))
+	// 只授 write 时，read 表**也会**被加载：rpc_login_test_permission 对 read 查询
+	// 会递归问 write（write 蕴含 read，session.c:973-975）
+	testing.expect(t, session_acl_allowed(ses2, "ubus", "uci", "changes"))
+	testing.expect(t, session_acl_allowed(ses2, "access-group", "luci-base", "read"))
+}
+
+@(test)
+test_session_default_session_acls :: proc(t: ^testing.T) {
+	// 哨兵会话只加载 unauthenticated 组（session.c:1385）
+	session_ensure_default()
+	ses := session_get(SESSION_DEFAULT_ID)
+	testing.expect(t, ses != nil)
+	if ses != nil {
+		testing.expect(t, session_acl_allowed(ses, "ubus", "session", "access"))
+		testing.expect(t, session_acl_allowed(ses, "ubus", "session", "login"))
+		testing.expect(t, !session_acl_allowed(ses, "ubus", "uci", "get"))
+		testing.expect(t, session_acl_allowed(ses, "access-group", "unauthenticated", "read"))
 	}
 }

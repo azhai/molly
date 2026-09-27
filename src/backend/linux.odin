@@ -32,6 +32,7 @@ import "core:os"
 import "core:encoding/json"
 import "core:sys/posix"
 import "core:time"
+import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -337,6 +338,9 @@ PROBE_OBJECT_NAME :: "molly.probe"
 @(private)
 g_probe_methods := [?]bindings.Ubus_Object_Method{
 	{name = "ping", handler = probe_ping},
+	// P3-9：真机上唯一能**触发**一条 ubus 通知的入口（`ubus call molly.probe notify`），
+	// 于是 /ubus/subscribe 的 SSE 在设备上也能被验收。darwin 侧同名同语义（见 darwin.odin）。
+	{name = "notify", handler = probe_notify},
 }
 
 @(private)
@@ -360,6 +364,31 @@ probe_ping :: proc "c" (
 	buf: bindings.Blob_Buf
 	bindings.blobmsg_buf_init(&buf)
 	bindings.blobmsg_add_string(&buf, "pong", "molly")
+	return bindings.ubus_send_reply(ctx, req, buf.head)
+}
+
+// P3-9：`molly.probe` 的 `notify` —— 给自己的订阅者发一条通知（type = "ping"）。
+// 这是设备上验 SSE 的**触发源**：`ubus call molly.probe notify` → 订阅了
+// `molly.probe` 的 /ubus/subscribe 连接应收到 `event: ping\ndata: {"hello":"world"}`。
+// darwin 侧同名方法直接推事件总线（没有 ubusd 可发），可观测结果一致。
+@(private)
+probe_notify :: proc "c" (
+	ctx: ^bindings.Ubus_Context,
+	obj: ^bindings.Ubus_Object,
+	req: ^bindings.Ubus_Request_Data,
+	method: cstring,
+	msg: ^bindings.Blob_Attr,
+) -> c.int {
+	buf: bindings.Blob_Buf
+	bindings.blobmsg_buf_init(&buf)
+	bindings.blobmsg_add_string(&buf, "hello", "world")
+	// timeout < 0：单向下发，不等订阅者回复（libubus.h:424-428）
+	bindings.ubus_notify(ctx, obj, "ping", buf.head, -1)
+
+	// 再回调用方一个确认（同一个 blob_buf 可以重新 init：libubus 在 notify 里已把
+	// 内容序列化走了，blob_buf_init 只是把 used 归零，见 bindings/blob.odin 的说明）。
+	bindings.blobmsg_buf_init(&buf)
+	bindings.blobmsg_add_string(&buf, "notified", "molly.probe")
 	return bindings.ubus_send_reply(ctx, req, buf.head)
 }
 
@@ -398,6 +427,9 @@ ubus_server_thread :: proc() {
 	// P3-3（S1）：接管 uci 的**只读**部分（`configs`/`get`）。同样，rpcd 在跑时注册会失败。
 	register_uci_object(ctx)
 
+	// P3-5（S1）：接管 luci-rpc（getBoardJSON/getDHCPLeases；其余方法回 8）。
+	register_luci_object(ctx)
+
 	// P3-4（第一批）：接管 file 的路径/权限核心与 `read`。file 是平台无关的真实现，
 	// 所以这段代码与 darwin 上被测到的是同一份。
 	register_file_object(ctx)
@@ -412,8 +444,268 @@ ubus_server_thread :: proc() {
 		return
 	}
 	bindings.ubus_add_uloop(ctx)
-	_ = bindings.uloop_run_timeout(-1)
+	// P3-7 S2：循环改成「带超时的 run」而不是 -1，好让 HTTP 线程排进来的订阅命令
+	// 能在 ubus 线程里被执行（所有 ctx 改动都必须在这一线程做，ADR 0001）。
+	for {
+		_ = bindings.uloop_run_timeout(SSE_LOOP_POLL_MS)
+		sse_drain_watch_cmds(ctx)
+	}
 	fmt.eprintln("[molly] ubus 服务线程：事件循环退出，molly 不再提供 ubus 对象")
+}
+
+// ---------------------------------------------------------------------------
+// P3-7 S2：ubus 订阅（linux 真实现）
+//
+// 命令方向（HTTP → ubus 线程）：HTTP 线程只往队列排命令，`uloop_run_timeout` 每次
+// 返回后由 ubus 线程排空——ADR 0001 说「所有 ctx/循环改动都在 ubus 线程里做」，
+// 这里用「轮询排空」代替「把命令管道挂进 uloop」，少一个 uloop fd 绑定，
+// 可观测行为一致（命令延迟 ≤ SSE_LOOP_POLL_MS）。
+//
+// 事件方向（ubus → HTTP）：通知回调在 ubus 线程里跑，调 `event_bus_publish` 写管道。
+//
+// 与上游的一个刻意差异：uhttpd 每条 SSE 连接一个 subscriber（`du` 是 per-client 的），
+// molly 按 **path** 去重一个——发布时是按 path 匹配的，一个就够，也省掉设备上的
+// ubus 对象数量。
+// ---------------------------------------------------------------------------
+
+// uloop 每次 run 的超时（毫秒）：既用来排空命令队列，也顺带当心跳节拍。
+SSE_LOOP_POLL_MS :: 100
+
+@(private)
+Sse_Watch_Op :: enum {
+	Start,
+	Stop,
+}
+
+@(private)
+Sse_Watch_Cmd :: struct {
+	op:   Sse_Watch_Op,
+	path: string,
+}
+
+// 一条订阅 = 一个 `ubus_subscriber`。`sub` 必须是第一个字段：通知回调里靠
+// `container_of(obj, ubus_subscriber, obj)`（-16）反推回这里，才能知道是哪个 path。
+@(private)
+Sse_Sub :: struct {
+	sub:  bindings.Ubus_Subscriber, // 0（obj 在 +16）
+	path: cstring,
+	id:   u32,
+}
+
+// HTTP 线程写、ubus 线程读
+@(private)
+g_sse_lock: sync.Mutex
+@(private)
+g_sse_cmds: [64]Sse_Watch_Cmd
+@(private)
+g_sse_n:    int
+
+// 只有 ubus 线程碰（命令在 drain 里被消化，所以不需要锁）
+@(private)
+g_sse_subs: [EVENT_BUS_MAX]^Sse_Sub
+@(private)
+g_sse_sub_n: int
+
+sse_watch_start :: proc(path: string) -> bool {
+	sync.lock(&g_sse_lock)
+	defer sync.unlock(&g_sse_lock)
+	if g_sse_n >= len(g_sse_cmds) {
+		fmt.eprintln("[molly] 订阅命令队列满了，丢弃：", path)
+		return false
+	}
+	g_sse_cmds[g_sse_n] = Sse_Watch_Cmd{op = .Start, path = strings.clone(path, session_store_allocator())}
+	g_sse_n += 1
+	return true
+}
+
+sse_watch_stop :: proc(path: string) {
+	sync.lock(&g_sse_lock)
+	defer sync.unlock(&g_sse_lock)
+	if g_sse_n >= len(g_sse_cmds) {
+		return
+	}
+	g_sse_cmds[g_sse_n] = Sse_Watch_Cmd{op = .Stop, path = strings.clone(path, session_store_allocator())}
+	g_sse_n += 1
+}
+
+// 排空命令队列 + 发布已收到的通知（只在 ubus 线程里跑）。
+@(private)
+sse_drain_watch_cmds :: proc(ctx: ^bindings.Ubus_Context) {
+	sync.lock(&g_sse_lock)
+	pending := g_sse_cmds
+	n := g_sse_n
+	g_sse_n = 0
+	sync.unlock(&g_sse_lock)
+
+	for i in 0 ..< n {
+		switch pending[i].op {
+		case .Start:
+			sse_watch_apply_start(ctx, pending[i].path)
+		case .Stop:
+			sse_watch_apply_stop(ctx, pending[i].path)
+		}
+	}
+
+	// 通知：回调里只搬字节（它没有 context，不能分配），发布在这里做
+	for g_sse_ev_tail != g_sse_ev_head {
+		slot := &g_sse_events[g_sse_ev_tail]
+		g_sse_ev_tail = (g_sse_ev_tail + 1) % SSE_EVENT_SLOTS
+		if !slot.ready {
+			continue
+		}
+		slot.ready = false
+		event_bus_publish(
+			string(cstring(rawptr(&slot.path[0]))),
+			string(cstring(rawptr(&slot.method[0]))),
+			string(cstring(rawptr(&slot.data[0]))),
+			session_store_allocator(),
+		)
+	}
+}
+
+// 通知的落脚点（回调 → 主循环）。定长环形槽 + 单线程（回调与主循环都在 ubus
+// 线程里），所以不需要锁；槽满了就丢（SSE 是尽力而为的推送）。
+SSE_EVENT_SLOTS :: 16
+
+@(private)
+Sse_Event_Slot :: struct {
+	path:   [128]u8,
+	method: [64]u8,
+	data:   [1024]u8,
+	ready:  bool,
+}
+
+@(private)
+g_sse_events: [SSE_EVENT_SLOTS]Sse_Event_Slot
+@(private)
+g_sse_ev_head: int
+@(private)
+g_sse_ev_tail: int
+
+// `proc "c"` 的回调里没有隐式 context，所以这条路径上不能有任何分配/断言：
+// 只做字节搬运（copy_cstr 是手写的 for 循环）。
+@(private)
+sse_event_enqueue :: proc "contextless" (path, method, data: cstring) {
+	next := (g_sse_ev_head + 1) % SSE_EVENT_SLOTS
+	if next == g_sse_ev_tail {
+		return // 满了：丢这条（订阅者会少一帧，不会乱序）
+	}
+	slot := &g_sse_events[g_sse_ev_head]
+	n := copy_cstr(slot.path[:], path)
+	n = copy_cstr(slot.method[:], method)
+	n = copy_cstr(slot.data[:], data)
+	slot.ready = true
+	g_sse_ev_head = next
+}
+
+// cstring → 定长字节数组（手写循环：`proc "contextless"` 里用不了 core:strings 的
+// 分配型函数，也不该引入 context）。
+@(private)
+copy_cstr :: proc "contextless" (dst: []u8, src: cstring) -> int {
+	if src == nil {
+		if len(dst) > 0 {
+			dst[0] = 0
+		}
+		return 0
+	}
+	// cstring 不能直接下标（Odin 不允许），用多指针逐字节走
+	p := transmute([^]u8) src
+	i := 0
+	for p[i] != 0 && i < len(dst) {
+		dst[i] = p[i]
+		i += 1
+	}
+	// 截尾：写 NUL（放不下时覆盖最后一个字节）
+	last := i
+	if i >= len(dst) {
+		last = len(dst) - 1
+	}
+	dst[last] = 0
+	return i
+}
+
+@(private)
+sse_watch_apply_start :: proc(ctx: ^bindings.Ubus_Context, path: string) {
+	for i in 0 ..< g_sse_sub_n {
+		if g_sse_subs[i].path != nil && string(g_sse_subs[i].path) == path {
+			return // 已经在订这个对象了
+		}
+	}
+	if g_sse_sub_n >= len(g_sse_subs) {
+		fmt.eprintln("[molly] ubus 订阅数已达上限，忽略：", path)
+		return
+	}
+
+	path_c := strings.clone_to_cstring(path, session_store_allocator())
+	id: u32
+	if rc := bindings.ubus_lookup_id(ctx, path_c, &id); rc != 0 {
+		fmt.eprintln("[molly] ubus 订阅失败（lookup_id）：", path, "错误码", rc)
+		return
+	}
+
+	sse := new(Sse_Sub, session_store_allocator())
+	sse.path = path_c
+	sse.id = id
+	sse.sub.cb = sse_notify_cb
+	// remove_cb / new_obj_cb 不设：对象消失时我们不需要额外动作（SSE 连接断开
+	// 走 event_bus_unsubscribe → 这里 ubus_unsubscribe 即可）。
+	if rc := bindings.ubus_register_subscriber(ctx, &sse.sub); rc != 0 {
+		fmt.eprintln("[molly] ubus_register_subscriber 失败，错误码", rc)
+		free(sse)
+		return
+	}
+	if rc := bindings.ubus_subscribe(ctx, &sse.sub, id); rc != 0 {
+		fmt.eprintln("[molly] ubus_subscribe 失败，错误码", rc)
+		bindings.ubus_unregister_subscriber(ctx, &sse.sub)
+		free(sse)
+		return
+	}
+	g_sse_subs[g_sse_sub_n] = sse
+	g_sse_sub_n += 1
+}
+
+@(private)
+sse_watch_apply_stop :: proc(ctx: ^bindings.Ubus_Context, path: string) {
+	for i in 0 ..< g_sse_sub_n {
+		sse := g_sse_subs[i]
+		if sse.path == nil || string(sse.path) != path {
+			continue
+		}
+		bindings.ubus_unsubscribe(ctx, &sse.sub, sse.id)
+		bindings.ubus_unregister_subscriber(ctx, &sse.sub)
+		g_sse_subs[i] = g_sse_subs[g_sse_sub_n - 1]
+		g_sse_sub_n -= 1
+		free(sse)
+		return
+	}
+}
+
+// 通知回调（跑在 ubus 线程的 uloop 回调里）。对应上游 `ubus.c:328-350`：
+// `event: <method>\ndata: <blobmsg json>\n\n`——分帧由 HTTP 侧做，这里只把
+// (path, method, json) 交给事件总线。
+@(private)
+sse_notify_cb :: proc "c" (
+	ctx: ^bindings.Ubus_Context,
+	obj: ^bindings.Ubus_Object,
+	req: ^bindings.Ubus_Request_Data,
+	method: cstring,
+	msg: ^bindings.Blob_Attr,
+) -> c.int {
+	// container_of(obj, struct ubus_subscriber, obj) 的反向（libubus-sub.c:23）：
+	// sub 是 Sse_Sub 的第一个字段，obj 在 sub 内的 +16。
+	obj_addr := transmute(uintptr) obj
+	sse := transmute(^Sse_Sub) transmute(rawptr)(obj_addr - offset_of(bindings.Ubus_Subscriber, obj))
+	if sse == nil || sse.path == nil {
+		return 0
+	}
+
+	// 回调里没有 context（不能分配），所以先落到定长槽里，由主循环发布。
+	json := bindings.blobmsg_format_json(msg, true)
+	if json != nil {
+		defer bindings.c_free(rawptr(json))
+		sse_event_enqueue(sse.path, method, json)
+	}
+	return 0
 }
 
 start_ubus_server :: proc() -> bool {
@@ -675,6 +967,16 @@ g_ubus_ctx: ^bindings.Ubus_Context
 
 // uci_list_configs：/etc/config/* 的字母序列表（libuci 内部走 glob）。
 // P3-3 的 `configs` 方法用它（uci.c:1390）。
+// P3-5：getBoardJSON 读的板级描述文件（luci.c 的 blobmsg_add_json_from_file 路径）。
+luci_board_json_path :: proc() -> string {
+	return "/etc/board.json"
+}
+
+// P3-6：acl.d 目录（session.h 的 RPC_SESSION_ACL_DIR + glob "/*.json"）。
+session_acl_dir :: proc() -> string {
+	return "/usr/share/rpcd/acl.d"
+}
+
 uci_list_configs :: proc(alloc: mem.Allocator) -> (names: []string, ok: bool) {
 	sync.lock(&g_lock)
 	defer sync.unlock(&g_lock)
@@ -1489,4 +1791,1098 @@ file_handler :: proc "c" (
 		_ = bindings.blobmsg_add_json_from_string(&buf, strings.clone_to_cstring(reply, alloc))
 	}
 	return bindings.ubus_send_reply(ctx, req, buf.head)
+}
+
+// ---------------------------------------------------------------------------
+// P3-5（S1）：接管 luci-rpc 对象
+//
+// 与 session/uci/file 同构：一个 handler 覆盖全部方法。方法表照抄上游
+// （luci.c:2033-2040，对象名 `luci-rpc`）。目前 getBoardJSON/getDHCPLeases 在
+// luci_object.odin 里真跑，其余 4 个（netlink/iwinfo/getifaddrs 绑定）回
+// NOT_SUPPORTED(8)，属 S2。
+// ---------------------------------------------------------------------------
+
+@(private)
+g_luci_methods := [?]bindings.Ubus_Object_Method{
+	{name = "getNetworkDevices", handler = luci_handler},
+	{name = "getWirelessDevices", handler = luci_handler},
+	{name = "getHostHints", handler = luci_handler},
+	{name = "getDUIDHints", handler = luci_handler},
+	{name = "getBoardJSON", handler = luci_handler},
+	{name = "getDHCPLeases", handler = luci_handler},
+}
+
+@(private)
+g_luci_type: bindings.Ubus_Object_Type
+
+@(private)
+g_luci_object: bindings.Ubus_Object
+
+@(private)
+register_luci_object :: proc(ctx: ^bindings.Ubus_Context) {
+	g_luci_type = bindings.Ubus_Object_Type{
+		name      = "rpcd-luci",
+		methods   = &g_luci_methods[0],
+		n_methods = c.int(len(g_luci_methods)),
+	}
+	g_luci_object = bindings.Ubus_Object{
+		name      = "luci-rpc",
+		type      = &g_luci_type,
+		methods   = &g_luci_methods[0],
+		n_methods = c.int(len(g_luci_methods)),
+	}
+	if rc := bindings.ubus_add_object(ctx, &g_luci_object); rc != 0 {
+		fmt.eprintln(
+			"[molly] ubus 服务线程：注册 luci-rpc 失败（rpcd 还在跑？先 /etc/init.d/rpcd stop），错误码",
+			rc,
+		)
+		return
+	}
+	fmt.println("[molly] ubus 对象已注册: luci-rpc（getBoardJSON/getDHCPLeases/getDUIDHints，其余回 NOT_SUPPORTED）")
+}
+
+@(private)
+luci_handler :: proc "c" (
+	ctx: ^bindings.Ubus_Context,
+	obj: ^bindings.Ubus_Object,
+	req: ^bindings.Ubus_Request_Data,
+	method: cstring,
+	msg: ^bindings.Blob_Attr,
+) -> c.int {
+	// 与 session/uci/file 的 handler 同构（抽公共 proc 的改动留到 P3-6/P3-7 一起做）
+	context = runtime.default_context()
+	alloc := context.allocator
+
+	params := "{}"
+	if msg != nil {
+		js := bindings.blobmsg_format_json(msg, false)
+		if js != nil {
+			defer bindings.c_free(rawptr(js))
+			params = string(js)
+		}
+	}
+
+	// luci-rpc 的两个已实现方法不消费 sid（上游 policy 里没有 session 字段），
+	// 但注入保持与其它对象一致的机制，由 luci_call 自行忽略。
+	reply, status := luci_call(string(method), params, alloc)
+	if status != 0 {
+		return c.int(status)
+	}
+
+	buf: bindings.Blob_Buf
+	bindings.blobmsg_buf_init(&buf)
+	defer bindings.blob_buf_free(&buf)
+
+	if len(reply) == 0 {
+		_ = bindings.blobmsg_add_json_from_string(&buf, "{}")
+	} else {
+		_ = bindings.blobmsg_add_json_from_string(&buf, strings.clone_to_cstring(reply, alloc))
+	}
+	return bindings.ubus_send_reply(ctx, req, buf.head)
+}
+
+// ---------------------------------------------------------------------------
+// P3-5 S2b：getNetworkDevices（luci.c:648-896）
+//
+// 逐 /sys/class/net 条目读 sysfs + getifaddrs 拿 v4/v6/PACKET 地址。
+// iwinfo（无线设备的 hwmodes/crypto 等字段）上游也是 dlopen 可选的——设备没有
+// libiwinfo 时同样缺这些字段，这里先不实现（偏离记文档）。
+// 只能在 linux 上跑（sysfs）；darwin 的同名 provider 回 8。
+// ---------------------------------------------------------------------------
+
+LUCI_IFF_UP :: 0x1
+LUCI_IFF_BROADCAST :: 0x2
+LUCI_IFF_LOOPBACK :: 0x8
+LUCI_IFF_POINTOPOINT :: 0x10
+LUCI_IFF_NOARP :: 0x80
+LUCI_IFF_PROMISC :: 0x100
+LUCI_IFF_MULTICAST :: 0x1000
+
+// luci.c 的 readstr：读文件、去尾空白；打不开返回空串
+@(private)
+luci_readsys :: proc(path: string, alloc: mem.Allocator) -> string {
+	data, err := os.read_entire_file(path, alloc)
+	if err != nil {
+		return ""
+	}
+	return strings.trim_space(string(data))
+}
+
+@(private)
+luci_sa2str :: proc(sa: ^bindings.Sockaddr_Base, buf: [^]u8) -> string {
+	switch sa.family {
+	case 2: // AF_INET：sin_addr 在偏移 4
+		got := posix.inet_ntop(.INET, rawptr(&sa.data[2]), buf, 16)
+		if got != nil {
+			return strings.clone(string(got), context.allocator)
+		}
+	case 10: // AF_INET6：sin6_addr 在偏移 8
+		got := posix.inet_ntop(.INET6, rawptr(&sa.data[6]), buf, 46)
+		if got != nil {
+			return strings.clone(string(got), context.allocator)
+		}
+	case 17: // AF_PACKET：sll_addr 在偏移 12（= data[10]），取 6 字节（ea2str）
+		mac := sa.data[10:16]
+		out := make([]u8, 17, context.allocator)
+		digits := "0123456789abcdef"
+		for i := 0; i < 6; i += 1 {
+			out[i * 3] = digits[mac[i] >> 4]
+			out[i * 3 + 1] = digits[mac[i] & 15]
+			if i < 5 {
+				out[i * 3 + 2] = ':'
+			}
+		}
+		return string(out[:])
+	}
+	return ""
+}
+
+@(private)
+luci_netdev_json :: proc(
+	name: string,
+	ifa_start: ^bindings.Ifaddrs,
+	alloc: mem.Allocator,
+) -> json.Object {
+	obj := make(json.Object, 8, alloc)
+	obj["name"] = json.Value(json.String(name))
+
+	// bridge（luci.c:670-698）：brif 目录能打开 → bridge=1 + ports + id + stp
+	brif := fmt.aprintf("/sys/class/net/%s/brif", name, allocator = alloc)
+	_, brif_err := os.read_directory_by_path(brif, -1, alloc)
+	if brif_err == nil {
+		obj["bridge"] = json.Value(json.Integer(1))
+		ports := make([dynamic]json.Value, 0, 4, alloc)
+		port_entries, pok := os.read_directory_by_path(brif, -1, alloc)
+		if pok == nil {
+			for p in port_entries {
+				if p.name == "." || p.name == ".." {
+					continue
+				}
+				append(&ports, json.Value(json.String(strings.clone(p.name, alloc))))
+			}
+		}
+		obj["ports"] = json.Value(json.Array(ports))
+		obj["id"] = json.Value(json.String(
+			luci_readsys(fmt.aprintf("/sys/class/net/%s/bridge/bridge_id", name, allocator = alloc), alloc),
+		))
+		obj["stp"] = json.Value(json.Integer(
+			luci_readsys(fmt.aprintf("/sys/class/net/%s/bridge/stp_state", name, allocator = alloc), alloc) != "0" ? 1 : 0,
+		))
+	}
+
+	// master（readlink 的 basename，luci.c:700-706）
+	if link, lerr := os.read_link(
+		fmt.aprintf("/sys/class/net/%s/master", name, allocator = alloc),
+		alloc,
+	); lerr == nil {
+		slash := strings.last_index_byte(link, '/')
+		base := slash >= 0 ? link[slash + 1:] : link
+		obj["master"] = json.Value(json.String(strings.clone(base, alloc)))
+	}
+
+	obj["wireless"] = json.Value(json.Integer(
+		len(luci_readsys(fmt.aprintf("/sys/class/net/%s/phy80211/index", name, allocator = alloc), alloc)) > 0 ? 1 : 0,
+	))
+
+	operstate := luci_readsys(fmt.aprintf("/sys/class/net/%s/operstate", name, allocator = alloc), alloc)
+	obj["up"] = json.Value(json.Integer((operstate == "up" || operstate == "unknown") ? 1 : 0))
+
+	if mtu, pok := strconv.parse_uint(
+		luci_readsys(fmt.aprintf("/sys/class/net/%s/mtu", name, allocator = alloc), alloc),
+		10,
+	); pok && mtu > 0 {
+		obj["mtu"] = json.Value(json.Integer(i64(mtu)))
+	}
+	if qlen, pok := strconv.parse_uint(
+		luci_readsys(fmt.aprintf("/sys/class/net/%s/tx_queue_len", name, allocator = alloc), alloc),
+		10,
+	); pok && qlen > 0 {
+		obj["qlen"] = json.Value(json.Integer(i64(qlen)))
+	}
+
+	// devtype（luci.c:726-738）：uevent 里的 DEVTYPE= 行，缺省 "ethernet"
+	devtype := "ethernet"
+	uevent := luci_readsys(fmt.aprintf("/sys/class/net/%s/uevent", name, allocator = alloc), alloc)
+	if idx := strings.index(uevent, "DEVTYPE="); idx >= 0 {
+		rest := uevent[idx + len("DEVTYPE="):]
+		nl := strings.index_byte(rest, '\n')
+		devtype = nl >= 0 ? rest[:nl] : rest
+	}
+	obj["devtype"] = json.Value(json.String(devtype))
+
+	// v4/v6 地址（luci.c:740-772），顺带把 flags OR 起来（luci.c:768/789）
+	ifa_flags: u32
+	buf: [46]u8
+	families := [2]int{2, 10}
+	family_keys := [2]string{"ipaddrs", "ip6addrs"}
+	for fi := 0; fi < 2; fi += 1 {
+		family := families[fi]
+		arr := make([dynamic]json.Value, 0, 2, alloc)
+		for ifa := ifa_start; ifa != nil; ifa = ifa.next {
+			if ifa.addr == nil || ifa.addr.family != u16(family) {
+				continue
+			}
+			if string(ifa.name) != name {
+				continue
+			}
+			entry := make(json.Object, 2, alloc)
+			entry["address"] = json.Value(json.String(luci_sa2str(ifa.addr, &buf[0])))
+			if ifa.netmask != nil {
+				entry["netmask"] = json.Value(json.String(luci_sa2str(ifa.netmask, &buf[0])))
+			}
+			if ifa.dstaddr != nil && (u32(ifa.flags) & LUCI_IFF_POINTOPOINT) != 0 {
+				entry["remote"] = json.Value(json.String(luci_sa2str(ifa.dstaddr, &buf[0])))
+			} else if ifa.dstaddr != nil && (u32(ifa.flags) & LUCI_IFF_BROADCAST) != 0 {
+				entry["broadcast"] = json.Value(json.String(luci_sa2str(ifa.dstaddr, &buf[0])))
+			}
+			append(&arr, json.Value(entry))
+			ifa_flags |= u32(ifa.flags)
+		}
+		obj[family_keys[fi]] = json.Value(json.Array(arr))
+	}
+
+	// PACKET 信息（luci.c:774-809）：mac/type/ifindex/parent，取第一个匹配项
+	for ifa := ifa_start; ifa != nil; ifa = ifa.next {
+		if ifa.addr == nil || ifa.addr.family != 17 {
+			continue
+		}
+		if string(ifa.name) != name {
+			continue
+		}
+		// struct sockaddr_ll（linux/if_packet.h）：family 0-1、protocol 2-3、
+		// ifindex 4-7、hatype 8-9、pkttype 10、halen 11、addr 12-19。
+		// 相对 Sockaddr_Base 的 data[]（从 sockaddr 偏移 2 起）：
+		// ifindex → data[2..5]、hatype → data[6..7]、halen → data[9]、addr → data[10..17]
+		hatype := u16(ifa.addr.data[6]) | u16(ifa.addr.data[7]) << 8
+		ifindex := i32(
+			u32(ifa.addr.data[2]) | u32(ifa.addr.data[3]) << 8 |
+			u32(ifa.addr.data[4]) << 16 | u32(ifa.addr.data[5]) << 24,
+		)
+		if hatype == u16(1) {
+			obj["mac"] = json.Value(json.String(luci_sa2str(ifa.addr, &buf[0])))
+		}
+		obj["type"] = json.Value(json.Integer(i64(hatype)))
+		obj["ifindex"] = json.Value(json.Integer(i64(ifindex)))
+
+		// parent（luci.c:791-806）：iflink != ifindex 时找对应设备名
+		if iflink, pok := strconv.parse_int(
+			luci_readsys(fmt.aprintf("/sys/class/net/%s/iflink", name, allocator = alloc), alloc),
+			10,
+		); pok && i32(iflink) != ifindex {
+			for p := ifa_start; p != nil; p = p.next {
+				if p.addr == nil || p.addr.family != 17 {
+					continue
+				}
+				pi := i32(
+					u32(p.addr.data[2]) | u32(p.addr.data[3]) << 8 |
+					u32(p.addr.data[4]) << 16 | u32(p.addr.data[5]) << 24,
+				)
+				if pi == i32(iflink) {
+					obj["parent"] = json.Value(json.String(strings.clone(string(p.name), alloc)))
+					break
+				}
+			}
+		}
+		break // 只取第一个 PACKET 匹配（luci.c:808）
+	}
+
+	// stats（luci.c:811-820）
+	stats_names := [10]string{
+		"rx_bytes", "tx_bytes", "tx_errors", "rx_errors", "tx_packets",
+		"rx_packets", "multicast", "collisions", "rx_dropped", "tx_dropped",
+	}
+	stats := make(json.Object, 10, alloc)
+	for sn in stats_names {
+		v, _ := strconv.parse_uint(
+			luci_readsys(fmt.aprintf("/sys/class/net/%s/statistics/%s", name, sn, allocator = alloc), alloc),
+			10,
+		)
+		stats[sn] = json.Value(json.Integer(i64(v)))
+	}
+	obj["stats"] = json.Value(stats)
+
+	// flags（luci.c:822-830）
+	flags := make(json.Object, 7, alloc)
+	flags["up"] = json.Value(json.Integer((ifa_flags & LUCI_IFF_UP) != 0 ? 1 : 0))
+	flags["broadcast"] = json.Value(json.Integer((ifa_flags & LUCI_IFF_BROADCAST) != 0 ? 1 : 0))
+	flags["promisc"] = json.Value(json.Integer((ifa_flags & LUCI_IFF_PROMISC) != 0 ? 1 : 0))
+	flags["loopback"] = json.Value(json.Integer((ifa_flags & LUCI_IFF_LOOPBACK) != 0 ? 1 : 0))
+	flags["noarp"] = json.Value(json.Integer((ifa_flags & LUCI_IFF_NOARP) != 0 ? 1 : 0))
+	flags["multicast"] = json.Value(json.Integer((ifa_flags & LUCI_IFF_MULTICAST) != 0 ? 1 : 0))
+	flags["pointtopoint"] = json.Value(json.Integer((ifa_flags & LUCI_IFF_POINTOPOINT) != 0 ? 1 : 0))
+	obj["flags"] = json.Value(flags)
+
+	// link（luci.c:832-854）
+	link := make(json.Object, 5, alloc)
+	if speed := luci_readsys(fmt.aprintf("/sys/class/net/%s/speed", name, allocator = alloc), alloc); len(speed) > 0 {
+		v, pok := strconv.parse_int(speed, 10)
+		if pok {
+			link["speed"] = json.Value(json.Integer(v))
+		}
+	}
+	if duplex := luci_readsys(fmt.aprintf("/sys/class/net/%s/duplex", name, allocator = alloc), alloc); len(duplex) > 0 {
+		link["duplex"] = json.Value(json.String(duplex))
+	}
+	carrier, _ := strconv.parse_int(luci_readsys(fmt.aprintf("/sys/class/net/%s/carrier", name, allocator = alloc), alloc), 10)
+	link["carrier"] = json.Value(json.Integer(carrier == 1 ? 1 : 0))
+	changes, _ := strconv.parse_int(luci_readsys(fmt.aprintf("/sys/class/net/%s/carrier_changes", name, allocator = alloc), alloc), 10)
+	link["changes"] = json.Value(json.Integer(changes))
+	up_count, _ := strconv.parse_int(luci_readsys(fmt.aprintf("/sys/class/net/%s/carrier_up_count", name, allocator = alloc), alloc), 10)
+	link["up_count"] = json.Value(json.Integer(up_count))
+	down_count, _ := strconv.parse_int(luci_readsys(fmt.aprintf("/sys/class/net/%s/carrier_down_count", name, allocator = alloc), alloc), 10)
+	link["down_count"] = json.Value(json.Integer(down_count))
+	obj["link"] = json.Value(link)
+
+	return obj
+}
+
+// getNetworkDevices 的回复（luci.c:860-896）。
+@(private)
+luci_network_devices_json :: proc(alloc: mem.Allocator) -> (string, int) {
+	doc := make(json.Object, 8, alloc)
+
+	ifa_start: ^bindings.Ifaddrs
+	if bindings.getifaddrs(&ifa_start) != 0 {
+		ifa_start = nil // 上游失败也继续（只是没有地址信息）
+	} else if ifa_start != nil {
+		defer bindings.freeifaddrs(ifa_start)
+	}
+
+	entries, derr := os.read_directory_by_path("/sys/class/net", -1, alloc)
+	if derr == nil {
+		for e in entries {
+			if e.name == "." || e.name == ".." {
+				continue
+			}
+			doc[strings.clone(e.name, alloc)] = json.Value(luci_netdev_json(e.name, ifa_start, alloc))
+		}
+	}
+
+	return session_marshal(json.Value(doc), alloc), LUCI_STATUS_OK
+}
+
+// ---------------------------------------------------------------------------
+// P3-5 S2c：getWirelessDevices（luci.c:1098-1190）
+//
+// 上游是对 netifd 的 `network.wireless status` 的**代理**：ubus_invoke + 延迟回复，
+// 回调里重塑（跳过 iwinfo 键、interfaces 数组逐表去掉 iwinfo、再按 radio 名补 iwinfo）。
+// molly 用**同步** ubus_invoke（bindings.ubus_invoke_fd）：在 ubus 服务线程里等 netifd
+// 回包——上游用 async + defer 避免在方法回调里重入 uloop；molly 的对象层是同步 RPC，
+// 这里就直接同步取（偏离记文档）。
+// iwinfo 未实现（见 S2b′），所以重塑等价于「跳过所有 iwinfo 键」。
+// ---------------------------------------------------------------------------
+
+@(private)
+g_luci_invoke_reply: string
+
+@(private)
+luci_invoke_data_cb :: proc "c" (req: rawptr, msg_type: c.int, msg: ^bindings.Blob_Attr) {
+	context = runtime.default_context()
+	if msg == nil {
+		return
+	}
+	js := bindings.blobmsg_format_json(msg, false)
+	if js == nil {
+		return
+	}
+	defer bindings.c_free(rawptr(js))
+	g_luci_invoke_reply = strings.clone(string(js))
+}
+
+@(private)
+luci_wireless_devices_json :: proc(alloc: mem.Allocator) -> (string, int) {
+	ctx := g_ubus_ctx
+	if ctx == nil {
+		return "", LUCI_STATUS_UNKNOWN_ERROR
+	}
+
+	id: u32
+	if bindings.ubus_lookup_id(ctx, "network.wireless", &id) != 0 {
+		return "", LUCI_STATUS_NOT_FOUND // 上游：invoke_ubus 起不来 → NOT_FOUND（:1187）
+	}
+
+	req: bindings.Blob_Buf
+	bindings.blobmsg_buf_init(&req)
+	defer bindings.blob_buf_free(&req)
+
+	g_luci_invoke_reply = ""
+	if rc := bindings.ubus_invoke_fd(
+		ctx,
+		id,
+		"status",
+		req.head,
+		luci_invoke_data_cb,
+		nil,
+		30000,
+		-1,
+	); rc != 0 {
+		return "", LUCI_STATUS_UNKNOWN_ERROR
+	}
+	raw := g_luci_invoke_reply
+	g_luci_invoke_reply = ""
+	if len(raw) == 0 {
+		return "", LUCI_STATUS_UNKNOWN_ERROR
+	}
+
+	doc: json.Value
+	if err := json.unmarshal(transmute([]byte)(raw), &doc, .JSON, alloc); err != nil {
+		return "", LUCI_STATUS_UNKNOWN_ERROR
+	}
+	status_obj, is_obj := doc.(json.Object)
+	if !is_obj {
+		return "", LUCI_STATUS_UNKNOWN_ERROR
+	}
+
+	out := make(json.Object, len(status_obj), alloc)
+	for radio_name, radio_val in status_obj {
+		radio, radio_ok := radio_val.(json.Object)
+		if !radio_ok {
+			continue // 上游只收 table（:1108-1110）
+		}
+		r_out := make(json.Object, len(radio), alloc)
+		first_ifname := "" // 上游：第一个能取到 iwinfo 的接口名（:1151）
+		for k, v in radio {
+			if k == "iwinfo" {
+				continue // :1120-1122
+			}
+			if k == "interfaces" {
+				arr, arr_ok := v.(json.Array)
+				if !arr_ok {
+					continue // 类型不对 → 跳过整个键（:1124-1125）
+				}
+				i_out := make([dynamic]json.Value, 0, len(arr), alloc)
+				for iface_val in arr {
+					iface, iface_ok := iface_val.(json.Object)
+					if !iface_ok {
+						continue // 只收 table（:1132-1133）
+					}
+					clean := make(json.Object, len(iface), alloc)
+					ifname := ""
+					for ik, iv in iface {
+						if ik == "iwinfo" {
+							continue // :1143-1144
+						}
+						if ik == "ifname" {
+							if sv, is_str := iv.(json.String); is_str {
+								ifname = string(sv)
+							}
+						}
+						clean[ik] = iv
+					}
+					// 接口级 iwinfo（phy_only=false）；第一个成功的 ifname 给 radio 级用
+					if len(ifname) > 0 {
+						if iw, iw_ok := luci_iwinfo_json(ifname, false, alloc); iw_ok {
+							clean["iwinfo"] = json.Value(iw)
+							if len(first_ifname) == 0 {
+								first_ifname = strings.clone(ifname, alloc)
+							}
+						}
+					}
+					append(&i_out, json.Value(clean))
+				}
+				r_out["interfaces"] = json.Value(json.Array(i_out))
+				continue
+			}
+			r_out[k] = v // 其余属性原样拷贝（blobmsg_add_blob，:1158-1160）
+		}
+
+		// radio 级 iwinfo（phy_only=true）：没有接口能取到时用 radio 名试（:1163-1165）
+		radio_dev := len(first_ifname) > 0 ? first_ifname : radio_name
+		if iw, iw_ok := luci_iwinfo_json(radio_dev, true, alloc); iw_ok {
+			r_out["iwinfo"] = json.Value(iw)
+		}
+
+		out[radio_name] = json.Value(r_out)
+	}
+
+	return session_marshal(json.Value(out), alloc), LUCI_STATUS_OK
+}
+
+// ---------------------------------------------------------------------------
+// P3-5 S2d：getHostHints（luci.c:1192-1828）
+//
+// 五个来源按优先级合并（**数字越大越靠前**）：
+//   netlink 邻居表 10、/etc/ethers 50、dhcp 租约 100、getifaddrs 200、uci 静态租约 250
+// 回复：以 MAC 文本为键的对象，值是 {ipaddrs:[v4 文本], ip6addrs:[v6 文本], name?}；
+// 同一 MAC 的同族地址按（prio DESC, 地址字节 ASC）排序，重复地址取优先级更高者。
+//
+// 两个上游行为要照抄（golden 对比会看到）：
+//   1. uci 静态租约的 `ip` **实际从不生效**——上游 uci_lookup_ptr 后的类型判断写成
+//      `!= UCI_TYPE_STRING`（:1499-1503），正常 STRING 选项必然走 else → n=NULL →
+//      in.s_addr=0 → 不添加地址。所以静态租约只贡献 MAC + hostname。
+//   2. rrdns（`network.rrdns` ubus 调用）补主机名：v6 只在没有主机名时填，v4 **覆盖**。
+//      rrdns 不存在时（非 OpenWrt 环境）静默跳过。
+//
+// linux-only（netlink/ifaddrs/sysfs）；darwin 回 8。
+// ---------------------------------------------------------------------------
+
+LUCI_PRIO_NL :: 10
+LUCI_PRIO_ETHER :: 50
+LUCI_PRIO_LEASEFILE :: 100
+LUCI_PRIO_IFADDRS :: 200
+LUCI_PRIO_STATIC_LEASE :: 250
+
+Luci_Hint_Addr :: struct {
+	af:   int, // 4 / 6
+	prio: int,
+	addr: string,
+}
+
+Luci_Hint :: struct {
+	hostname: string,
+	v4:       [dynamic]Luci_Hint_Addr,
+	v6:       [dynamic]Luci_Hint_Addr,
+}
+
+@(private)
+luci_hint_get :: proc(hints: ^map[string]^Luci_Hint, mac: string, alloc: mem.Allocator) -> ^Luci_Hint {
+	if h, ok := hints[mac]; ok {
+		return h
+	}
+	h := new(Luci_Hint, alloc)
+	h^ = Luci_Hint {
+		v4 = make([dynamic]Luci_Hint_Addr, 0, 2, alloc),
+		v6 = make([dynamic]Luci_Hint_Addr, 0, 2, alloc),
+	}
+	hints[strings.clone(mac, alloc)] = h
+	return h
+}
+
+// 地址的字节日表示（比较用；失败返回 (buf, 0)）
+@(private)
+luci_addr_bytes :: proc(af: int, addr: string, buf: ^[16]u8) -> int {
+	c := strings.clone_to_cstring(addr)
+	ok := posix.inet_pton(af == 4 ? .INET : .INET6, c, rawptr(buf))
+	return ok == .SUCCESS ? (af == 4 ? 4 : 16) : 0
+}
+
+// luci.c:1279-1320：同族同地址去重，只有更高优先级才更新
+@(private)
+luci_hint_add_addr :: proc(h: ^Luci_Hint, af: int, prio: int, addr: string, alloc: mem.Allocator) {
+	list := af == 4 ? &h.v4 : &h.v6
+	for &item in list {
+		if item.addr == addr {
+			if prio > item.prio {
+				item.prio = prio // 上游：删了重插以获得新排序；这里排序在收尾统一做
+			}
+			return
+		}
+	}
+	append(list, Luci_Hint_Addr{af = af, prio = prio, addr = strings.clone(addr, alloc)})
+}
+
+@(private)
+luci_hint_sort :: proc(list: ^[dynamic]Luci_Hint_Addr) {
+	// 插入排序：prio DESC，同 prio 比地址字节 ASC（luci.c:1219-1234）
+	for i := 1; i < len(list); i += 1 {
+		cur := list[i]
+		j := i - 1
+		for j >= 0 {
+			other := list[j]
+			less := false
+			if cur.prio != other.prio {
+				less = cur.prio > other.prio
+			} else {
+				a: [16]u8
+				b: [16]u8
+				la := luci_addr_bytes(cur.af, cur.addr, &a)
+				lb := luci_addr_bytes(other.af, other.addr, &b)
+				if la != 0 && lb != 0 && la == lb {
+					cmp := 0
+					for k := 0; k < la; k += 1 {
+						if a[k] != b[k] {
+							cmp = int(a[k]) - int(b[k])
+							break
+						}
+					}
+					less = cmp < 0
+				}
+			}
+			if !less {
+				break
+			}
+			list[j + 1] = other
+			j -= 1
+		}
+		list[j + 1] = cur
+	}
+}
+
+// --- 来源 1：netlink 邻居表（luci.c:1236-1425）-----------------------------
+//
+// 用**裸 netlink socket**（不引 libnl：设备上 rpcd 侧有 libnl，但 molly 少一个运行时依赖）。
+// 发 RTM_GETNEIGH dump，收 RTM_NEWNEIGH，过滤 family/state，取 NDA_DST + NDA_LLADDR。
+
+LUCI_AF_NETLINK :: 16
+LUCI_NETLINK_ROUTE :: 0
+LUCI_RTM_NEWNEIGH :: 28
+LUCI_RTM_GETNEIGH :: 30
+LUCI_NLM_F_REQUEST :: 0x1
+LUCI_NLM_F_DUMP :: 0x300
+LUCI_NLM_F_MULTI :: 0x2
+LUCI_NLMSG_ERROR :: 2
+LUCI_NLMSG_DONE :: 3
+LUCI_NDA_DST :: 1
+LUCI_NDA_LLADDR :: 3
+LUCI_NUD_NOARP :: 0x40
+
+@(private)
+luci_mac_text :: proc(bytes: []u8, alloc: mem.Allocator) -> string {
+	if len(bytes) < 6 {
+		return ""
+	}
+	out := make([]u8, 17, alloc)
+	digits := "0123456789abcdef"
+	for i := 0; i < 6; i += 1 {
+		out[i * 3] = digits[bytes[i] >> 4]
+		out[i * 3 + 1] = digits[bytes[i] & 15]
+		if i < 5 {
+			out[i * 3 + 2] = ':'
+		}
+	}
+	return string(out[:])
+}
+
+@(private)
+luci_ip_text :: proc(af: int, bytes: []u8, alloc: mem.Allocator) -> string {
+	if af == 4 && len(bytes) < 4 {
+		return ""
+	}
+	if af == 6 && len(bytes) < 16 {
+		return ""
+	}
+	buf: [46]u8
+	got := posix.inet_ntop(af == 4 ? .INET : .INET6, rawptr(&bytes[0]), &buf[0], 46)
+	if got == nil {
+		return ""
+	}
+	return strings.clone(string(got), alloc)
+}
+
+@(private)
+luci_get_host_hints_nl :: proc(
+	hints: ^map[string]^Luci_Hint,
+	alloc: mem.Allocator,
+) {
+	fd := posix.socket(posix.AF(LUCI_AF_NETLINK), .RAW, posix.Protocol(LUCI_NETLINK_ROUTE))
+	if int(fd) < 0 {
+		return
+	}
+	defer posix.close(fd)
+
+	// bind 拿一个端口（pid=0 → 内核分配）
+	addr: [12]u8 // struct sockaddr_nl{family u16, pad u16, pid u32, groups u32}
+	addr[0] = u8(LUCI_AF_NETLINK)
+	if posix.bind(fd, (^posix.sockaddr)(rawptr(&addr[0])), 12) != .OK {
+		return
+	}
+
+	// 请求：nlmsghdr(16) + ndmsg(12)
+	req: [28]u8
+	req_len: u32 = 28
+	req[0] = u8(req_len & 0xff)
+	req[1] = u8((req_len >> 8) & 0xff)
+	req[2] = u8((req_len >> 16) & 0xff)
+	req[3] = u8((req_len >> 24) & 0xff)
+	req_type: u16 = u16(LUCI_RTM_GETNEIGH)
+	req[4] = u8(req_type & 0xff)
+	req[5] = u8(req_type >> 8)
+	req_flags: u16 = u16(LUCI_NLM_F_REQUEST | LUCI_NLM_F_DUMP)
+	req[6] = u8(req_flags & 0xff)
+	req[7] = u8(req_flags >> 8)
+	// ndm_family = AF_UNSPEC(0)，其余全 0
+
+	if posix.send(fd, &req[0], 28, {}) < 0 {
+		return
+	}
+
+	buf: [16384]u8
+	done := false
+	for !done {
+		n := posix.recv(fd, &buf[0], len(buf), {})
+		if n <= 0 {
+			break
+		}
+		off := 0
+		for off + 16 <= int(n) {
+			msg_len := int(u32(buf[off]) | u32(buf[off + 1]) << 8 | u32(buf[off + 2]) << 16 | u32(buf[off + 3]) << 24)
+			msg_type := u16(buf[off + 4]) | u16(buf[off + 5]) << 8
+			if msg_len < 16 || off + msg_len > int(n) {
+				break
+			}
+			if msg_type == u16(LUCI_NLMSG_DONE) {
+				done = true
+				break
+			}
+			if msg_type == u16(LUCI_NLMSG_ERROR) {
+				done = true
+				break
+			}
+			if msg_type == u16(LUCI_RTM_NEWNEIGH) && msg_len >= 28 {
+				nd := off + 16
+				family := buf[nd]
+				state := u16(buf[nd + 8]) | u16(buf[nd + 9]) << 8
+
+				// family 只认 v4/v6；state 里除了 NOARP 之外任意位（luci.c:1346-1351）
+				ok_family := family == 2 || family == 10
+				ok_state := (state & (0xff & ~u16(LUCI_NUD_NOARP))) != 0
+				if ok_family && ok_state {
+					af := int(family) == 2 ? 4 : 6
+					dst: []u8
+					mac: []u8
+					// 属性从 nd+12 开始
+					ao := nd + 12
+					for ao + 4 <= off + msg_len {
+						alen := int(u16(buf[ao]) | u16(buf[ao + 1]) << 8)
+						atype := u16(buf[ao + 2]) | u16(buf[ao + 3]) << 8
+						if alen < 4 || ao + alen > off + msg_len {
+							break
+						}
+						payload := buf[ao + 4:ao + alen]
+						if atype == u16(LUCI_NDA_DST) {
+							dst = payload
+						} else if atype == u16(LUCI_NDA_LLADDR) {
+							mac = payload
+						}
+						ao += (alen + 3) & ~int(3) // 4 字节对齐
+					}
+					if len(mac) >= 6 && len(dst) > 0 {
+						mac_text := luci_mac_text(mac, alloc)
+						ip_text := luci_ip_text(af, dst, alloc)
+						if len(mac_text) > 0 && len(ip_text) > 0 {
+							h := luci_hint_get(hints, mac_text, alloc)
+							luci_hint_add_addr(h, af, LUCI_PRIO_NL, ip_text, alloc)
+						}
+					}
+				}
+			}
+			off += (msg_len + 3) & ~int(3)
+		}
+	}
+}
+
+// --- 来源 2/3/5：/etc/ethers、dhcp 租约、uci 静态租约 ----------------------
+
+@(private)
+luci_get_host_hints_ether :: proc(
+	hints: ^map[string]^Luci_Hint,
+	alloc: mem.Allocator,
+) {
+	data, err := os.read_entire_file("/etc/ethers", alloc)
+	if err != nil {
+		return // 文件不存在：直接跳过（luci.c:1434-1437）
+	}
+	for line in strings.split(string(data), "\n", alloc) {
+		f := strings.fields(strings.trim_space(line), alloc)
+		if len(f) < 1 {
+			continue
+		}
+		mac := luci_parse_mac(f[0], alloc)
+		if len(mac) == 0 {
+			continue
+		}
+		h := luci_hint_get(hints, mac, alloc)
+		if len(f) < 2 {
+			continue
+		}
+		// 第二个字段是 v4 → 当地址加（prio 50）；否则当主机名（luci.c:1446-1456）
+		if luci_valid_ip4(f[1]) {
+			luci_hint_add_addr(h, 4, LUCI_PRIO_ETHER, f[1], alloc)
+		} else if len(h.hostname) == 0 {
+			h.hostname = strings.clone(f[1], alloc)
+		}
+	}
+}
+
+@(private)
+luci_get_host_hints_uci :: proc(
+	hints: ^map[string]^Luci_Hint,
+	alloc: mem.Allocator,
+) {
+	// 静态租约（dhcp config 的 host section，prio 250）
+	// 注意：`ip` 照抄上游**不生效**（见文件头注释 1）。
+	if sections, ok := uci_config_sections("dhcp", alloc); ok {
+		for s in sections {
+			if s.type_name != "host" {
+				continue
+			}
+			name := ""
+			macs: []string
+			for o in s.options {
+				switch o.name {
+				case "name":
+					if len(o.values) > 0 {
+						name = o.values[0]
+					}
+				case "mac":
+					if o.is_list {
+						macs = o.values
+					} else if len(o.values) > 0 {
+						// 单一字符串里可以有空格分隔的多个 MAC（luci.c:1523-1527）
+						macs = strings.fields(o.values[0], alloc)
+					}
+				}
+			}
+			for m in macs {
+				mac := luci_parse_mac(m, alloc)
+				if len(mac) == 0 {
+					continue
+				}
+				h := luci_hint_get(hints, mac, alloc)
+				if len(name) > 0 && len(h.hostname) == 0 {
+					h.hostname = strings.clone(name, alloc)
+				}
+			}
+		}
+	}
+
+	// dhcp 租约文件（prio 100，luci.c:1555-1575）
+	now := int(time.to_unix_seconds(time.now()))
+	for f in luci_lease_files(alloc) {
+		data, err := os.read_entire_file(f.path, alloc)
+		if err != nil {
+			continue
+		}
+		for e in luci_parse_leases(string(data), f.odhcpd, now, alloc) {
+			if len(e.mac) == 0 {
+				continue
+			}
+			h := luci_hint_get(hints, e.mac, alloc)
+			if len(e.addr) > 0 {
+				luci_hint_add_addr(h, e.af, LUCI_PRIO_LEASEFILE, e.addr, alloc)
+			}
+			if len(e.hostname) > 0 && len(h.hostname) == 0 {
+				h.hostname = strings.clone(e.hostname, alloc)
+			}
+		}
+	}
+}
+
+// --- 来源 4：getifaddrs（luci.c:1584-1658）--------------------------------
+
+@(private)
+luci_get_host_hints_ifaddrs :: proc(
+	hints: ^map[string]^Luci_Hint,
+	alloc: mem.Allocator,
+) {
+	ifa_start: ^bindings.Ifaddrs
+	if bindings.getifaddrs(&ifa_start) != 0 || ifa_start == nil {
+		return
+	}
+	defer bindings.freeifaddrs(ifa_start)
+
+	// 按设备名聚合：MAC（AF_PACKET）+ 第一个 v4 + 第一个 v6
+	Device :: struct {
+		mac: string,
+		v4:  string,
+		v6:  string,
+	}
+	devices := make(map[string]^Device, 4, alloc)
+
+	for ifa := ifa_start; ifa != nil; ifa = ifa.next {
+		if ifa.addr == nil {
+			continue
+		}
+		name := string(ifa.name)
+		d, has := devices[name]
+		if !has {
+			d = new(Device, alloc)
+			devices[strings.clone(name, alloc)] = d
+		}
+		switch ifa.addr.family {
+		case 17: // AF_PACKET：sll_halen 在偏移 10（相对 sockaddr 起点 = data[9]）、
+			// sll_addr 在偏移 12（= data[10]）
+			halen := ifa.addr.data[9]
+			if halen == 6 && len(d.mac) == 0 {
+				d.mac = luci_mac_text(ifa.addr.data[10:16], alloc)
+			}
+		case 10: // AF_INET6：sin6_addr 在偏移 8（= data[6]）
+			if len(d.v6) == 0 {
+				d.v6 = luci_ip_text(6, ifa.addr.data[6:22], alloc)
+			}
+		case 2: // AF_INET：sin_addr 在偏移 4（= data[2]）
+			if len(d.v4) == 0 {
+				d.v4 = luci_ip_text(4, ifa.addr.data[2:6], alloc)
+			}
+		}
+	}
+
+	for _, d in devices {
+		if len(d.mac) == 0 || (len(d.v4) == 0 && len(d.v6) == 0) {
+			continue
+		}
+		h := luci_hint_get(hints, d.mac, alloc)
+		if len(d.v4) > 0 {
+			luci_hint_add_addr(h, 4, LUCI_PRIO_IFADDRS, d.v4, alloc)
+		}
+		if len(d.v6) > 0 {
+			luci_hint_add_addr(h, 6, LUCI_PRIO_IFADDRS, d.v6, alloc)
+		}
+	}
+}
+
+// --- 收尾：rrdns（可选）+ 组装回复（luci.c:1709-1808）---------------------
+
+@(private)
+luci_hint_v6_rrdns_ok :: proc(addr: string) -> bool {
+	// 非 ::（未指定）、非 link-local（fe80::/10）、非 ULA（fc00::/7）（luci.c:1731-1734）
+	b: [16]u8
+	if luci_addr_bytes(6, addr, &b) == 0 {
+		return false
+	}
+	unspecified := true
+	for v in b {
+		if v != 0 {
+			unspecified = false
+			break
+		}
+	}
+	if unspecified {
+		return false
+	}
+	if b[0] == 0xfe && (b[1] & 0xc0) == 0x80 {
+		return false
+	}
+	if (b[0] & 0xfe) == 0xfc {
+		return false
+	}
+	return true
+}
+
+@(private)
+luci_host_hints_json :: proc(alloc: mem.Allocator) -> (string, int) {
+	hints := make(map[string]^Luci_Hint, 8, alloc)
+
+	luci_get_host_hints_nl(&hints, alloc)
+	luci_get_host_hints_uci(&hints, alloc)
+	luci_get_host_hints_ether(&hints, alloc)
+	luci_get_host_hints_ifaddrs(&hints, alloc)
+
+	// rrdns 补主机名（上游同步调 network.rrdns lookup；对象不存在就跳过）
+	luci_host_hints_rrdns(&hints, alloc)
+
+	out := make(json.Object, len(hints), alloc)
+	for mac, h in hints {
+		luci_hint_sort(&h.v4)
+		luci_hint_sort(&h.v6)
+
+		obj := make(json.Object, 3, alloc)
+		v4 := make([dynamic]json.Value, 0, len(h.v4), alloc)
+		for a in h.v4 {
+			append(&v4, json.Value(json.String(a.addr)))
+		}
+		obj["ipaddrs"] = json.Value(json.Array(v4))
+		v6 := make([dynamic]json.Value, 0, len(h.v6), alloc)
+		for a in h.v6 {
+			append(&v6, json.Value(json.String(a.addr)))
+		}
+		obj["ip6addrs"] = json.Value(json.Array(v6))
+		if len(h.hostname) > 0 {
+			obj["name"] = json.Value(json.String(h.hostname))
+		}
+		out[mac] = json.Value(obj)
+	}
+
+	return session_marshal(json.Value(out), alloc), LUCI_STATUS_OK
+}
+
+// rrdns：一次 ubus 调用把「主机名」补进 hint。与 S2c 同用同步 ubus_invoke。
+@(private)
+g_luci_rrdns_reply: string
+
+@(private)
+luci_rrdns_data_cb :: proc "c" (req: rawptr, msg_type: c.int, msg: ^bindings.Blob_Attr) {
+	context = runtime.default_context()
+	if msg == nil {
+		return
+	}
+	js := bindings.blobmsg_format_json(msg, false)
+	if js == nil {
+		return
+	}
+	defer bindings.c_free(rawptr(js))
+	g_luci_rrdns_reply = strings.clone(string(js))
+}
+
+@(private)
+luci_host_hints_rrdns :: proc(hints: ^map[string]^Luci_Hint, alloc: mem.Allocator) {
+	ctx := g_ubus_ctx
+	if ctx == nil {
+		return
+	}
+
+	// 收集要查的地址（v4 全收、v6 过滤掉 link-local/ULA/未指定）
+	addrs := make([dynamic]string, 0, 8, alloc)
+	for _, h in hints {
+		for a in h.v4 {
+			append(&addrs, a.addr)
+		}
+		for a in h.v6 {
+			if luci_hint_v6_rrdns_ok(a.addr) {
+				append(&addrs, a.addr)
+			}
+		}
+	}
+	if len(addrs) == 0 {
+		return
+	}
+
+	id: u32
+	if bindings.ubus_lookup_id(ctx, "network.rrdns", &id) != 0 {
+		return // 对象不存在（上游 invoke 失败也照样出结果）
+	}
+
+	req: bindings.Blob_Buf
+	bindings.blobmsg_buf_init(&req)
+	defer bindings.blob_buf_free(&req)
+	arr := bindings.blobmsg_open_array(&req, "addrs")
+	for a in addrs {
+		_ = bindings.blobmsg_add_string(&req, nil, strings.clone_to_cstring(a))
+	}
+	bindings.blobmsg_close_array(&req, arr)
+	_ = bindings.blobmsg_add_u32(&req, "timeout", 250)
+	_ = bindings.blobmsg_add_u32(&req, "limit", u32(len(addrs)))
+
+	g_luci_rrdns_reply = ""
+	if rc := bindings.ubus_invoke_fd(ctx, id, "lookup", req.head, luci_rrdns_data_cb, nil, 1000, -1); rc != 0 {
+		return
+	}
+	raw := g_luci_rrdns_reply
+	g_luci_rrdns_reply = ""
+	if len(raw) == 0 {
+		return
+	}
+
+	doc: json.Value
+	if err := json.unmarshal(transmute([]byte)(raw), &doc, .JSON, alloc); err != nil {
+		return
+	}
+	obj, is_obj := doc.(json.Object)
+	if !is_obj {
+		return
+	}
+
+	// 回复是 {地址: 主机名}：v6 只在缺主机名时填，v4 覆盖（luci.c:1680-1701）
+	for addr_key, val in obj {
+		name, is_str := val.(json.String)
+		if !is_str || len(name) == 0 {
+			continue
+		}
+		for _, h in hints {
+			for &a in h.v6 {
+				if a.addr == addr_key {
+					if len(h.hostname) == 0 {
+						h.hostname = strings.clone(string(name), alloc)
+					}
+					break
+				}
+			}
+			for &a in h.v4 {
+				if a.addr == addr_key {
+					h.hostname = strings.clone(string(name), alloc)
+					break
+				}
+			}
+		}
+	}
 }

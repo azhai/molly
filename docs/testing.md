@@ -7,10 +7,11 @@ molly 的测试按三层组织，每层解决不同问题、判据也不同。**
 
 | 层 | 文件 / 命令 | 回答什么问题 | 通过判据 | **不能**证明什么 |
 |---|---|---|---|---|
-| 单元 | `src/*/*_test.odin` → `./tests/unit.sh` | 单个纯函数的语义：路径规范化、MIME、`depends` 判定、菜单树解析、错误文案、CGI 环境/响应翻译、**`session` 对象的十方法语义**、**`uci` 的只读语义（S1）、delta/changes 语义（S2）与写路径的计划层 + 五个写操作与 apply 系的方法层（S3/S4）** | 4 个包全 `ok`（当前 47 个用例）；`All tests were successful`，且无 `leak` 警告 | 不碰 socket、不组成真实 HTTP 帧 |
-| 集成 | `tests/http_smoke.sh` | 整条链路：监听 → 请求解析 → 路由 → handler → 响应字节（真起 server、真 curl） | `通过 N，失败 0`（当前 191 项） | 不覆盖真机 `libuci`/`libubus` 行为 |
-| 接口 | `tests/http_smoke.sh` + `tests/cgi_smoke.sh` 里按接口分节的断言（`/ubus` 两种 JSON-RPC 形态、`session` 对象十方法、`uci` 的 `configs`/`get`/`changes`/`state`/`commit`/`revert` 、`set`/`add`/`delete`/`rename`/`order` 与 apply 系（`confirm`/`rollback` 的 5、`apply` 的 4）、`/cgi-bin/luci` 的 action 分派、CGI 环境与响应头透传） | 对外契约：状态码、正文形状、错误码、`Content-Type`、CGI 变量、会话生命周期 | 同上（cgi_smoke 当前 30 项）；契约条款钉在断言里——改契约必须先改断言 | 不覆盖 ACL 的 `acl.d` 加载与登录后的权限组（P3-6）；uci 写路径未实现（S3）；`state`/`commit`/`revert` 的真行为只在 linux 上 |
+| 单元 | `src/*/*_test.odin` → `./tests/unit.sh` | 单个纯函数的语义：路径规范化、MIME、`depends` 判定、菜单树解析、错误文案、CGI 环境/响应翻译、**`session` 对象的十方法语义**、**入站 ACL 的组判定（`fnmatch`/`!` 取反/write 蕴含 read）、acl.d 两种形态加载、`depends.acl` 裁树与只读（P3-6）**、**`uci` 的只读语义（S1）、delta/changes 语义（S2）与写路径的计划层 + 五个写操作与 apply 系的方法层（S3/S4）**、**`file` 的路径规范化（全量折叠表）与 md5（RFC 1321 向量）**、**`luci-rpc` 的租约行解析（dnsmasq/odhcpd 两格式、duid2ea、expires 双规则）**、**iwinfo 的位数组渲染与后端名失效保护** | 4 个包全 `ok`（当前 65 个用例）；`All tests were successful`，且无 `leak` 警告 | 不碰 socket、不组成真实 HTTP 帧 |
+| 集成 | `tests/http_smoke.sh` | 整条链路：监听 → 请求解析 → 路由 → handler → 响应字节（真起 server、真 curl） | `通过 N，失败 0`（当前 259 项） | 不覆盖真机 `libuci`/`libubus` 行为 |
+| 接口 | `tests/http_smoke.sh` + `tests/cgi_smoke.sh` 里按接口分节的断言（`/ubus` 两种 JSON-RPC 形态、**入站 ACL 的前置校验（对象不存在 `-32000` 优先于 ACL、会话销毁后 fail-closed `-32002`、acl.d 与 grant 合并进同一张 ACL 表）**、`session` 对象十方法、`luci-rpc` 的 `getBoardJSON`/`getDHCPLeases`/`getDUIDHints`（family 过滤与 blobmsg 的类型缺省行为、duid%iaid 去重）、`file` 的 `read`+`write`+`remove`+`md5`+`stat`/`lstat`/`list`+`exec`（PATH 查找 4、env+会话 6、两层 ACL：路径对象与整条命令行串）（含**各方法权限名不同**的断言：只授 read/write 时 stat/list 被 6 拒、补授 list 后放行；base64 写读、append 不截断、md5 对目录 8、递归删除、`list` 的 target）、`uci` 的 `configs`/`get`/`changes`/`state`/`commit`/`revert` 、`set`/`add`/`delete`/`rename`/`order` 与 apply 系（`confirm`/`rollback` 的 5、`apply` 的 4）、`/cgi-bin/luci` 的 action 分派（含 **`depends.acl` 裁树**：无 cookie → 404、只读会话 → 200 + `readonly=yes`、撤销 write 后恢复可见）、**`/ubus/subscribe` 的 SSE**（ACL 点 `:subscribe` → 未授权回 `{"code":-13}`、未知对象回 `{"code":4}`、授权后 `text/event-stream`、假事件源推一条后收到 `event:`/`data:` 帧）、CGI 环境与响应头透传） | 对外契约：状态码、正文形状、错误码、`Content-Type`、CGI 变量、会话生命周期 | 同上（cgi_smoke 当前 30 项）；契约条款钉在断言里——改契约必须先改断言 | 不覆盖真机 acl.d 的内容与 golden（fixture 是裁剪版 + 一个测试专用组）；`depends.acl` 尚未参与菜单裁树；`state`/`commit`/`revert` 的真行为只在 linux 上 |
 | 语义回归（离线取证） | `.ai-memory/r8_probe.py` | dispatcher 与上游 luci 提交 `d6167ea` 的语义是否一致 | `不一致条目: 0 / 11` | 只覆盖探针列出的 11 条 + 真实样本统计；不是门禁 |
+| 真机验收（在设备上跑） | `tests/device_smoke.sh` + `tests/golden.sh` | 只在设备上才成立的那些：`ubus -v list` 里有 molly 的四对象与 `molly.probe`、真实 `/etc/shadow`+`crypt` 登录、uci 写路径（**只碰自建的 `/etc/config/mollytest`**）、`/ubus/subscribe` 真收帧、以及 rpcd 与 molly 的**逐字段 golden 对比** | `通过 N，失败 0`；golden 对比 `差异 0 处` | 不覆盖并发压测与 RSS 曲线（`--rss` 只报数，不判） |
 
 ## 2. 单元测试
 
@@ -26,7 +27,7 @@ odin test -collection:molly=src src/luci -define:ODIN_TEST_NAMES=luci.test_first
 |---|---|
 | `src/http` | `normalize_path`（Ok / Bad / Escaping 三类，含 `%2e%2e`、`%00`、截断编码、控制字符、查询串剥离、空段与 `.` 折算）、`content_type_for`（大小写、不跨 `/`、未收录扩展名不猜 `text/plain`） |
 | `src/luci` | `apply_spec` 逐键处理与逐键合并、`@type` 形态、通配 action 与 `effective_action`、落到根的规格被忽略、无 `depends` 时 `satisfied` 重算、`check_depends` 的 fs 四类型与 object-AND / array-OR、uci 的 `true` / 具名 section / `@type` / option 值与 list 成员、`first_child` 的权重与并列定序与 `firstchild_ineligible`、`at_section_type` |
-| `src/backend` | `ubus_error_message`（表内 + 表外 `Unknown error: N`）、`uci_config_sections` 契约（具名 / 匿名 section、option 值、缺失 config `ok=false`、空 config）、`session` 对象（login 成功/错密码/未知用户/缺参、`create` 的 timeout 与 expires、`set`/`get`/`unset` 的键过滤与清空、`grant`/`revoke`/`access` 的精确命中与 `fnmatch` 通配与 scope 清空、哨兵会话不可销毁、`NOT_FOUND`/`INVALID_ARGUMENT`/`METHOD_NOT_FOUND` 三个状态码、`fnmatch` 与 `acl_id_len`）、`uci` 只读（`uci_verify_*` 的三种入口与边界、`uci_match_option` 的切词与 list、`uci_match_section` 的 `empty\|\|match`、`uci_dump_*` 的 `.index`/匿名键、`uci_find_section` 的 `@type[idx]`、`configs`/`get` 的整链与 2/4/8/3 四个错误码）、`uci` 的 delta（`uci_dump_change_json` 的七种 type 与 `order` 的数字 value、`section` 为空被丢掉、`changes` 的两种形态与 4、写方法「ACL 先于平台能力」的 6/8、`uci_purge_dir` 的「删文件但不递归」）、**`uci` 写路径的计划层**（`uci_plan_merge_set` 的 5 种分支：不存在/同值不动/异值 set/list→标量先删再 set/数组先删再 add_list、数组里坏元素跳过且整体成功、空数组与全坏元素 → 2、浮点与对象 → 2；`uci_plan_merge_delete` 的三种形态与聚合码、`uci_plan_add_value` 的「不删旧值/任一坏元素即 2」、五个写操作方法层的参数校验顺序（必需参数 2 先于 ACL 6、语法校验在 6 之后、平台能力最后 8）与「最后一个 rv 覆盖 vs 首个错误优先」） |
+| `src/backend` | `ubus_error_message`（表内 + 表外 `Unknown error: N`）、`uci_config_sections` 契约（具名 / 匿名 section、option 值、缺失 config `ok=false`、空 config）、`session` 对象（login 成功/错密码/未知用户/缺参、`create` 的 timeout 与 expires、`set`/`get`/`unset` 的键过滤与清空、`grant`/`revoke`/`access` 的精确命中与 `fnmatch` 通配与 scope 清空、哨兵会话不可销毁、`NOT_FOUND`/`INVALID_ARGUMENT`/`METHOD_NOT_FOUND` 三个状态码、`fnmatch` 与 `acl_id_len`）、`file` 路径核心（`file_canonicalize_path` 的 16 条折叠表、ENOENT → 4）、`uci` 只读（`uci_verify_*` 的三种入口与边界、`uci_match_option` 的切词与 list、`uci_match_section` 的 `empty\|\|match`、`uci_dump_*` 的 `.index`/匿名键、`uci_find_section` 的 `@type[idx]`、`configs`/`get` 的整链与 2/4/8/3 四个错误码）、`uci` 的 delta（`uci_dump_change_json` 的七种 type 与 `order` 的数字 value、`section` 为空被丢掉、`changes` 的两种形态与 4、写方法「ACL 先于平台能力」的 6/8、`uci_purge_dir` 的「删文件但不递归」）、**`uci` 写路径的计划层**（`uci_plan_merge_set` 的 5 种分支：不存在/同值不动/异值 set/list→标量先删再 set/数组先删再 add_list、数组里坏元素跳过且整体成功、空数组与全坏元素 → 2、浮点与对象 → 2；`uci_plan_merge_delete` 的三种形态与聚合码、`uci_plan_add_value` 的「不删旧值/任一坏元素即 2」、五个写操作方法层的参数校验顺序（必需参数 2 先于 ACL 6、语法校验在 6 之后、平台能力最后 8）与「最后一个 rv 覆盖 vs 首个错误优先」） |
 | `src/handlers` | CGI 桥接的翻译层：环境构造（`SCRIPT_NAME`/`PATH_INFO`/`QUERY_STRING`/`HTTP_*`/`CONTENT_*`、头名规范化、方法映射）与响应解析（`Status:`、`Content-Type` 必需、LF LF 容错、`Content-Length`/`Connection` 丢弃） |
 
 约定（踩过的坑都写在下面）：
@@ -44,7 +45,12 @@ odin test -collection:molly=src src/luci -define:ODIN_TEST_NAMES=luci.test_first
    `#caller_location`（不是消息），传字符串会编译失败。
 5. 用例里注明对应的上游行号（`dispatcher.uc:171-196` 这种），让回归网可审计。
 
-当前规模：`src/http` 4 + `src/luci` 13 + `src/backend` 2 = **19 个用例**。
+当前规模：`src/http` 4 + `src/luci` 15 + `src/backend` 40 + `src/handlers` 6 = **65 个用例**。
+
+**写用例时别踩的坑**：`append` 到**从 map 里取出的零值 `[dynamic]T`**、往**零值 `map`**
+（如 `json.Object{}`）里插入、以及**不带分配器的 `strings.clone` / `strings.join`**，
+都会落到隐式的 `context.allocator`——单测里表现为 `leak` 警告，在设备上就是**每请求泄漏**。
+一律显式把用例的 `alloc` 穿下去（`make(..., alloc)` / `clone(s, alloc)`）。
 
 ## 3. 集成测试
 
@@ -110,9 +116,14 @@ python3 .ai-memory/r8_probe.py   # 6. 改过 dispatcher 语义时必跑
   **不保证** libuci 的运行期行为。运行期正确性属第 7 步真机联调。
 - **依赖宿主文件系统**：fs 相关用例读 `/etc/hosts`、`/etc`、`/bin/sh`（macOS 上稳定存在）；
   断言里没有写 `/tmp` 之类可能被清空的路径。
-- **未覆盖**：ACL 的 `acl.d/*.json` 加载与登录后的 `read`/`write` 权限组（P3-6）、模板渲染
-  （P3-8″）、`/ubus/subscribe` SSE（P3-7）、会话落盘与重启恢复、并发上限的精确计数
+- **未覆盖**：**linux 侧 ubus 订阅的运行期行为**（P3-7 的 S2 已实现：`ubus_register_subscriber` /
+  `ubus_subscribe` / 通知回调 → 事件总线，但只能 `./build.sh --target` 编译 + 链接校验，
+  `Ubus_Subscriber` 的布局 `#assert` 不等于运行期正确——真机验证属第 7 步）、模板渲染（P3-8″）、
+  会话落盘与重启恢复、并发上限的精确计数
   （需要在真机用 `sysctl` 调低 fd 上限来压）。
+- **file 的验证边界**：符号链接复查的断言用 `/private/tmp`（macOS 上 `/tmp` 是指向
+  `/private/tmp` 的符号链接，授权范围必须写真实路径）；设备上 `/tmp` 是真目录，不受影响。
+  `realpath` 走 `libc_darwin`/`libc` 绑定，两平台行为一致。
 - **uci 的验证边界**：darwin 的 `uci_list_configs`/`uci_config_sections`/`uci_delta_changes`
   都是假数据（`FAKE_UCI`/`FAKE_DELTA`），所以 macOS 上验的是「对象逻辑正确」，**不是** libuci 行为；
   `state`/`commit`/`revert` 与五个写操作在 darwin 上恒回 8（`apply` 系回 4/5 或 8，见 `interfaces.md` §8.2），

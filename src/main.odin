@@ -111,9 +111,9 @@ main :: proc() {
 	} else {
 		fmt.println("[molly] /cgi-bin/luci → 内置 dispatcher")
 	}
-	// 计划决策 7：P2 不注册任何 ubus 对象，session/uci/file/luci 仍由设备上的 rpcd
-	// 提供，molly 只做 HTTP 侧转发。P3 才接管这四个对象。
-	fmt.println("WARN: transitional mode - ubus objects still provided by device rpcd")
+	// P3-9：不再有「transitional mode」这回事——session/uci/file/luci-rpc 都由 molly
+	// 自己提供（P3-2…P3-5）。设备上 rpcd 还占着同名对象时，注册会失败，由 ubus 线程
+	// 逐个对象打一行诊断（见 linux.odin）——那是事实陈述，不是「过渡模式」声明。
 
 	// P3-1（ADR 0001）：ubus 对象由 molly 自己在专用线程里提供。darwin 上没有 ubusd，
 	// 返回 false——只影响「molly 是否提供 ubus 对象」，HTTP 服务不受影响。

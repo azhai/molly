@@ -1,0 +1,26 @@
+{
+	"luci-base": {
+		"description": "Grant access to basic LuCI procedures (fixture: 真机 luci-base 的裁剪版)",
+		"read": {
+			"file": {
+				"/": [ "list" ],
+				"/*": [ "list" ]
+			},
+			"ubus": {
+				"file": [ "list" ],
+				"uci": [ "changes", "get" ]
+			},
+			"uci": [ "system", "luci" ]
+		},
+		"write": {
+			"cgi-io": [ "upload" ],
+			"file": {
+				"/etc/luci-uploads/*": [ "write" ]
+			},
+			"ubus": {
+				"file": [ "remove" ],
+				"uci": [ "add", "apply", "confirm", "delete", "order", "rename", "set" ]
+			}
+		}
+	}
+}
