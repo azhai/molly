@@ -30,9 +30,18 @@ USAGE :: `molly —— ImmortalWrt LuCI 的服务端替换层（Odin）
   --listen   监听地址，必须是数字地址，不接受主机名（默认 0.0.0.0:8080）
   --docroot  静态文件根目录（默认 /www）
   --menu-dir LuCI 菜单目录（menu.d）（默认 /usr/share/luci/menu.d）
-  --luci-cgi 把 /cgi-bin/luci 交给子进程执行，例如
-             "/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc"（复刻 uhttpd 的
-             ucode_prefix 接线，ADR 0003）。留空则用内置的 Odin dispatcher。
+  --luci-cgi 把 /cgi-bin/luci 交给子进程执行，设备上填 CGI 兜底脚本
+             "/www/cgi-bin/luci"（LuCI 装的 '#!/usr/bin/env ucode' 脚本，复刻 uhttpd
+             的 CGI 形态，ADR 0003）。留空则用内置的 Odin dispatcher。
+             注意**别**填 "/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc"：那个
+             文件是 uhttpd 进程内加载的 ucode 模板（首行 {%），当脚本跑必然
+             语法错、每个请求都回 500。
+  --ubus-socket PATH
+             让 molly 把 ubus 对象注册在**另一条独立的 ubus 总线**上（那条总线上要先
+             跑一个 ubusd -s <PATH>）。配了它，系统总线上的 session/uci/file/luci-rpc
+             就归 rpcd，原厂 :80 与 molly 的 :8080 各自拥有同名对象、互不影响；
+             molly 这边要访问 netifd / network.* 这类系统对象时会自动回退到系统总线。
+             不配 = 用系统总线（于是和 rpcd 抢名字：rpcd 在跑时 molly 注册不上）。
   -h, --help 显示这段说明
 `
 
@@ -46,6 +55,7 @@ main :: proc() {
 	docroot := DEFAULT_DOCROOT
 	menu_dir := DEFAULT_MENU_DIR
 	luci_cgi := ""
+	ubus_socket := ""
 
 	args := os.args[1:]
 	for i := 0; i < len(args); i += 1 {
@@ -74,6 +84,12 @@ main :: proc() {
 				die("--luci-cgi 缺少参数")
 			}
 			luci_cgi = args[i]
+		case "--ubus-socket":
+			i += 1
+			if i >= len(args) {
+				die("--ubus-socket 缺少参数")
+			}
+			ubus_socket = args[i]
 		case "-h", "--help":
 			fmt.print(USAGE)
 			return
@@ -114,6 +130,14 @@ main :: proc() {
 	// P3-9：不再有「transitional mode」这回事——session/uci/file/luci-rpc 都由 molly
 	// 自己提供（P3-2…P3-5）。设备上 rpcd 还占着同名对象时，注册会失败，由 ubus 线程
 	// 逐个对象打一行诊断（见 linux.odin）——那是事实陈述，不是「过渡模式」声明。
+
+	if len(ubus_socket) > 0 {
+		fmt.println("[molly] ubus 私有总线:", ubus_socket)
+	} else {
+		fmt.println("[molly] ubus 总线: 系统总线（与 rpcd 争 session/uci/file）")
+	}
+	// 必须在起 ubus 线程**之前**设好：那条线程一启动就要按它去 connect。
+	backend.set_ubus_socket(ubus_socket)
 
 	// P3-1（ADR 0001）：ubus 对象由 molly 自己在专用线程里提供。darwin 上没有 ubusd，
 	// 返回 false——只影响「molly 是否提供 ubus 对象」，HTTP 服务不受影响。

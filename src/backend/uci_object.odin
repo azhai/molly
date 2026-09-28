@@ -1,14 +1,15 @@
 package backend
 
 // ---------------------------------------------------------------------------
-// uci 对象（P3-3 的 S1：只读）
+// uci 对象（P3-3，15 方法全实现——S1…S4 四个分片都已收口）
 //
 // 契约来源：rpcd@e37ed9d814699098eb7e26c8b33c054840782dfb 的 `uci.c`（每处都标了行号）。
-// 上游注册 15 个方法（uci.c:1766-1784）。本片实现只读的两个：`configs`、`get`；
-// 其余按 .ai-memory/p3-luci-server.md 的分片一律回 NOT_SUPPORTED(8)：
-//   `state` 要 savedir 模型（S2）／写操作要 libuci 的写绑定（S3）／
-//   `apply` 系要 uloop 定时器 + ubus 事件（S4）。
-// 用户已定：写路径**先只在 linux 上实现**，darwin 侧不另做一份 uci 读写替身。
+// 上游注册 15 个方法（uci.c:1766-1784），这里同样 15 个：只读的 `configs`/`get`/`state`、
+// `changes`/`commit`/`revert`、五个写操作（`add`/`set`/`delete`/`rename`/`order`）、
+// apply 系（`apply`/`confirm`/`rollback`/`reload_config`）。
+// 用户已定：写路径**只在 linux 上实现**，darwin 侧不另做一份 uci 读写替身——darwin 的
+// provider 没有 savedir 模型与写事务，相关方法（`state`/`commit`/`revert`、五个写操作、
+// apply 系）一律回 NOT_SUPPORTED(8)。写事务的 linux 实现在 linux.odin 的 `Uci_Write_Txn`。
 //
 // 与 rpcd 的差异都记在 docs/interfaces.md 的 uci 契约节，改语义前先看那里。
 // ---------------------------------------------------------------------------

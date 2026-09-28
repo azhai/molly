@@ -65,9 +65,9 @@ Session :: struct {
 @(private)
 g_sessions: map[string]^Session
 
-// 会话数据（store / id / data / acls）的生命周期必须长于请求：darwin 下调用方传进来的是
-// **每请求 arena**，linux 下是 ubus 线程的上下文分配器。所以这几样一律用默认堆分配器，
-// 与上游的 calloc/free 对应；只有回复 JSON 用调用方给的 alloc。
+// 会话数据（store / id / data / acls）的生命周期必须长于请求：两端传进来的 alloc 都是
+// **每请求 arena**（darwin 是连接/测试 arena，linux 是 ubus handler 的请求 arena）。
+// 所以这几样一律用默认堆分配器，与上游的 calloc/free 对应；只有回复 JSON 用调用方给的 alloc。
 @(private)
 session_store_allocator :: proc() -> mem.Allocator {
 	return runtime.default_context().allocator
@@ -98,7 +98,7 @@ session_call :: proc(method: string, params_json: string, alloc: mem.Allocator) 
 	defer sync.unlock(&g_session_lock)
 
 	session_ensure_default()
-	prune_expired()
+	prune_expired(alloc)
 
 	switch method {
 	case "create":
@@ -374,8 +374,9 @@ session_do_grant_revoke :: proc(method: string, params: json.Object, alloc: mem.
 // 否则 crypt 比对），失败回 PERMISSION_DENIED。会话建立后 set data.username，
 // 并按 login section 的 read/write 组加载 acl.d（**那部分属 P3-6**）。
 //
-// 本轮实现到「校验 + 建会话 + data.username」；acl.d 加载与权限组留到 P3-6，
-// 所以登录成功但 acls 为空——P3-6 之前不要用登录态去跑需要 ACL 的调用。
+// 本轮实现到「校验 + 建会话 + data.username + data.token」；acl.d 加载与权限组留到
+// P3-6，所以登录成功但 acls 为空——P3-6 之前不要用登录态去跑需要 ACL 的调用。
+// （token 不能省：LuCI 靠它判定会话有效，见 session_do_login 里的注释。）
 // ---------------------------------------------------------------------------
 
 @(private)
@@ -401,6 +402,15 @@ session_do_login :: proc(params: json.Object, alloc: mem.Allocator) -> (string, 
 		return "", SESSION_STATUS_UNKNOWN_ERROR
 	}
 	ses.data["username"] = session_marshal(json.Value(json.String(username)), session_store_allocator())
+
+	// `token` 是**登录可用性的硬要求**：LuCI 的 dispatcher.uc 在 session_retrieve() 里
+	// 判定会话是否有效的条件是 `type(sdat.values.token) == 'string'`——没有 token 就
+	// 判为未认证，表现是「登录拿到 sid 了，但整站仍 403 + x-luci-login-required: yes」。
+	// 上游 rpcd 在建立会话时也写这个字段（CSRF token，见 rpcd session.c 的
+	// rpc_session_login / rpc_session_create）。
+	if tok, tok_ok := session_random_sid(session_store_allocator()); tok_ok {
+		ses.data["token"] = session_marshal(json.Value(json.String(tok)), session_store_allocator())
+	}
 
 	// session.c:1204：会话建立后按 login section 的 read/write 组加载 acl.d
 	session_load_acls(ses, login, session_store_allocator())
@@ -639,9 +649,13 @@ session_expired :: proc(ses: ^Session) -> bool {
 }
 
 @(private)
-prune_expired :: proc() {
-	// 先收集再删：Odin 的 map 不允许在遍历过程中删除
-	dead := make([dynamic]string, context.temp_allocator)
+prune_expired :: proc(alloc: mem.Allocator) {
+	// 先收集再删：Odin 的 map 不允许在遍历过程中删除。
+	// 收集数组用**调用方的请求 arena**，别用 `context.temp_allocator`：那是「每帧 loop
+	// 调一次 `free_all` 回收」的 arena（见 Odin 的 default_temporary_allocator.odin），
+	// 而 molly 全仓没有一处 `free_all`——每跑一次 prune 就把它撑大一点（设备上 RSS 单调
+	// 上涨），而且 ubus 服务线程拿到的是**全局**那一个 temp arena，不该在里面堆东西。
+	dead := make([dynamic]string, 0, 8, alloc)
 	for id, ses in g_sessions {
 		if session_expired(ses) {
 			append(&dead, id)
@@ -703,7 +717,49 @@ session_access_ubus :: proc(sid, object, function: string) -> bool {
 	if ses == nil {
 		return false
 	}
+
+	// `:subscribe` 是订阅用的**伪**方法名（与 call 的方法名不在同一命名空间，
+	// 见 ubus_sse.odin 的 UBUS_SUBSCRIBE_FN）。设备上 acl.d 里没有任何组显式授予它
+	// （grep /usr/share/rpcd/acl.d 无 subscribe），按字面匹配必然 false —— 于是 SSE
+	// 订阅恒 `-13 Permission denied`，LuCI 的实时刷新全废。
+	//
+	// 取舍（rpcd 源码不在本地 SDK，无法逐行核对上游，故显式记录）：
+	// 订阅是**单向接收**事件、不改变任何状态，风险低于 call，所以规则定为
+	// 「有效登录会话即可订阅」；**默认（匿名）会话仍然拒绝**，未登录不能订阅。
+	if function == ":subscribe" {
+		return sid != SESSION_DEFAULT_ID
+	}
+
 	return session_acl_allowed(ses, "ubus", object, function)
+}
+
+// session 对象的「自服务」方法，对齐上游 rpcd 的 session.c：
+// `get` / `set` / `unset` / `destroy` 由 session 对象**自己按 sid 鉴权**，
+// **不走** ubus scope 的 ACL。
+//
+// 为什么需要这个口子：molly 的 HTTP ACL 网关（ubus_http.odin）把所有 ubus 对象都过
+// 一遍 ACL，而 acl.d 里没有任何组授予 `session` 的 get/list/destroy（只有
+// unauthenticated 给了 access/login）——结果 LuCI dispatcher 登录后读不到自己的会话，
+// 表现是「拿到 sid 了，整站仍 403」。
+//
+// 收窄到只放行这四个方法：`list` / `grant` / `revoke` / `create` 是管理操作，
+// 继续走 ACL。
+//
+// 另：**默认（匿名）会话不算**——否则未登录也能调 session.get。
+// 具体归属仍由 session handler 校验（session_do_get 等按 params 里的 sid 取）。
+session_self_service :: proc(sid, method: string) -> bool {
+	if method != "get" && method != "set" && method != "unset" && method != "destroy" {
+		return false
+	}
+	if len(sid) == 0 || sid == SESSION_DEFAULT_ID {
+		return false
+	}
+
+	sync.lock(&g_session_lock)
+	defer sync.unlock(&g_session_lock)
+
+	session_ensure_default()
+	return session_get(sid) != nil
 }
 
 // `depends.acl` 的三态，对齐上游 `check_acl_depends`（dispatcher.uc:312-331）：

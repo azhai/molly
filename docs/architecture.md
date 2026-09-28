@@ -76,8 +76,8 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 
 | 文件 | 内容 |
 |---|---|
-| `menu.odin` | `load_tree`（进程内 mtime 失效缓存）、`apply_spec`（逐键 spec 合并）、`descend`、`check_depends`（fs/uci 全形态）、`resolve`、`first_child`、`effective_action`。 |
-| `render.odin` | `dispatch`（firstchild/alias 下钻 → action 分派 → 200/404/501）与 `render_placeholder`（P2 的占位页，不是模板渲染）。 |
+| `menu.odin` | `load_tree`（进程内 mtime 失效缓存）、`apply_spec`（逐键 spec 合并）、`descend`、`check_depends`（fs/uci 全形态）、`resolve`、`first_child`（含无会话时的 login 放行模式）、`effective_action`、`Auth_State`/`login_required`（`auth.login` 判定，见 `interfaces.md` §5.2）。 |
+| `render.odin` | `dispatch`（firstchild/alias 下钻 → action 分派 → 200/404/501/403-登录）与 `render_placeholder` / `render_login_required`（占位页，不是模板渲染）。 |
 
 ### 3.3 接口层
 
@@ -86,7 +86,7 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 | `main.odin` | CLI 解析、`--listen/--docroot/--menu-dir`、SIGPIPE 忽略、`http.Server` 装配、`handle` 路由分派、`matches_prefix`（带边界）。 |
 | `handlers/static.odin` | `/www` 下的静态文件（目录 → `index.html`，非 GET/HEAD → 405）。 |
 | `handlers/ubus_http.odin` | `/ubus` 的三种形态与 JSON-RPC 信封（详见 `interfaces.md` §4）。 |
-| `handlers/cgi_luci.odin` | `/cgi-bin/luci` 的**两种模式**：`--luci-cgi` 非空 → 交给子进程（ADR 0003 的 T1）；否则 → `luci.dispatch` → 200/404/501，只接 GET/HEAD。 |
+| `handlers/cgi_luci.odin` | `/cgi-bin/luci` 的**两种模式**：`--luci-cgi` 非空 → 交给子进程（ADR 0003 的 T1）；否则 → `luci.dispatch` → 200/404/501/**403 登录提示**（带 `X-LuCI-Login-Required: yes`），只接 GET/HEAD。 |
 | `handlers/cgi_exec.odin` | CGI 桥接：环境构造（纯函数）→ `fork`/`execve` → 响应解析（纯函数）→ 透传状态与额外头。两个纯函数有单元测试，桩脚本有 `tests/cgi_smoke.sh`。 |
 
 ## 4. 一次请求的调用链
@@ -116,12 +116,23 @@ accept（server.odin，超额 503）
 | `POST /ubus/call/session` | `handlers/ubus_http` | `backend.call_object` | 200 + JSON-RPC 信封 |
 | `GET /cgi-bin/luci/admin/status/overview` | `handlers/cgi_luci` → `luci.dispatch` | `backend.uci_config_sections`（仅当节点有 `depends.uci`） | 200 + 占位页 |
 
+**每次请求的内存**：HTTP 侧是「连接私有 arena + 每请求 `reset`」（`server.odin:91-114`）；
+ubus 对象那侧没有连接的概念，所以四个 handler（`linux.odin` 的 session/uci/file/luci）
+**各自起一个 `Dynamic_Arena`**，并把 `context.allocator` 也指向它——params、中间树、回复串、
+cstring 副本都随 handler 返回一起释放。契约就是 `docs/interfaces.md` §7.1 的那条：
+「回复串一律指向调用方给的 `alloc`（每请求 arena），实现不得返回需要调用方 `free` 的堆内存」。
+
+**长期状态一律不走 arena**：会话数据、apply 等待窗口的 sid、SSE 订阅对象都用
+`session_store_allocator()`（显式 `runtime.default_context().allocator`，即默认堆分配器，
+对应上游的 `calloc`/`free`）。改这条路径前先想清楚「这东西活不活过这次请求」。
+
 ## 5. 依赖规则（硬规则）
 
 1. **单向、无环**：`main → handlers → {http, luci, backend}`；`luci → backend`。
    `http` 与 `backend`（除 `bindings` 外）是叶子包。
 2. **`src/luci` 不得 import `src/http`**：菜单语义不应该知道 HTTP 的存在；
-   HTTP 状态码的映射属于 `handlers`（`render.odin` 只回 `.Page/.NotFound/.Not_Implemented` 这种业务结果）。
+   HTTP 状态码的映射属于 `handlers`（`render.odin` 只回 `.Page/.NotFound/.Not_Implemented/.Login_Required`
+   这种业务结果）。
 3. **`src/http` 不得 import `luci` 或 `backend`**：传输层不知道业务，它只提供
    `Server/Connection/Request/respond`。
 4. **平台差异只能出现在两处**：`src/backend/{linux,darwin}.odin` 与
@@ -174,13 +185,14 @@ molly 用「段名字典序」替代——语义等价性以可复现为先（`m
 - **过渡期已是历史（P3-9）**：P3-1 起注册 `molly.probe`，P3-2…P3-5 陆续自持
   `session`/`uci`/`file`/`luci-rpc`，P3-6 起 `/ubus` 的**入站 ACL** 由 molly 按
   `/usr/share/rpcd/acl.d/*.json` 校验（不过就是 `-32002`，fail-closed）、dispatcher 的菜单
-  也按会话 ACL 裁树（缺组 → 404、只有 read → 只读），P3-7 起 `/ubus/subscribe` 是真 SSE。
-  device 上 rpcd 未停时同名对象注册失败（非致命，**逐对象**打一行诊断）——要接管就先
-  `/etc/init.d/rpcd stop`。**不再有** transitional 提示行，也**不再有**占位页的
-  「ACL 未实施」横幅。
-  **尚未收口**：登录页（上游由 dispatcher 渲染 `sysauth`；这里走 `--luci-cgi` 的 ucode 侧）
-  以及**真机 golden 对比 / 真机验收**（`tests/golden.sh` + `tests/device_smoke.sh`，
-  在设备上跑）。
+  也按会话 ACL 裁树（缺组 → 404、只有 read → 只读；**无会话**且路径上有 `auth.login`
+  的节点 → 403 + `X-LuCI-Login-Required: yes` + 登录提示页，与上游状态码/响应头一致），
+  P3-7 起 `/ubus/subscribe` 是真 SSE。设备上 rpcd 未停时同名对象注册失败（非致命，
+  **逐对象**打一行诊断）——要接管就先 `/etc/init.d/rpcd stop`。**不再有** transitional 提示行，
+  也**不再有**占位页的「ACL 未实施」横幅。
+  **尚未收口**：登录**表单**本身（上游由 dispatcher 渲染 `sysauth` 并 `Set-Cookie`；
+  这里走 `--luci-cgi` 的 ucode 侧，内置 dispatcher 只给登录提示页），以及**真机 golden 对比 /
+  真机验收**（`tests/golden.sh` + `tests/device_smoke.sh`，在设备上跑）。
 - **不写 `/tmp/luci-indexcache`**：改用进程内 mtime 失效缓存，避免与真 LuCI 的缓存格式打架。
 - **一连接一线程 vs uloop**（风险 R4，已按 ADR 0001 解决）：ubus 对象注册与事件都在
   **专用 ubus 线程**里跑 uloop；`/ubus/subscribe` 的 SSE 用**每订阅一根管道**把通知从

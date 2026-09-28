@@ -79,8 +79,17 @@ check "/ubus/call/session list → 200" "200" \
 check "哨兵调 uci → -32002（P3-6 前置 ACL）" "-32002" \
   "$(curl -sS -m 5 -X POST -d '{"jsonrpc":"2.0","id":1,"method":"configs","params":{}}' "$MOLLY/ubus/call/uci" \
      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error",{}).get("code","none"))' 2>/dev/null)"
-check "无 cookie 访问 ACL 门控页 → 404（P3-6 裁树）" "404" \
+# 无会话落在 `auth.login` 子树里（设备真实 menu.d 的 /admin 就是）→ 上游回 403 + 登录页，
+# **不是 404**（P3-6 收尾）：提示页里要能看出「是要登录」以及落在哪条路径
+check "无 cookie 访问门控页 → 403（要登录，不是 404）" "403" \
   "$(curl -sS -m 5 -o /dev/null -w '%{http_code}' "$MOLLY/cgi-bin/luci/admin/status/overview")"
+check "无 cookie：带 X-LuCI-Login-Required 头" "yes" \
+  "$(curl -sS -m 5 -D- -o /dev/null "$MOLLY/cgi-bin/luci/admin/status/overview" \
+     | tr -d '\r' | sed -n 's/^X-LuCI-Login-Required: //p')"
+check "无 cookie：提示页列出请求路径" "1" \
+  "$(curl -sS -m 5 "$MOLLY/cgi-bin/luci/admin/status/overview" \
+     | grep -c '<dt>path</dt><dd>/admin/status/overview</dd>')"
+# login 子树之外（没有 auth.login）→ 仍然是 404
 check "未知菜单路径 → 404" "404" \
   "$(curl -sS -m 5 -o /dev/null -w '%{http_code}' "$MOLLY/cgi-bin/luci/nope")"
 check "dispatcher 上的 POST → 405" "405" \

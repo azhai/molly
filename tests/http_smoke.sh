@@ -356,13 +356,28 @@ check "/admin/system 走 firstchild" "Reboot" "$(h1_of -b "$LUCICOOKIE" "$BASE/c
 # 判定按**会话**现算（树是跨请求缓存的，不能在节点上写会话状态），三态见上游
 # check_acl_depends（:312-331）：缺组 → 裁掉（路径 404 / firstchild 跳过）；
 # 只有 read → 可见但标只读；有 write → 正常。
-check "无 cookie：acl 门控路径 → 404" "404" \
+#
+# 注意「没有 cookie」≠「缺组」：fixture 的 `admin` 带 `auth.login`（与设备真实 menu.d 同形），
+# 所以无会话打这条路径时先被判成「要登录」——上游 :927-961 回的是 **403 + 登录页**
+# （带 `X-LuCI-Login-Required: yes`），内置 dispatcher 的正文是可断言的登录提示。
+check "无 cookie：要登录的路径 → 403（不是 404）" "403" \
   "$(status_of "$BASE/cgi-bin/luci/admin/status/overview")"
+check "无 cookie：带 X-LuCI-Login-Required 头" "yes" \
+  "$(header_of X-LuCI-Login-Required "$BASE/cgi-bin/luci/admin/status/overview")"
+check "无 cookie：提示页是登录提示（不是 404 正文）" "1" \
+  "$(curl -s "$BASE/cgi-bin/luci/admin/status/overview" | grep -c '<h1>Login required</h1>')"
+check "无 cookie：提示页列出请求路径" "1" \
+  "$(curl -s "$BASE/cgi-bin/luci/admin/status/overview" \
+     | grep -c '<dt>path</dt><dd>/admin/status/overview</dd>')"
+# 要验「缺组 → 裁树」得用一个**存在但没权限**的会话：默认/哨兵会话（全 0 的 sid）只被
+# unauthenticated 组授权——有会话就不走 auth.login 那一支，所以这里看到的是纯粹的 ACL 结果
+check "哨兵会话（有会话但缺组）：acl 门控路径 → 404" "404" \
+  "$(status_of -b "sysauth_http=$sid0" "$BASE/cgi-bin/luci/admin/status/overview")"
 # 跳过 overview 后落到 logs（order 50）：注意它的 title 是 `Logs (wildcard)`——
 # luci-probe.json 里的 `admin/status/logs/*` 后处理，把 base 的 "Logs" 覆盖掉了
 # （逐键合并，后处理的文件胜），这一点是老行为，不是 ACL 带来的
-check "无 cookie：firstchild 跳过门控节点" "Logs (wildcard)" \
-  "$(h1_of "$BASE/cgi-bin/luci/admin/status")"
+check "哨兵会话：firstchild 跳过门控节点" "Logs (wildcard)" \
+  "$(h1_of -b "sysauth_http=$sid0" "$BASE/cgi-bin/luci/admin/status")"
 # 只读会话：root 登录（fixture 的 login 列了 '*'，会拿到 luci-base 的 read+write）后
 # 把 write 撤掉，只剩 read → 可见但只读
 RO_SID=$(curl -s -X POST "$BASE/ubus/call/session" \
@@ -381,25 +396,29 @@ check "只读会话：页面标 readonly" "yes" \
 # 同一路径被两个文件定义 → **逐键**合并（dispatcher.uc:406-408 只拷 spec 里出现的键）：
 # base 给 title/order/cbi，probe 只给 action，于是 title 仍是 "Reboot"、order 仍是 10
 check "同路径逐键合并且未出现的键保留" "Reboot" \
-  "$(h1_of "$BASE/cgi-bin/luci/admin/system/reboot")"
+  "$(h1_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/system/reboot")"
 check "同路径逐键合并：probe 给的 action 生效" "system/reboot" \
-  "$(view_of "$BASE/cgi-bin/luci/admin/system/reboot")"
+  "$(view_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/system/reboot")"
 
 # --- action.type 分流 ---
-check "action.type=cbi → 501" "501" "$(status_of "$BASE/cgi-bin/luci/admin/status/routes")"
+# 带会话（否则 /admin 子树会先被判成「要登录」，见上一节的 auth.login）
+check "action.type=cbi → 501" "501" \
+  "$(status_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/routes")"
 # 501 正文必须带命中信息（设备上就此定位到底是哪个 action 类型，实测踩过）
 check "501 正文带 action.type" "not implemented: action.type=cbi view=status/routes menu=/admin/status/routes" \
-  "$(curl -s "$BASE/cgi-bin/luci/admin/status/routes")"
+  "$(curl -s -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/routes")"
 
 # --- 通配段（dispatcher.uc:410-414 / :1010-1011）---
-check "通配段收下剩余段" "200" "$(status_of "$BASE/cgi-bin/luci/admin/status/logs/syslog")"
+check "通配段收下剩余段" "200" \
+  "$(status_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/logs/syslog")"
 check "通配段的 request_args 进页面" "syslog" \
-  "$(curl -s "$BASE/cgi-bin/luci/admin/status/logs/syslog" | grep -o '<dd>[^<]*</dd>' | tail -1 | sed 's/<[^>]*>//g')"
+  "$(curl -s -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/logs/syslog" \
+     | grep -o '<dd>[^<]*</dd>' | tail -1 | sed 's/<[^>]*>//g')"
 # base 路径（admin/status/logs）与通配路径（admin/status/logs/*）各自留一份 action
 check "通配节点无剩余段 → 用 base action" "status/logs-base" \
-  "$(view_of "$BASE/cgi-bin/luci/admin/status/logs")"
+  "$(view_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/logs")"
 check "通配节点有剩余段 → 用 wildcardaction" "status/logs-arg" \
-  "$(view_of "$BASE/cgi-bin/luci/admin/status/logs/syslog")"
+  "$(view_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/logs/syslog")"
 
 # --- depends.fs（dispatcher.uc:171-196 + :279-292）---
 check "depends.fs file 命中 → 200" "200" "$(status_of "$BASE/cgi-bin/luci/present")"
@@ -434,12 +453,20 @@ check "类型不符的键被忽略（root firstchild 仍是 Overview）" "Overvi
 
 # --- 路由边界 ---
 check "未命中路径 → 404" "404" "$(status_of "$BASE/cgi-bin/luci/nope")"
-check "/cgi-bin/luci/<未知> → 404" "404" "$(status_of "$BASE/cgi-bin/luci/admin/nope")"
+check "/cgi-bin/luci/<未知>（带会话）→ 404" "404" \
+  "$(status_of -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/nope")"
+# 同样是不存在的路径，但无会话且落在有 auth.login 的子树里 → 上游先判登录（403），
+# 而不是 404：它的顺序是先聚 ctx.auth、再 error404（:927 在 :872 之前）
+check "/cgi-bin/luci/<未知>（无会话）→ 403" "403" \
+  "$(status_of "$BASE/cgi-bin/luci/admin/nope")"
 check "dispatcher 上的 POST → 405" "405" "$(status_of -X POST -d '' "$BASE/cgi-bin/luci/admin/status/overview")"
 check "HEAD 有完整头无 body" "0" \
   "$(curl -s -I -b "$LUCICOOKIE" "$BASE/cgi-bin/luci/admin/status/overview" | awk 'BEGIN{b=0} /^\r?$/{f=1;next} f{b+=length($0)+1} END{print b}')"
-# P3-6：404 也可能是 ACL 裁掉的结果，HEAD 同样要「有头无体」
+# P3-6：404 也可能是 ACL 裁掉的结果，HEAD 同样要「有头无体」（哨兵会话 = 有会话但缺组）
 check "HEAD 到被裁掉的路径也没有 body" "0" \
+  "$(curl -s -I -b "sysauth_http=$sid0" "$BASE/cgi-bin/luci/admin/status/overview" | awk 'BEGIN{b=0} /^\r?$/{f=1;next} f{b+=length($0)+1} END{print b}')"
+# 无会话时同一条路径是 403 + 登录提示页：HEAD 也要「有头无体」（头里有 X-LuCI-Login-Required）
+check "HEAD 到登录提示页也没有 body" "0" \
   "$(curl -s -I "$BASE/cgi-bin/luci/admin/status/overview" | awk 'BEGIN{b=0} /^\r?$/{f=1;next} f{b+=length($0)+1} END{print b}')"
 
 echo

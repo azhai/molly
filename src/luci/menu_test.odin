@@ -265,7 +265,7 @@ test_first_child_order_tiebreak_and_skips :: proc(t: ^testing.T) {
 	// 没有 title 的不参选
 	add(t, root, "p/notitle", `{"action":{"type":"view","path":"nt"}}`, alloc)
 
-	sel := first_child(root.children["p"], "", nil, alloc)
+	sel := first_child(root.children["p"], "", nil, nil, false, alloc)
 	testing.expect(t, sel != nil)
 	testing.expect_value(t, sel.title, "A") // 权重相同 → 按段名字典序，结果必须确定
 }
@@ -283,7 +283,7 @@ test_first_child_recurses_and_requires_eligible_descendant :: proc(t: ^testing.T
 	add(t, root, "p/dead", `{"title":"Dead","order":0,"action":{"type":"firstchild"}}`, alloc)
 	add(t, root, "p/dead/x", `{"order":1,"action":{"type":"view","path":"x"}}`, alloc) // 无 title
 
-	sel := first_child(root.children["p"], "", nil, alloc)
+	sel := first_child(root.children["p"], "", nil, nil, false, alloc)
 	testing.expect(t, sel != nil)
 	testing.expect_value(t, sel.title, "Leaf")
 }
@@ -433,14 +433,15 @@ test_acl_first_child_skips_and_marks_readonly :: proc(t: ^testing.T) {
 	root := acl_tree(t, alloc)
 
 	// 无会话：firstchild 跳过 gated(10) 与 ro(20)，选 open(30)
-	sel := first_child(root.children["a"], "", nil, alloc)
+	// （这棵树没有 auth 节点，所以走不到 login 放行模式，见 test_login_required_*）
+	sel := first_child(root.children["a"], "", nil, nil, false, alloc)
 	testing.expect(t, sel != nil)
 	testing.expect_value(t, sel.action_path, "open")
 
 	// 只授 g1 的 read：gated 恢复竞选（order 最小）→ 当选，且当选支路的组进 groups
 	sid := acl_session(t, []string{"g1"}, nil, alloc)
 	groups := make([dynamic]string, 0, 4, alloc)
-	sel2 := first_child(root.children["a"], sid, &groups, alloc)
+	sel2 := first_child(root.children["a"], sid, &groups, nil, false, alloc)
 	testing.expect(t, sel2 != nil)
 	testing.expect_value(t, sel2.action_path, "gated")
 	testing.expect_value(t, len(groups), 1)
@@ -457,4 +458,116 @@ test_acl_first_child_skips_and_marks_readonly :: proc(t: ^testing.T) {
 	testing.expect_value(t, page_open.kind, Kind.Page)
 	testing.expect(t, strings.contains(page_open.body, "view</dt><dd>open"), page_open.body)
 	testing.expect(t, strings.contains(page_open.body, "readonly</dt><dd>no"), page_open.body)
+}
+
+// ---------------------------------------------------------------------------
+// P3-6 收尾：无会话 + auth.login → 403 + 登录提示（上游 dispatcher.uc:927-961）
+//
+// 真实 menu.d 的形态就是：`admin` 带 `auth.login`，它下面的叶子全带 depends.acl。
+// 少了这条语义，无会话的人在设备上看到的是**整站裸 404**（实测踩过）。
+// ---------------------------------------------------------------------------
+
+// 与设备上的 luci-base.json 同形。
+@(private)
+login_tree :: proc(t: ^testing.T, alloc: mem.Allocator) -> ^Node {
+	root := empty_tree(alloc)
+	add(
+		t,
+		root,
+		"admin",
+		`{"title":"Administration","order":10,"action":{"type":"firstchild"},"auth":{"methods":["cookie:sysauth_http"],"login":true}}`,
+		alloc,
+	)
+	add(t, root, "admin/status", `{"title":"Status","order":10,"action":{"type":"firstchild"}}`, alloc)
+	add(
+		t,
+		root,
+		"admin/status/overview",
+		`{"title":"Overview","order":10,"action":{"type":"view","path":"status/overview"},"depends":{"acl":{"g1":["read"]}}}`,
+		alloc,
+	)
+	// admin 下一个没有 acl 的节点：有会话时照常当选
+	add(t, root, "admin/logout", `{"title":"Logout","order":99,"action":{"type":"function","path":"auth/logout"}}`, alloc)
+	// login 子树之外的公开节点
+	add(t, root, "open", `{"title":"Open","order":20,"action":{"type":"view","path":"open"}}`, alloc)
+	return root
+}
+
+@(test)
+test_login_required_without_session :: proc(t: ^testing.T) {
+	alloc, ar := mk_arena()
+	defer drop_arena(ar)
+	root := login_tree(t, alloc)
+
+	// ① 裸前缀：无会话时 root 的 firstchild 在 login 模式下落到 admin/status/overview
+	//    （ACL 本来会把它裁掉）。上游到这一步就 403 + 登录页——**不是 404**
+	page := dispatch(root, "", "", alloc)
+	testing.expect_value(t, page.kind, Kind.Login_Required)
+	testing.expect(t, strings.contains(page.body, "Login required"), page.body)
+
+	// ② 直接请求被门控的路径：下降在 overview 处被截断，但沿途已经收下 admin 的 auth.login
+	//    （上游同样是先聚完 ctx.auth 才走到 error404）
+	page2 := dispatch(root, "/admin/status/overview", "", alloc)
+	testing.expect_value(t, page2.kind, Kind.Login_Required)
+	// 提示页里要能看到是哪条 URL 落到这里，否则设备上还是得猜
+	testing.expect(t, strings.contains(page2.body, "/admin/status/overview"), page2.body)
+
+	// ③ 中间节点（自己既没有 acl 也没有 auth，但沿途穿过 admin）：一样要登录
+	page3 := dispatch(root, "/admin/status", "", alloc)
+	testing.expect_value(t, page3.kind, Kind.Login_Required)
+
+	// ④ login 子树之外的公开节点完全不受影响
+	page4 := dispatch(root, "/open", "", alloc)
+	testing.expect_value(t, page4.kind, Kind.Page)
+	testing.expect(t, strings.contains(page4.body, "view</dt><dd>open"), page4.body)
+}
+
+@(test)
+test_login_not_required_with_session :: proc(t: ^testing.T) {
+	alloc, ar := mk_arena()
+	defer drop_arena(ar)
+	root := login_tree(t, alloc)
+
+	// 有会话（哪怕只有 read）→ 不走登录流程：正常解析，页面标只读
+	sid := acl_session(t, []string{"g1"}, nil, alloc)
+	page := dispatch(root, "/admin/status/overview", sid, alloc)
+	testing.expect_value(t, page.kind, Kind.Page)
+	testing.expect(t, strings.contains(page.body, "readonly</dt><dd>yes"), page.body)
+
+	// 裸前缀：有会话时 firstchild 照 ACL 竞选 → 落到 overview（order 最小且可见）
+	page_root := dispatch(root, "", sid, alloc)
+	testing.expect_value(t, page_root.kind, Kind.Page)
+	testing.expect(t, strings.contains(page_root.body, "view</dt><dd>status/overview"), page_root.body)
+
+	// 有会话但**缺组**：上游这时候不是登录页，而是节点不可见（404）——molly 保持一致
+	sid2 := acl_session(t, nil, nil, alloc)
+	page_missing := dispatch(root, "/admin/status/overview", sid2, alloc)
+	testing.expect_value(t, page_missing.kind, Kind.NotFound)
+}
+
+// 上游 ctx.auth 是「最后者胜」（ctx_append 的 `ctx.auth = node.auth || ctx.auth`，:463）：
+// 更深的节点只要带 auth（哪怕没有 login），就把前面 admin 的 login 顶掉 → 不走登录流程。
+@(test)
+test_auth_login_last_node_wins :: proc(t: ^testing.T) {
+	alloc, ar := mk_arena()
+	defer drop_arena(ar)
+	root := empty_tree(alloc)
+	add(t, root, "admin", `{"title":"Admin","order":10,"action":{"type":"firstchild"},"auth":{"login":true}}`, alloc)
+	add(
+		t,
+		root,
+		"admin/uci",
+		`{"title":"UCI","order":10,"action":{"type":"function","path":"admin/uci"},"auth":{"methods":["cookie:sysauth_http"]}}`,
+		alloc,
+	)
+
+	// admin 自己：走登录流程
+	testing.expect_value(t, dispatch(root, "/admin", "", alloc).kind, Kind.Login_Required)
+	// admin/uci：它自己的 auth 覆盖了 admin 的 → 501（上游会去执行那个 function）
+	testing.expect_value(t, dispatch(root, "/admin/uci", "", alloc).kind, Kind.Not_Implemented)
+
+	// auth 不是对象（类型不符）→ 上游 schema 整键忽略（:407）
+	root2 := empty_tree(alloc)
+	add(t, root2, "x", `{"title":"X","order":10,"action":{"type":"view","path":"x"},"auth":"nonsense"}`, alloc)
+	testing.expect_value(t, dispatch(root2, "/x", "", alloc).kind, Kind.Page)
 }

@@ -1,15 +1,16 @@
 package backend
 
 // ---------------------------------------------------------------------------
-// luci-rpc 对象（P3-5 S1：getBoardJSON + getDHCPLeases）
+// luci-rpc 对象（P3-5，6 方法全实现——S1…S2d 各分片都已收口）
 //
 // 契约：luci@d6167ea 的 `libs/rpcd-mod-luci/src/luci.c`（本地 /tmp/r8/luci-all/）。
-// 对象名是 **`luci-rpc`**（luci.c:2043），6 方法（:2033-2040）。S1 实现两个
-// 文件/解析驱动的；其余 4 个（getNetworkDevices/getWirelessDevices/getHostHints/
-// getDUIDHints，netlink/iwinfo/getifaddrs 设备绑定）回 NOT_SUPPORTED(8)，属 S2。
+// 对象名是 **`luci-rpc`**（luci.c:2043），6 方法（:2033-2040）：文件/解析驱动的
+// `getBoardJSON`/`getDHCPLeases`，与设备绑定的 `getNetworkDevices`/`getWirelessDevices`/
+// `getHostHints`/`getDUIDHints`（netlink 邻居表 + iwinfo + getifaddrs）。**本文件只放
+// 平台无关的部分**；设备绑定走 provider（linux 真实现，darwin 回 NOT_SUPPORTED(8)）。
 //
 // 契约摘要与行号见 .ai-memory/p3-luci-server.md 的 P3-5 节。要点：
-//   - 这两个方法**没有 ACL 检查**（policy 里没有 session 字段，handler 也不查）。
+//   - 这些方法**没有 ACL 检查**（上游 policy 里 luci 对象没有 session 字段，handler 也不查）。
 //   - getBoardJSON：读 /etc/board.json（provider），失败/非 JSON → 9。
 //   - getDHCPLeases：leasefile 发现走 uci `dhcp` config（dnsmasq/odhcpd section 的
 //     `leasefile` option，回退 /tmp/dhcp.leases、/tmp/odhcpd.leases）；family

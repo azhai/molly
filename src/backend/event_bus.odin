@@ -72,7 +72,9 @@ event_bus_subscribe :: proc(path: string, alloc: mem.Allocator) -> (sub: ^Subscr
 	if g_bus_n >= EVENT_BUS_MAX {
 		posix.close(sub.rfd)
 		posix.close(sub.wfd)
-		free(sub)
+		// 两样都要按**建它们时的分配器**还（上面是 new/clone 到 alloc 上的）
+		delete(sub.path, alloc)
+		free(sub, alloc)
 		return nil, false
 	}
 	g_bus_next += 1
@@ -141,7 +143,9 @@ event_bus_unsubscribe :: proc(sub: ^Subscription) {
 // ——SSE 是尽力而为的推送，丢一条事件比把事件源线程卡住好。
 event_bus_publish :: proc(path, method, data_json: string, alloc: mem.Allocator) {
 	record := fmt.aprintf("%s\t%s\n", method, data_json, allocator = alloc)
-	defer delete(record)
+	// 必须用**同一个**分配器还：darwin 的调用方传的是连接 arena，而环境 context.allocator
+	// 是堆分配器——`delete(record)` 那样写就是「arena 的内存交给 malloc 去 free」（UB）。
+	defer delete(record, alloc)
 
 	buf := transmute([]byte)(record)
 	sync.lock(&g_bus_lock)

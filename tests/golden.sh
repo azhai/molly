@@ -7,7 +7,7 @@
 # 三个动作：
 #   ./tests/golden.sh device <host>        # ssh root@<host>：抓设备上的契约样本
 #   ./tests/golden.sh molly  <base-url>    # 抓 molly 的 /ubus 响应（同一批探针）
-#   ./tests/golden.sh http   <base-url>    # 抓 HTTP 层样本（原厂 uhttpd 或 molly 都行）
+#   ./tests/golden.sh http   <base-url>    # 抓 HTTP 层样本 → 写 http-molly/（原厂样本留在 http/）
 #   ./tests/golden.sh compare <dir>        # 对比 <dir>/ubus 与 <dir>/molly 的每对样本
 #
 # 产物目录：.ai-memory/golden/<yyyy-mm-dd>/（可用 GOLDEN_DIR 覆盖）
@@ -16,7 +16,10 @@
 #   MOLLY_DEVICE_PASS=xxx ./tests/golden.sh device 192.168.1.1
 # molly 侧需要：一个已登录会话（可选），用它跑需要 ACL 的方法：
 #   MOLLY_SID=<32hex> ./tests/golden.sh molly http://192.168.1.1:8081
-set -uo pipefail
+set -o pipefail
+# 注：故意不加 -u（nounset）。macOS 自带 bash 3.2 对空数组 ${arr[@]} 与未匹配 glob
+# 的展开会误报 "unbound variable"，而脚本逻辑本身没问题（auth 空数组、molly/*.json
+# 在基线缺失时是预期的）。Linux bash ≥4 不受影响，这里为跨平台统一去掉 -u。
 cd "$(dirname "$0")/.."
 
 DIR="${GOLDEN_DIR:-.ai-memory/golden/$(date +%F)}"
@@ -123,11 +126,13 @@ capture_molly() {
 capture_http() {
   local base="$1"
   local out="$DIR"
-  mkdir -p "$out/http"
+  # **单独一个目录**：原厂 uhttpd 的样本（capture_device 写的 http/）是 R7 的校准物，
+  # 写进同一个目录会被 molly 这一侧覆盖掉（compare 又不比 HTTP，覆盖后无从查证）。
+  mkdir -p "$out/http-molly"
   for hp in "${HTTP_PROBES[@]}"; do
     url="${hp%% :: *}"
     name="${hp##* :: }"
-    curl -sS -m 8 -D- -o /dev/null "$base$url" >"$out/http/$name.txt" 2>&1
+    curl -sS -m 8 -D- -o /dev/null "$base$url" >"$out/http-molly/$name.txt" 2>&1
     printf '  HTTP %s -> %s\n' "$url" "$name"
   done
   echo "目录：$out"

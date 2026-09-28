@@ -4,7 +4,10 @@
 #   - 请求体透传（含 64KB：验证写 body 的线程确实避开管道写满的死锁）
 #   - 响应头解析与透传（Status / Location / Set-Cookie / Cache-Control）与 Content-Type 缺失 → 500
 #   - HEAD 有头无体、keep-alive 复用
-# 设备上的等价验收：把 --luci-cgi 换成 "/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc"。
+# 设备上的等价验收：把 --luci-cgi 换成 "/www/cgi-bin/luci"（LuCI 的 CGI 兜底脚本）。
+# **别**填 "/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc"：那是 uhttpd **进程内** 加载的
+# ucode 模板（首行 `{%`、用 uhttpd 注入的 recv/send），当脚本跑必然语法错——症状是每个
+# /cgi-bin/luci/** 都 500，正文 `invalid CGI response (exit 1)`，四条语法错在 molly 的 stderr。
 #
 # 用法：./tests/cgi_smoke.sh
 set -uo pipefail
@@ -123,6 +126,10 @@ check "Content-Length 由 molly 重算" "19" "$(header_of Content-Length "$B2/cg
 echo
 echo "== 错误路径与协议语义 =="
 check "脚本无输出 → 500" "500" "$(status_of "$B3/cgi-bin/luci")"
+# 正文带退出码：区分「脚本自己退出（配置/语法问题）」与「被信号杀掉（崩溃）」。
+# broken.sh 是 `exit 3` 且不输出——与「--luci-cgi 指错可执行文件（如 uhttpd.uc）」同形。
+check "无输出的 500 正文带退出码" "1" \
+  "$(body_of "$B3/cgi-bin/luci" | grep -c 'invalid CGI response (exit 3): ""')"
 check "缺 Content-Type → 500（CGI 规范）" "500" "$(status_of "$B4/cgi-bin/luci")"
 check "HEAD 有头无体" "0" \
   "$(curl -s -I "$B1/cgi-bin/luci" | awk 'BEGIN{b=0} /^\r?$/{f=1;next} f{b+=length($0)+1} END{print b}')"

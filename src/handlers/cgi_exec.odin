@@ -8,18 +8,24 @@ import "core:strings"
 import "core:sys/posix"
 import "core:thread"
 
+import "molly:backend"
 import "molly:http"
 
 // ---------------------------------------------------------------------------
 // /cgi-bin/luci → 子进程的桥接（P3-8″-T1，ADR `.ai-agents/adr/0003-keep-ucode-faithful-luci2.md`）
 //
-// 上游 uhttpd 的默认形态是**进程内** ucode handler：
-//     uci add_list uhttpd.main.ucode_prefix='/cgi-bin/luci=/usr/share/ucode/luci/uhttpd.uc'
-//     （luci-base/Makefile:47-48；uhttpd.uc 定义 global.handle_request(env)，
-//      经 uhttpd.recv / uhttpd.send 收发）
-// CGI 形态是它的等价兜底（`/www/cgi-bin/luci` 就是 `#!/usr/bin/env ucode` +
-// `dispatch(request(getenv(), read, write))`）。T1 先按 CGI 做：构造环境 → fork/execve →
-// 把子进程 stdout 当成响应回给客户端；T2（绑定 libucode 内嵌）等 T1 在设备上验收后再评估。
+// 上游 uhttpd 有两种形态，**只有第二种能从子进程跑**：
+//   1) 进程内 ucode **模板**（uhttpd 的默认形态）：
+//        uci add_list uhttpd.main.ucode_prefix='/cgi-bin/luci=/usr/share/ucode/luci/uhttpd.uc'
+//        （luci-base/Makefile:47-48）。那个文件首行是 `{%`（ucode 的模板块），定义
+//        `global.handle_request(env)`、收发走 uhttpd 注入的 `uhttpd.recv` / `uhttpd.send`——
+//        必须在 uhttpd 进程里按模板编译；单独 execve 它必然语法错
+//        （`Expecting expression` / `Imports may only appear at top level`）。
+//   2) **CGI 兜底**：`/www/cgi-bin/luci`，LuCI 装的 `#!/usr/bin/env ucode` 脚本
+//        （等价内容：`dispatch(request(getenv(), read, write))`）。
+// `--luci-cgi` 要填的是 **2**（见 `main.odin` 的 USAGE 与 `docs/interfaces.md` §5.5）。
+// T1 先按 CGI 做：构造环境 → fork/execve → 把子进程 stdout 当成响应回给客户端；
+// T2（绑定 libucode 内嵌）等 T1 在设备上验收后再评估。
 //
 // 约束与取舍：
 //   - fork 与 execve 之间**只做 async-signal-safe 调用**（dup2 / close / execve / _exit）：
@@ -84,6 +90,18 @@ build_cgi_env :: proc(
 		}
 		name := header_env_name(h.name, alloc)
 		append(&env, fmt.aprintf("HTTP_%s=%s", name, h.value, allocator = alloc))
+	}
+
+	// 私有总线模式（--ubus-socket）下，CGI 子进程（ucode LuCI）必须连到 molly 那条
+	// 总线，否则它看不到 molly 的 session。子进程里的 libubus **没有** socket 环境变量
+	// （已核 libubus-io.c：`ubus_connect` 只认显式路径或编译期默认），所以靠设备上
+	// LuCI 的 dispatcher.uc 读这个变量（一行补丁，替换原本的 `let ubus = connect();`；
+	// 备份在同目录 dispatcher.uc.orig，见 linux.odin 的 g_ubus_socket_c 说明）。
+	//
+	// 该补丁同时把 LuCI 的 ubus 做成**双总线**代理：先在自己总线上找对象，找不到回退
+	// 系统总线——否则 CGI 连了私有总线就看不到 netifd/network.* 等系统对象，页面会 500。
+	if sock := backend.ubus_socket_path(); len(sock) > 0 {
+		append(&env, fmt.aprintf("MOLLY_UBUS_SOCKET=%s", sock, allocator = alloc))
 	}
 	return env, true
 }
@@ -280,7 +298,15 @@ run_cgi :: proc(
 		if len(head) > 200 {
 			head = head[:200]
 		}
-		return cgi_fail(conn, req, fmt.aprintf("invalid CGI response: %q", head, allocator = alloc), alloc)
+		// 正文带上子进程的退出情况：`exit 1` + stdout 为空，最常见的原因就是 --luci-cgi
+		// 指错了可执行文件（典型：填成 uhttpd.uc——那是模板不是脚本，它把语法错打到 stderr、
+		// stdout 什么都不给）。stderr 继承 molly 的 stderr，细节在 molly 的日志里。
+		return cgi_fail(
+			conn,
+			req,
+			fmt.aprintf("invalid CGI response (%s): %q", exit_desc(status, alloc), head, allocator = alloc),
+			alloc,
+		)
 	}
 
 	// Content-Type 只在脚本没给时才由我们兜底（parse 已保证给了）
@@ -338,6 +364,19 @@ read_all :: proc(fd: posix.FD, alloc: mem.Allocator) -> string {
 		append(&buf, ..chunk[:int(n)])
 	}
 	return string(buf[:])
+}
+
+// 子进程是怎么结束的：`exit N` / `signal N`。只写进 500 的正文与 molly 的日志，
+// 用来区分「脚本自己退出（通常是配置或语法问题）」和「被信号杀掉（崩溃/超时）」。
+@(private)
+exit_desc :: proc(status: c.int, alloc: mem.Allocator) -> string {
+	switch {
+	case posix.WIFEXITED(status):
+		return fmt.aprintf("exit %d", posix.WEXITSTATUS(status), allocator = alloc)
+	case posix.WIFSIGNALED(status):
+		return fmt.aprintf("signal %d", int(posix.WTERMSIG(status)), allocator = alloc)
+	}
+	return "unknown exit status"
 }
 
 @(private)

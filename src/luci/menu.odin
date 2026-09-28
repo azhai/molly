@@ -66,6 +66,13 @@ Node :: struct {
 	// 解析在树 arena 里，判定在请求里（backend.session_acl_level）。
 	acl_groups: []string,
 
+	// spec.auth。molly 只用它的 login 那一半（上游 ctx_append 是 `ctx.auth = node.auth ||
+	// ctx.auth`，`:463`）——**有没有 auth 对象**必须单独记：上游只在 `length(ctx.auth)` 非空时
+	// 才走登录流程（`:927`），而真实 menu.d 里的 `auth: {}` 等于没有。
+	// auth.methods（从哪取会话）不建模：molly 固定认 sysauth_http / sysauth_https。
+	has_auth:   bool,
+	auth_login: bool,
+
 	// 子节点。键是路径段，用 map 做 O(1) 下降；遍历顺序不确定，
 	// 需要顺序的地方（firstchild 竞选）用 (weight, 段名) 显式定序。
 	children: map[string]^Node,
@@ -80,6 +87,44 @@ Resolved :: struct {
 	// 沿途（含通配层）所有节点的 depends.acl 组名并集——上游 ctx.acls（dispatcher.uc:460-461）。
 	// 最终判权用并集：其中**任一**组是 write 就不算只读（上游 check_acl_depends 返回 writable）。
 	acl_groups: []string,
+
+	// 沿途的 auth 状态（上游 ctx.auth）。
+	auth: Auth_State,
+}
+
+// 路径上「最后一个带 auth 的节点」的 login 标志 + firstchild 竞选的 login 放行模式。
+//
+// 上游的两条语义必须分开，混起来会判错：
+//   - **最后者胜**：`ctx.auth = node.auth || ctx.auth`（ctx_append，`:463`）——更深的 auth 会
+//     覆盖前面的。于是 `/admin/uci/apply_rollback`（它自己的 auth 里没有 login）不走登录流程，
+//     而 `/admin/status/overview`（ctx.auth 还是 admin 的 `login: true`）会走。
+//   - **粘滞**：`resolve_firstchild` 的 `login = !session && (login_allowed || child.auth?.login)`
+//     （`:593`）——一旦进入 login 模式，后代即便 ACL 缺组也放行。没有它，无会话的用户在
+//     真实 menu.d 上只会看到一片 404，而上游是要把他导到登录页的。
+Auth_State :: struct {
+	has_auth:   bool, // ctx.auth 非空（上游 :927 的 length(ctx.auth)）
+	auth_login: bool, // ...且最后那个节点标了 login（上游 :930）
+	login_mode: bool, // 粘滞：出现过 login 节点（上游 firstchild 的 login_allowed）
+}
+
+// 上游 :927-930：无会话 且 ctx.auth 非空且标了 login → 进登录流程（拿不到会话就 403 + 登录页）。
+// molly 不渲染登录表单，只取出这一个判定，由 dispatch 换成 Login_Required 占位页。
+login_required :: proc(state: Auth_State, sid: string) -> bool {
+	return len(sid) == 0 && state.has_auth && state.auth_login
+}
+
+// 把一个节点并进 auth 状态（上游 ctx_append 的 `ctx.auth = node.auth || ctx.auth`：
+// 只有节点自己带 auth 才覆盖 has_auth/auth_login），同时更新粘滞的 login_mode。
+@(private)
+auth_absorb :: proc(state: Auth_State, n: ^Node) -> Auth_State {
+	if !n.has_auth {
+		return state
+	}
+	out := state // Odin 的入参是只读的，改副本再返回
+	out.has_auth = true
+	out.auth_login = n.auth_login
+	out.login_mode = out.login_mode || n.auth_login
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +268,9 @@ merge_menu_file :: proc(root: ^Node, data: []byte, alloc: mem.Allocator) {
 //   - schema 之外的键、类型不符的键 → **只忽略这个键**，不丢弃整条规格；
 //   - 只覆盖 spec 里出现的键，没出现的键保留前一份定义（同路径多文件时按文件名序）；
 //   - 路径里有 '*' 段时 action 进 wildcard_action_*，否则进 action_*。
-// 未建模的 schema 键（auth / cors / setgroup / setuser）在 P2 不进树：认证与 ACL
-// 是 P3 的范围（决策 6）；css 是 molly 自己的扩展键，同样不进树。
+// 未建模的 schema 键（cors / setgroup / setuser）不进树；`auth` 只取 `login` 那一半
+// （P3-6 收尾加：无会话时用它决定「403 + 登录提示」还是 404，见 Auth_State）；
+// `css` 是 molly 自己的扩展键，也不进树。
 @(private)
 apply_spec :: proc(root: ^Node, path: string, spec: json.Object, alloc: mem.Allocator) {
 	node, hit_wildcard := descend(root, path, alloc)
@@ -289,8 +335,22 @@ apply_spec :: proc(root: ^Node, path: string, spec: json.Object, alloc: mem.Allo
 				continue
 			}
 			node.title = string(s)
-		case "auth", "cors", "css", "setgroup", "setuser":
-			// schema 里存在（css 是扩展），但 P2 的树不用它们
+		case "auth":
+			// 上游 schema（:351）只拷**类型匹配**的键：auth 不是对象就整键忽略；且缺 auth 的
+			// spec **不清空**前一份（:406-408 是条件拷贝，只有 satisfied 例外，见 :416）。
+			obj, is_obj := val.(json.Object)
+			if !is_obj {
+				continue
+			}
+			node.has_auth = true
+			node.auth_login = false
+			if lv, has_login := obj["login"]; has_login {
+				if lb, is_bool := lv.(json.Boolean); is_bool {
+					node.auth_login = bool(lb)
+				}
+			}
+		case "cors", "css", "setgroup", "setuser":
+			// schema 里存在（css 是 molly 的扩展键），但树不用它们
 			continue
 		case:
 			// schema 之外的键：忽略
@@ -731,10 +791,16 @@ directory_non_empty :: proc(path: string, alloc: mem.Allocator) -> bool {
 // 节点在**本会话**下是否可见：depends（fs/uci）成立，且 depends.acl 要求的组没有缺的。
 // 上游把这两件事都折进 node.satisfied（apply_tree_acls 把缺组的节点标 satisfied=false）——
 // molly 的树是跨请求缓存的，节点上写会话相关状态会串会话，所以 acl 那半每请求现算（P3-6）。
+//
+// `login` = 无会话时的 login 放行模式（上游 `resolve_firstchild:593` 的
+// `login || check_acl_depends(...) != null`）：只豁免 **acl 缺组**那半，satisfied 照旧要过。
 @(private)
-node_visible :: proc(n: ^Node, sid: string) -> bool {
+node_visible :: proc(n: ^Node, sid: string, login := false) -> bool {
 	if !n.satisfied {
 		return false
+	}
+	if login {
+		return true
 	}
 	return !node_acl_missing(n, sid)
 }
@@ -753,22 +819,26 @@ resolve :: proc(tree: ^Node, path: string, sid: string, alloc: mem.Allocator) ->
 	segs := split_segments(path, alloc)
 	node := tree
 	groups := make([dynamic]string, 0, 4, alloc)
+	auth := auth_absorb(Auth_State{}, tree)
 
 	for i := 0; i < len(segs); i += 1 {
 		next, has := child_of(node, segs[i])
 		if node.wildcard && (!has || !node_visible(next, sid)) {
 			// 通配层自己已经在 groups 里（下降时收过），剩余段当 args
-			return {node = node, args = segs[i:], found = true, acl_groups = groups[:]}
+			return {node = node, args = segs[i:], found = true, acl_groups = groups[:], auth = auth}
 		}
 		if !has || !node_visible(next, sid) {
-			return {node = node, found = false, acl_groups = groups[:]}
+			// 下降失败也把沿途的 auth 带回去：无会话时「被 ACL 截断」正是要判 403 + 登录提示
+			// 的那种形态（上游同样是先聚完 ctx.auth 才走到 error404）。
+			return {node = node, found = false, acl_groups = groups[:], auth = auth}
 		}
 		for g in next.acl_groups {
 			append(&groups, g)
 		}
+		auth = auth_absorb(auth, next)
 		node = next
 	}
-	return {node = node, found = true, acl_groups = groups[:]}
+	return {node = node, found = true, acl_groups = groups[:], auth = auth}
 }
 
 // 上游 :1006-1011：先用 node.action；**有剩余段**且存在 wildcardaction 时改用它。
@@ -785,13 +855,24 @@ effective_action :: proc(node: ^Node, args: []string) -> Action {
 	return {type = node.action_type, path = node.action_path}
 }
 
-// 上游 resolve_firstchild（dispatcher.uc:467-502）：在所有 satisfied、有 title、
+// 上游 resolve_firstchild（dispatcher.uc:582-624）：在所有 satisfied、有 title、
 // action 是对象的子节点里挑权重最小的一个。子节点自己也是 firstchild 时递归下降，
 // 且它必须有可当选的后代才有资格当选。
 //
 // 权重相同（menu.d 里 order 相等很常见）时按段名字典序取小——上游吃的是 ucode
 // 对象的插入序，我们这里换成显式规则，保证多次运行结果一致。
-first_child :: proc(node: ^Node, sid: string, groups: ^[dynamic]string, alloc: mem.Allocator) -> ^Node {
+//
+// groups / auth 是「当选支路」要并回 ctx 的东西（上游候选用 child_ctx、只有赢家
+// `for (k, v in candidate_ctx) ctx[k] = v`，:620-621）：所以在候选自己的副本上累积，
+// 赢了才写回。login_allowed 是递归带下去的 login 模式（上游 :600 的第三个实参）。
+first_child :: proc(
+	node: ^Node,
+	sid: string,
+	groups: ^[dynamic]string,
+	auth: ^Auth_State,
+	login_allowed: bool,
+	alloc: mem.Allocator,
+) -> ^Node {
 	if node.children == nil {
 		return nil
 	}
@@ -800,22 +881,36 @@ first_child :: proc(node: ^Node, sid: string, groups: ^[dynamic]string, alloc: m
 	best_name := ""
 	best_groups: [dynamic]string
 
+	base_auth: Auth_State
+	if auth != nil {
+		base_auth = auth^
+	}
+	best_auth := base_auth
+
 	for name, child in node.children {
-		// 缺 depends.acl 的组 → 不参与竞选（上游 apply_tree_acls 已把它标 satisfied=false）
-		if !node_visible(child, sid) || len(child.title) == 0 || child.firstchild_ineligible {
+		// 无会话时的 login 放行模式（上游 :593：`login = !session && (login_allowed ||
+		// child.auth?.login)`）——命中就让 ACL 缺组的节点也进竞选，否则无会话用户在真实
+		// menu.d 上只会看到一片 404（上游是要把他导到登录页的）。
+		child_login := len(sid) == 0 && (login_allowed || child.auth_login)
+		// 另外三个条件对应上游 :586（satisfied）、:596（有 title 且 action 是对象）、
+		// :607（firstchild_ineligible 不参与竞选）
+		if len(child.title) == 0 ||
+		   child.firstchild_ineligible ||
+		   !node_visible(child, sid, child_login) {
 			continue
 		}
 
-		// 这条支路自己的 depends.acl 也要算进 ctx.acls（上游 resolve_firstchild 的 ctx_append）：
-		// 只有**当选**的那条支路才并进 groups，所以先收在候选自己的数组里。
+		// 这条支路自己的 depends.acl 与 auth 也要算进 ctx（上游 resolve_firstchild 的
+		// ctx_append）：只有**当选**的那条才并回去，所以先收在候选自己的副本里。
 		cand_groups := make([dynamic]string, 0, 2, alloc)
 		for g in child.acl_groups {
 			append(&cand_groups, g)
 		}
+		cand_auth := auth_absorb(base_auth, child)
 
 		candidate := child
 		if child.action_type == "firstchild" {
-			candidate = first_child(child, sid, &cand_groups, alloc)
+			candidate = first_child(child, sid, &cand_groups, &cand_auth, child_login, alloc)
 			if candidate == nil {
 				continue // 没有可当选的后代 → 本节点不能当选
 			}
@@ -827,12 +922,18 @@ first_child :: proc(node: ^Node, sid: string, groups: ^[dynamic]string, alloc: m
 		if best == nil || w < best_weight || (w == best_weight && name < best_name) {
 			best, best_weight, best_name = candidate, w, name
 			best_groups = cand_groups
+			best_auth = cand_auth
 		}
 	}
 
-	if best != nil && groups != nil {
-		for g in best_groups {
-			append(groups, g)
+	if best != nil {
+		if groups != nil {
+			for g in best_groups {
+				append(groups, g)
+			}
+		}
+		if auth != nil {
+			auth^ = best_auth
 		}
 	}
 	return best

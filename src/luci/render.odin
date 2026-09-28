@@ -15,6 +15,7 @@ Kind :: enum {
 	Page,            // 命中 action.type == "view" 的节点
 	NotFound,        // 没命中任何节点 → 404
 	Not_Implemented, // 命中了，但 action.type 不是 view（cbi/form/template/…）→ 501
+	Login_Required,  // 无会话且路径上有 auth.login 的节点 → 403 + X-LuCI-Login-Required
 }
 
 Page :: struct {
@@ -73,6 +74,43 @@ render_placeholder :: proc(node: ^Node, action: Action, args: []string, readonly
 	return strings.to_string(b)
 }
 
+// 无会话命中 auth.login 节点时的占位页（P3-6 收尾）。
+//
+// 上游在这一步是：先拿表单里的 luci_username / luci_password 试登录（`:939-940`），拿不到
+// 会话就 **403 Forbidden + `X-LuCI-Login-Required: yes` + 主题的 sysauth 登录表单**（`:942-960`）。
+// molly 的内置 dispatcher 不渲染模板（ADR 0003：登录页由 `--luci-cgi` 的 ucode 提供），所以
+// 状态码与响应头照上游对齐、正文换成这段可 curl 断言的提示——至少让人看出「不是 404，是要登录，
+// 而且落在哪条路径上」。没有这一页时，设备上的表现是整站一片裸 404（实测踩过）。
+render_login_required :: proc(path: string, alloc: mem.Allocator) -> string {
+	b := strings.builder_make(alloc)
+	strings.write_string(&b, "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n")
+	strings.write_string(&b, "<meta charset=\"utf-8\">\n<title>Login required</title>\n</head>\n<body>\n")
+	strings.write_string(&b, "<h1>Login required</h1>\n")
+	strings.write_string(
+		&b,
+		"<p class=\"banner login-required\">需要登录：这条路径上的节点标了 <code>auth.login</code>，" +
+		"而本次请求没有会话（<code>sysauth_http</code> / <code>sysauth_https</code> 两个 cookie 都没有）。</p>\n",
+	)
+	strings.write_string(
+		&b,
+		"<p>molly 的内置 dispatcher 只认<strong>既有</strong>会话，不渲染登录表单（登录页由 " +
+		"<code>--luci-cgi</code> 的 ucode 提供，ADR 0003）；状态码与响应头按上游对齐：403 + " +
+		"<code>X-LuCI-Login-Required: yes</code>。</p>\n",
+	)
+	// 裸前缀（空路径）在提示页里显示成 "/"，否则这一行是空的
+	shown := path
+	if len(shown) == 0 {
+		shown = "/"
+	}
+
+	strings.write_string(&b, "<dl>\n")
+	write_row(&b, "login", "required (no session)")
+	write_row(&b, "path", shown)
+	write_row(&b, "hint", "POST /ubus 调 session.login 取 sid，再带 Cookie: sysauth_http=<sid>")
+	strings.write_string(&b, "</dl>\n</body>\n</html>\n")
+	return strings.to_string(b)
+}
+
 @(private)
 write_row :: proc(b: ^strings.Builder, key, value: string) {
 	strings.write_string(b, "<dt>")
@@ -108,6 +146,13 @@ html_escape :: proc(s: string, b: ^strings.Builder) {
 // `"/"`、`"/admin/status/overview"`。空路径走 root 的 firstchild。
 dispatch :: proc(tree: ^Node, path: string, sid: string, alloc: mem.Allocator) -> Page {
 	r := resolve(tree, path, sid, alloc)
+
+	// 无会话且路径上出现过 auth.login 的节点 → 上游进登录流程、最终 403 + 登录页
+	// （dispatcher.uc:927-961），**不是 404**。必须在解析结果之前判：真实 menu.d 里
+	// `/admin/**` 被 ACL 截断正是最常见的形态，而上游也是先聚完 ctx.auth 才走到 error404。
+	if login_required(r.auth, sid) {
+		return {kind = .Login_Required, body = render_login_required(path, alloc)}
+	}
 	if !r.found {
 		return {kind = .NotFound}
 	}
@@ -119,6 +164,8 @@ dispatch :: proc(tree: ^Node, path: string, sid: string, alloc: mem.Allocator) -
 	for g in r.acl_groups {
 		append(&groups, g)
 	}
+	// 下钻还会继续并 auth（firstchild 的当选支路 / alias 目标），所以这里的初值只是起点
+	auth := r.auth
 
 	// firstchild 下钻与 alias 回落。循环上限 4 是防 menu.d 写出来的环
 	// （A alias 到 B、B alias 回 A），不是性能考虑。
@@ -128,7 +175,8 @@ dispatch :: proc(tree: ^Node, path: string, sid: string, alloc: mem.Allocator) -
 		}
 
 		if node.action_type == "firstchild" {
-			node = first_child(node, sid, &groups, alloc)
+			// 无会话时会在「login 模式」下竞选——当选支路可能才带上 auth.login（上游 :593）
+			node = first_child(node, sid, &groups, &auth, false, alloc)
 			continue
 		}
 
@@ -141,17 +189,28 @@ dispatch :: proc(tree: ^Node, path: string, sid: string, alloc: mem.Allocator) -
 				target = strings.concatenate({"/", target}, alloc)
 			}
 			alias := resolve(tree, target, sid, alloc)
+			if login_required(alias.auth, sid) {
+				// 上游 alias 是**重新 dispatch** 一遍目标路径（:849-851）：目标自己那份
+				// ctx.auth 说了算，所以这里不是合并而是替换。
+				return {kind = .Login_Required, body = render_login_required(target, alloc)}
+			}
 			if !alias.found {
 				return {kind = .NotFound}
 			}
 			for g in alias.acl_groups {
 				append(&groups, g)
 			}
+			auth = alias.auth
 			node = alias.node
 			continue
 		}
 
 		break outer
+	}
+
+	// 下钻结束再判一次（firstchild 当选支路自带 auth.login 的情况）
+	if login_required(auth, sid) {
+		return {kind = .Login_Required, body = render_login_required(path, alloc)}
 	}
 
 	if node == nil {

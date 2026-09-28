@@ -44,8 +44,26 @@ import "molly:backend/bindings"
 // ubus_complete_request 的超时。超时后 ubus_invoke_fd 返回 UBUS_STATUS_TIMEOUT。
 UBUS_TIMEOUT_MS :: 30_000
 
+// ubus 侧（g_ctx + g_tmp/g_acc/g_out）的串行化锁：list_objects / call_object 用。
 @(private)
 g_lock: sync.Mutex
+
+// uci 侧（g_uci）的串行化锁，**必须**与 ubus 那把分开。
+//
+// 为什么不能共用一把：`call_object` 持 ubus 锁做**同步** ubus_invoke_fd（最长
+// UBUS_TIMEOUT_MS），而 molly 自己注册的对象（session/uci/luci-rpc/file）的
+// handler 跑在**服务线程**上。session login 要读 /etc/config/rpcd 校验 login
+// section（session_login_check → uci_config_sections），若 handler 与调用方抢
+// 同一把锁，就构成「调用方持锁等 handler、handler 等锁」的死锁——设备上表现为
+// `session login` 卡到超时返回 code 7（Request timed out），而不读 uci 的方法
+// （如 session access）却正常。
+//
+// 拆成两把后环被打破：调用方持 ubus 锁时，handler 仍能拿 uci 锁。
+//
+// 反向是安全的（不存在 AB-BA 反转）：uci 侧触发事件直接用 g_ubus_ctx 调
+// ubus_invoke_fd（uci_trigger_event），**不**获取 ubus 锁。
+@(private)
+g_uci_lock: sync.Mutex
 
 @(private)
 g_ctx: ^bindings.Ubus_Context
@@ -62,17 +80,85 @@ g_acc: bindings.Blob_Buf
 @(private)
 g_out: bindings.Blob_Buf
 
+// ---------------------------------------------------------------------------
+// 私有总线（--ubus-socket）
+//
+// 默认 molly 把 session/uci/file/luci-rpc 注册在**系统总线**上，那就和 rpcd 抢名字：
+// rpcd 在跑时 molly 注册不上（:8080 退化），rpcd 停了 :80 又只能借 molly 的 session。
+//
+// 给 molly 一条独立的 ubusd（`--ubus-socket /var/run/ubus/molly.sock`）后，两者各自
+// 拥有同名对象、互不影响：
+//   :80   uhttpd → rpcd（系统总线）
+//   :8080 molly   → 私有总线（molly 自己的 session/uci/file/luci-rpc）
+// 代价是 molly 主动调出去的**系统对象**（netifd / service / network.*）不在私有总线上，
+// 所以另外再开一条系统总线的连接专供这类访问（见 ubus_connect_system）。
+// ---------------------------------------------------------------------------
+
+// 私有总线的 socket 路径；nil = 用库内默认（系统总线），行为与加这个开关之前一致。
+@(private)
+g_ubus_socket_c: cstring
+
+// 由 main 在起任何线程之前调用一次。cstring 克隆到堆上（进程生命周期内有效，不释放）。
+set_ubus_socket :: proc(path: string) {
+	if len(path) == 0 {
+		g_ubus_socket_c = nil
+		return
+	}
+	g_ubus_socket_c = strings.clone_to_cstring(path, runtime.default_context().allocator)
+}
+
+// 私有总线路径（空 = 系统总线）。CGI 桥接要用它给 ucode 子进程设 MOLLY_UBUS_SOCKET
+// ——子进程里的 libubus 没有 socket 环境变量，只能靠 LuCI 侧的 dispatcher.uc 读它。
+ubus_socket_path :: proc() -> string {
+	if g_ubus_socket_c == nil {
+		return ""
+	}
+	return string(g_ubus_socket_c)
+}
+
+// molly 自己的对象所在的总线（私有总线；没配就是系统总线）。
+@(private)
+ubus_connect_own :: proc() -> ^bindings.Ubus_Context {
+	return bindings.ubus_connect(g_ubus_socket_c)
+}
+
+// 系统总线的连接，只用于**访问系统对象**（netifd / service / network.* 等；
+// 这些永远在系统总线上，不会跑到 molly 的私有总线里）。
+//
+// 没配私有总线时返回 nil —— 表示「主连接就是系统总线，不必多开一条」。
+@(private)
+ubus_connect_system :: proc() -> ^bindings.Ubus_Context {
+	if g_ubus_socket_c == nil {
+		return nil
+	}
+	return bindings.ubus_connect(nil)
+}
+
 // 惰性连接。连不上不缓存失败——下次调用再试一次，代价就是一次 connect()。
 @(private)
 ubus_ctx :: proc() -> ^bindings.Ubus_Context {
 	if g_ctx == nil {
-		// path 传 nil = 用库内编译时的默认 socket（UBUS_UNIX_SOCKET）
-		g_ctx = bindings.ubus_connect(nil)
+		g_ctx = ubus_connect_own()
 		if g_ctx == nil {
 			fmt.eprintln("molly: 连接 ubus 失败（ubusd 没起来？）")
 		}
 	}
 	return g_ctx
+}
+
+// 系统总线的惰性连接（供 call_object 回退用）。没配私有总线时就是 ubus_ctx()。
+@(private)
+g_sys_ctx: ^bindings.Ubus_Context
+
+@(private)
+ubus_sys_ctx :: proc() -> ^bindings.Ubus_Context {
+	if g_ubus_socket_c == nil {
+		return ubus_ctx()
+	}
+	if g_sys_ctx == nil {
+		g_sys_ctx = ubus_connect_system()
+	}
+	return g_sys_ctx
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +246,26 @@ list_objects :: proc(path: string, alloc: mem.Allocator) -> (json: string, err: 
 		return "", UBUS_STATUS_CONNECTION_FAILED, false
 	}
 
+	// 注意别用同名局部变量：本 proc 的返回值是**具名**的（json/err/ok），
+	// 直接 `json, err, ok := …` 会被判 shadowing。
+	j, e, o := list_objects_on(ctx, path, alloc)
+	if !o {
+		// 私有总线模式下，系统对象（netifd / network.* / system …）只挂在**系统总线**
+		// 上，所以查不到要换那条再查一次。
+		//
+		// 这一层回退是**必需**的：ubus_http 在 invoke 之前会先调 list_objects 探对象
+		// 是否存在（ubus_http.odin 的 -32000 分支），漏掉这里的话，系统对象的调用
+		// 会在进 call_object 之前就被判 Object not found。
+		if sys := ubus_sys_ctx(); sys != nil && sys != ctx {
+			return list_objects_on(sys, path, alloc)
+		}
+	}
+	return j, e, o
+}
+
+// 在**指定**的总线上做一次 ubus_lookup + 格式化（list_objects 的实现体，供回退复用）。
+@(private)
+list_objects_on :: proc(ctx: ^bindings.Ubus_Context, path: string, alloc: mem.Allocator) -> (json: string, err: int, ok: bool) {
 	if bindings.blob_buf_init(&g_tmp, 0) != 0 {
 		return "", UBUS_STATUS_NO_MEMORY, false
 	}
@@ -229,9 +335,22 @@ call_object :: proc(obj_path: string, method: string, params_json: string, sid: 
 	}
 
 	// 1) 找对象（上游 `ubus.c:885-888` 的 ubus_lookup_id → ERROR_OBJECT）
+	//
+	//    私有总线模式下先在自己总线上找（session/uci/file/luci-rpc/molly.probe），
+	//    找不到再回退到**系统总线**（netifd / network.* / system …）——否则 :8080 的
+	//    LuCI 拿不到任何系统对象的状态。没配私有总线时两条是同一条，回退不会生效。
+	path_c := strings.clone_to_cstring(obj_path, alloc)
 	obj_id: u32
-	if bindings.ubus_lookup_id(ctx, strings.clone_to_cstring(obj_path, alloc), &obj_id) != 0 {
-		return {outcome = .Object_Not_Found}
+	use := ctx
+	if bindings.ubus_lookup_id(use, path_c, &obj_id) != 0 {
+		if sys := ubus_sys_ctx(); sys != nil && sys != use {
+			if bindings.ubus_lookup_id(sys, path_c, &obj_id) != 0 {
+				return {outcome = .Object_Not_Found}
+			}
+			use = sys
+		} else {
+			return {outcome = .Object_Not_Found}
+		}
 	}
 
 	// 2) 构造请求（上游 uh_ubus_send_request，`ubus.c:565-584`）：
@@ -260,7 +379,7 @@ call_object :: proc(obj_path: string, method: string, params_json: string, sid: 
 		return {outcome = .Internal}
 	}
 	ret := bindings.ubus_invoke_fd(
-		ctx,
+		use, // 私有总线模式下可能已回退到系统总线（见上面第 1 步）
 		obj_id,
 		strings.clone_to_cstring(method, alloc),
 		g_tmp.head,
@@ -291,11 +410,19 @@ call_object :: proc(obj_path: string, method: string, params_json: string, sid: 
 	if bindings.blob_buf_init(&g_out, 0) != 0 {
 		return {outcome = .Internal}
 	}
-	t := bindings.blobmsg_open_table(&g_out, nil)
+	// 直接把回复的子项搬进 g_out，**不要**再 open_table 包一层。
+	//
+	// 那层包裹表名字为空（name=nil），而 blobmsg_format_element 对空名**不**输出
+	// `"": ` 前缀（blobmsg_json.c：`if (!without_name && blobmsg_name(attr)[0])`），
+	// 于是外层 blobmsg_format_json_list 的 `{}` 又叠上这个无名表的 `{}`，格式化出
+	// `{{…}}` —— 这是**非法 JSON**。前端 luci.js 里 `reply.json()` 解析失败后被
+	// try/catch 吞掉、json 变 null，于是 `Array.isArray(json)` 为 false，批量请求里
+	// 每一条都抛 "No related RPC reply"（luci.js:35-37）。
+	//
+	// 与上面 list_objects 的写法保持一致：直接 add 到 g_out。
 	for it := bindings.blob_iter(g_acc.head); bindings.blob_iter_ok(it); it = bindings.blob_iter_next(it) {
 		bindings.blobmsg_add_blob(&g_out, it.pos)
 	}
-	bindings.blobmsg_close_table(&g_out, t)
 
 	json_c := bindings.blobmsg_format_json(g_out.head, true)
 	if json_c == nil {
@@ -310,7 +437,7 @@ call_object :: proc(obj_path: string, method: string, params_json: string, sid: 
 // uci 数据访问（菜单的 depends.uci）
 // ---------------------------------------------------------------------------
 
-// uci context 与 ubus ctx 一样是全局单例，靠同一把 g_lock 串行化。
+// uci context 与 ubus ctx 一样是全局单例，但**各用一把锁**串行化（理由见 g_uci_lock）。
 // uci 的 API 本身不是线程安全的（共享 ctx 里的 package 缓存），我们做只读遍历，
 // 串行化之后不会互相踩。
 @(private)
@@ -392,10 +519,19 @@ probe_notify :: proc "c" (
 	return bindings.ubus_send_reply(ctx, req, buf.head)
 }
 
+// 注册成功后打的一行。方法数**从方法表里取**，不写死：P3-3/P3-4 是分片收尾的，
+// 写死的文案会停在「只读 configs/get」这种过期状态，而设备启动日志是最先被看到的东西
+// （2026-09-27 真机日志上就撞到过）。
+@(private)
+log_object_registered :: proc(name: string, n_methods: int) {
+	fmt.printfln("[molly] ubus 对象已注册: %s（%d 个方法）", name, n_methods)
+}
+
 // 服务线程：建 ctx → 注册对象 → 跑 uloop。除出错外不返回（uloop_run 阻塞）。
 @(private)
 ubus_server_thread :: proc() {
-	ctx := bindings.ubus_connect(nil)
+	// 对象注册在**自己的**总线上（私有总线，或没配时的系统总线）
+	ctx := ubus_connect_own()
 	if ctx == nil {
 		fmt.eprintln("[molly] ubus 服务线程：连不上 ubusd，molly 不提供 ubus 对象")
 		return
@@ -418,25 +554,25 @@ ubus_server_thread :: proc() {
 		fmt.eprintln("[molly] ubus 服务线程：注册对象失败，错误码", rc)
 		return
 	}
-	fmt.println("[molly] ubus 对象已注册:", PROBE_OBJECT_NAME)
+	log_object_registered(PROBE_OBJECT_NAME, len(g_probe_methods))
 
-	// P3-2：接管 session 对象。设备上 rpcd 还在跑时注册会失败——非致命，记一行继续：
-	// 要真正接管，先 `/etc/init.d/rpcd stop`（见 .ai-memory/p3-luci-server.md 的部署步骤）。
-	register_session_object(ctx)
-
-	// P3-3（S1）：接管 uci 的**只读**部分（`configs`/`get`）。同样，rpcd 在跑时注册会失败。
-	register_uci_object(ctx)
-
-	// P3-5（S1）：接管 luci-rpc（getBoardJSON/getDHCPLeases；其余方法回 8）。
-	register_luci_object(ctx)
-
-	// P3-4（第一批）：接管 file 的路径/权限核心与 `read`。file 是平台无关的真实现，
-	// 所以这段代码与 darwin 上被测到的是同一份。
-	register_file_object(ctx)
+	// 下面四个对象是 molly 自己的实现（P3-2…P3-5），不再是「转发给 rpcd」。
+	// 设备上 rpcd 还在跑时注册会失败——非致命，逐个对象打一行诊断继续：
+	// 要真正接管，先 `/etc/init.d/rpcd stop`（见 README 的「接管步骤」）。
+	register_session_object(ctx) // session：十方法
+	register_uci_object(ctx) // uci：十五方法（含写路径与 apply 系）
+	register_luci_object(ctx) // luci-rpc：六方法（含 iwinfo）
+	register_file_object(ctx) // file：八方法（平台无关的真实现，与 darwin 同一份）
 
 	// commit 要触发 `service.event`（上游 uci.c:1304-1321），而 provider 层的签名里
 	// 没有 ubus ctx，所以在这里记一份（服务线程的 ctx 生命周期覆盖整个进程）。
-	g_ubus_ctx = ctx
+	//
+	// 私有总线模式下这里必须是**系统总线**的连接：service / netifd 这类系统对象只会
+	// 挂在系统总线上，不会跑到 molly 的私有总线里。没配私有总线时就是本线程这条。
+	g_ubus_ctx = ubus_connect_system()
+	if g_ubus_ctx == nil {
+		g_ubus_ctx = ctx
+	}
 
 	// uloop 的初始化与运行都只发生在这个线程里；HTTP 线程从不碰它（R4）。
 	if bindings.uloop_init() != 0 {
@@ -448,7 +584,7 @@ ubus_server_thread :: proc() {
 	// 能在 ubus 线程里被执行（所有 ctx 改动都必须在这一线程做，ADR 0001）。
 	for {
 		_ = bindings.uloop_run_timeout(SSE_LOOP_POLL_MS)
-		sse_drain_watch_cmds(ctx)
+		sse_drain_watch_cmds()
 	}
 	fmt.eprintln("[molly] ubus 服务线程：事件循环退出，molly 不再提供 ubus 对象")
 }
@@ -471,6 +607,57 @@ ubus_server_thread :: proc() {
 // uloop 每次 run 的超时（毫秒）：既用来排空命令队列，也顺带当心跳节拍。
 SSE_LOOP_POLL_MS :: 100
 
+// 订阅专用的 ubus 连接——**不能**复用注册了 molly 对象的那个 ctx。
+//
+// 为什么必须是独立的一条：ubusd 明确禁止客户端订阅自己的对象
+// （ubusd_proto.c:460-461 `if (cl == target->client) return UBUS_STATUS_INVALID_ARGUMENT`）。
+//
+// 接管模式下 molly 自己就是 session/uci/file/luci-rpc/molly.probe 的持有者，若拿注册
+// 这些对象的**同一个** ctx 去订阅，就满足 cl == target->client，ubus_subscribe 恒返回
+// 错误码 2，SSE 一条事件都收不到。上游不出这个问题，是因为 uhttpd 订阅的是 **rpcd**
+// 的对象，两者是不同 client。
+//
+// 所以订阅者注册在另一条 ubus 连接上，并挂进本线程的 uloop 才能收到通知。
+@(private)
+g_sse_ctx: ^bindings.Ubus_Context
+
+// 惰性建订阅用的连接。**只在 ubus 线程里调用**（建 ctx 与 uloop 注册都必须在这一线程，
+// ADR 0001）。
+@(private)
+sse_ctx :: proc() -> ^bindings.Ubus_Context {
+	if g_sse_ctx == nil {
+		c := ubus_connect_own()
+		if c == nil {
+			fmt.eprintln("[molly] 订阅专用 ubus 连接建立失败")
+			return nil
+		}
+		bindings.ubus_add_uloop(c)
+		g_sse_ctx = c
+	}
+	return g_sse_ctx
+}
+
+// 订阅**系统对象**（netifd 等）用的另一条连接。没配私有总线时返回 nil
+// （表示「用 sse_ctx() 就够」，避免多开一条）。
+@(private)
+g_sse_sys_ctx: ^bindings.Ubus_Context
+
+@(private)
+sse_sys_ctx :: proc() -> ^bindings.Ubus_Context {
+	if g_ubus_socket_c == nil {
+		return nil
+	}
+	if g_sse_sys_ctx == nil {
+		c := ubus_connect_system()
+		if c == nil {
+			return nil
+		}
+		bindings.ubus_add_uloop(c)
+		g_sse_sys_ctx = c
+	}
+	return g_sse_sys_ctx
+}
+
 @(private)
 Sse_Watch_Op :: enum {
 	Start,
@@ -490,6 +677,9 @@ Sse_Sub :: struct {
 	sub:  bindings.Ubus_Subscriber, // 0（obj 在 +16）
 	path: cstring,
 	id:   u32,
+	// 这条订阅注册在哪条连接上：私有总线模式下，molly 自己的对象用自己的总线、
+	// 系统对象（netifd / network.*）只能订系统总线，unsubscribe 时要用同一条。
+	ctx:  ^bindings.Ubus_Context,
 }
 
 // HTTP 线程写、ubus 线程读
@@ -530,7 +720,7 @@ sse_watch_stop :: proc(path: string) {
 
 // 排空命令队列 + 发布已收到的通知（只在 ubus 线程里跑）。
 @(private)
-sse_drain_watch_cmds :: proc(ctx: ^bindings.Ubus_Context) {
+sse_drain_watch_cmds :: proc() {
 	sync.lock(&g_sse_lock)
 	pending := g_sse_cmds
 	n := g_sse_n
@@ -540,9 +730,14 @@ sse_drain_watch_cmds :: proc(ctx: ^bindings.Ubus_Context) {
 	for i in 0 ..< n {
 		switch pending[i].op {
 		case .Start:
-			sse_watch_apply_start(ctx, pending[i].path)
+			sse_watch_apply_start(pending[i].path)
 		case .Stop:
-			sse_watch_apply_stop(ctx, pending[i].path)
+			sse_watch_apply_stop(pending[i].path)
+		}
+		// path 是 sse_watch_start/stop 克隆出来的（store 分配器）：消化完必须释放，
+		// 否则每开/关一条 SSE 订阅都漏一小串（浏览器反复重连时是可观的内存）。
+		if len(pending[i].path) > 0 {
+			delete(pending[i].path, session_store_allocator())
 		}
 	}
 
@@ -625,7 +820,7 @@ copy_cstr :: proc "contextless" (dst: []u8, src: cstring) -> int {
 }
 
 @(private)
-sse_watch_apply_start :: proc(ctx: ^bindings.Ubus_Context, path: string) {
+sse_watch_apply_start :: proc(path: string) {
 	for i in 0 ..< g_sse_sub_n {
 		if g_sse_subs[i].path != nil && string(g_sse_subs[i].path) == path {
 			return // 已经在订这个对象了
@@ -636,28 +831,44 @@ sse_watch_apply_start :: proc(ctx: ^bindings.Ubus_Context, path: string) {
 		return
 	}
 
+	// 订阅一律走**独立**的那条连接（理由见 g_sse_ctx 的注释：同一个 client 不能
+	// 订阅自己的对象，ubusd 会回错误码 2）。
+	ctx := sse_ctx()
+	if ctx == nil {
+		return
+	}
+
 	path_c := strings.clone_to_cstring(path, session_store_allocator())
 	id: u32
 	if rc := bindings.ubus_lookup_id(ctx, path_c, &id); rc != 0 {
-		fmt.eprintln("[molly] ubus 订阅失败（lookup_id）：", path, "错误码", rc)
-		return
+		// 私有总线模式下，系统对象（netifd / network.*）只挂在系统总线上——换那条再试。
+		if sys := sse_sys_ctx(); sys != nil && bindings.ubus_lookup_id(sys, path_c, &id) == 0 {
+			ctx = sys
+		} else {
+			fmt.eprintln("[molly] ubus 订阅失败（lookup_id）：", path, "错误码", rc)
+			delete_cstring(path_c, session_store_allocator()) // 失败路径也要还
+			return
+		}
 	}
 
 	sse := new(Sse_Sub, session_store_allocator())
 	sse.path = path_c
 	sse.id = id
+	sse.ctx = ctx
 	sse.sub.cb = sse_notify_cb
 	// remove_cb / new_obj_cb 不设：对象消失时我们不需要额外动作（SSE 连接断开
 	// 走 event_bus_unsubscribe → 这里 ubus_unsubscribe 即可）。
 	if rc := bindings.ubus_register_subscriber(ctx, &sse.sub); rc != 0 {
 		fmt.eprintln("[molly] ubus_register_subscriber 失败，错误码", rc)
-		free(sse)
+		delete_cstring(sse.path, session_store_allocator())
+		free(sse, session_store_allocator())
 		return
 	}
 	if rc := bindings.ubus_subscribe(ctx, &sse.sub, id); rc != 0 {
 		fmt.eprintln("[molly] ubus_subscribe 失败，错误码", rc)
 		bindings.ubus_unregister_subscriber(ctx, &sse.sub)
-		free(sse)
+		delete_cstring(sse.path, session_store_allocator())
+		free(sse, session_store_allocator())
 		return
 	}
 	g_sse_subs[g_sse_sub_n] = sse
@@ -665,17 +876,27 @@ sse_watch_apply_start :: proc(ctx: ^bindings.Ubus_Context, path: string) {
 }
 
 @(private)
-sse_watch_apply_stop :: proc(ctx: ^bindings.Ubus_Context, path: string) {
+sse_watch_apply_stop :: proc(path: string) {
 	for i in 0 ..< g_sse_sub_n {
 		sse := g_sse_subs[i]
 		if sse.path == nil || string(sse.path) != path {
 			continue
 		}
+		// 必须用**注册时那条**连接退订（可能私有总线，也可能系统总线）
+		ctx := sse.ctx
+		if ctx == nil {
+			ctx = sse_ctx()
+		}
+		if ctx == nil {
+			return
+		}
 		bindings.ubus_unsubscribe(ctx, &sse.sub, sse.id)
 		bindings.ubus_unregister_subscriber(ctx, &sse.sub)
 		g_sse_subs[i] = g_sse_subs[g_sse_sub_n - 1]
 		g_sse_sub_n -= 1
-		free(sse)
+		// path 与 sse 本身都是 apply_start 里用 store 分配器建的，一起还
+		delete_cstring(sse.path, session_store_allocator())
+		free(sse, session_store_allocator())
 		return
 	}
 }
@@ -767,8 +988,37 @@ register_session_object :: proc(ctx: ^bindings.Ubus_Context) {
 		)
 		return
 	}
-	fmt.println("[molly] ubus 对象已注册: session")
+	log_object_registered("session", len(g_session_methods))
 }
+
+// ---------------------------------------------------------------------------
+// 每次 ubus 调用的请求 arena
+//
+// ubus 这侧没有 HTTP 那种「连接私有 arena + 每请求 reset」（http/server.odin:91-114），
+// 所以每个 handler 自己起一个 Dynamic_Arena、返回时一起销毁。
+//
+// 为什么必须这样：契约是「回复串一律指向调用方给的 alloc（**每请求 arena**），实现不得
+// 返回需要调用方 free 的堆内存」（docs/interfaces.md §7.1 的内存约定）。原先 handler 直接把
+// `context.allocator`（默认**堆**分配器）传给 *_call，一路上 params、中间树、回复串、
+// cstring 副本全落在堆上且**无人释放**——设备上的表现就是 RSS 随每次 `/ubus` 调用单调上涨
+// （2026-09-27 审 linux-only 路径时发现，本机测试用 arena 所以看不见）。
+//
+// **长期状态不受影响**：会话/租约这类要活过请求的数据走 session_store_allocator()
+// （显式 `runtime.default_context().allocator`，不读 context），不会被 arena 回收。
+// ---------------------------------------------------------------------------
+
+// 用法：每个 handler 开头照抄这段（**不能包成 helper**——`context` 是按值传入的隐式
+// 参数，在 helper 里改不到调用方；而且 `proc "c"` 里必须先赋值 context 才能用 context）：
+//
+//	context = runtime.default_context()
+//	arena: mem.Dynamic_Arena
+//	mem.dynamic_arena_init(&arena)
+//	defer mem.dynamic_arena_destroy(&arena)
+//	context.allocator = mem.dynamic_arena_allocator(&arena)
+//	alloc := context.allocator
+//
+// 最后的 `context.allocator = …` 是为了让调用链里**不带分配器的隐式分配**
+// （如 `strings.clone_to_cstring(s)`）也进 arena，而不是落回默认堆分配器。
 
 // 一个 handler 覆盖全部方法：方法名由 libubus 传入（上游 rpc_handle_acl 也是按方法名分流）。
 @(private)
@@ -779,19 +1029,29 @@ session_handler :: proc "c" (
 	method: cstring,
 	msg: ^bindings.Blob_Attr,
 ) -> c.int {
-	// proc "c" 里默认没有 Odin 的 context（见 blob.odin 顶部的说明），而 session_call 的
-	// 调用链里有些 proc 带 `allocator := context.allocator` 这类默认参数——先装一个默认上下文。
-	// 会话数据是长期存活的，用默认分配器（malloc）而不是线程 arena 更合适。
+	// 请求 arena（理由见上面那一节）：params、中间树、回复串、cstring 副本都放这里
 	context = runtime.default_context()
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena)
+	defer mem.dynamic_arena_destroy(&arena)
+	context.allocator = mem.dynamic_arena_allocator(&arena)
 	alloc := context.allocator
 
 	params := "{}"
 	if msg != nil {
-		// blobmsg_format_json 回的是 malloc 串（blobmsg_json.c 里的 strbuf），用完要 free
-		js := bindings.blobmsg_format_json(msg, false)
+		// blobmsg_format_json 回的是 malloc 串（blobmsg_json.c 里的 strbuf），用完要 free。
+		// 第二个参数是 list=true：handler 收到的 `msg` 是 UBUS_ATTR_DATA 这个**裸**
+		// blob_attr，它的**子项**才是真正的参数（password/username/…）。list=true 才能
+		// 把这些子项序列化成 JSON 对象。若写成 list=false，会把 `msg` 自身当 blobmsg
+		// 校验——它 id=UBUS_ATTR_DATA(7) 被 blobmsg_check_attr 当成 BLOBMSG 类型索引查到
+		// BLOB_ATTR_INT8，于是要求 1 字节数据，结果校验失败返回 NULL → params 变 "{}"。
+		js := bindings.blobmsg_format_json(msg, true)
 		if js != nil {
-			defer bindings.c_free(rawptr(js))
-			params = string(js)
+			// defer 是**块**作用域：把 c_free 写在 if 里，会在本 if 结束时立刻释放，
+			// 之后的 `params` 就是悬垂指针（设备上表现为 SIGSEGV）。先克隆进请求
+			// arena 再释放——与 luci-rpc 那两个回调的写法一致。
+			params = strings.clone(string(js), alloc)
+			bindings.c_free(rawptr(js))
 		}
 	}
 
@@ -894,8 +1154,8 @@ shadow_hash :: proc(name: string, alloc: mem.Allocator) -> (hash: string, ok: bo
 //
 // **本函数只在 --target 下编译，运行时正确性待真机（第 7 步）验证。**
 uci_config_sections :: proc(config: string, alloc: mem.Allocator) -> (sections: []Uci_Section, ok: bool) {
-	sync.lock(&g_lock)
-	defer sync.unlock(&g_lock)
+	sync.lock(&g_uci_lock)
+	defer sync.unlock(&g_uci_lock)
 
 	ctx := uci_ctx()
 	if ctx == nil {
@@ -906,11 +1166,22 @@ uci_config_sections :: proc(config: string, alloc: mem.Allocator) -> (sections: 
 	if bindings.uci_load(ctx, strings.clone_to_cstring(config, alloc), &pkg) != 0 || pkg == nil {
 		return nil, false
 	}
+	// 必须 unload：`uci_ctx()` 是**全局单例**上下文，libuci 会把加载过的包一直挂在
+	// ctx 上。不 unload 的话同一个 config 第二次 uci_load 会直接失败——设备上表现为
+	// `session login` 只有启动后第一次成功、之后全部 Permission denied
+	// （login section 读不到 → session_login_check 返回 false）。
+	//
+	// 返回值里的字符串已在 uci_package_sections 中克隆进 alloc，所以 unload 之后
+	// caller 拿到的不是悬垂指针（uci_cstr 只是视图转换，不拷贝）。
+	defer bindings.uci_unload(ctx, pkg)
 
 	return uci_package_sections(pkg, alloc), true
 }
 
 // uci_package → []Uci_Section（get/state/changes/commit 共用；P2 起就这一段）。
+//
+// 所有字符串都**克隆进 alloc**：uci_cstr 只是视图转换（指向 libuci 的内存），
+// 而调用方在返回后会 unload 包 / free 上下文，不克隆就是悬垂指针。
 @(private)
 uci_package_sections :: proc(pkg: ^bindings.Uci_Package, alloc: mem.Allocator) -> []Uci_Section {
 	out := make([dynamic]Uci_Section, 0, 8, alloc)
@@ -934,15 +1205,15 @@ uci_package_sections :: proc(pkg: ^bindings.Uci_Package, alloc: mem.Allocator) -
 			is_list := opt.type == .List
 			if is_list {
 				for lel := bindings.uci_element_first(&opt.v.list); lel != nil; {
-					append(&values, bindings.uci_cstr(lel.name))
+					append(&values, strings.clone(bindings.uci_cstr(lel.name), alloc))
 					lel = bindings.uci_element_next(&opt.v.list, lel)
 				}
 			} else {
-				append(&values, bindings.uci_cstr(opt.v.string))
+				append(&values, strings.clone(bindings.uci_cstr(opt.v.string), alloc))
 			}
 
 			append(&opts, Uci_Option{
-				name    = bindings.uci_cstr(oel.name),
+				name    = strings.clone(bindings.uci_cstr(oel.name), alloc),
 				is_list = is_list,
 				values  = values[:],
 			})
@@ -950,8 +1221,8 @@ uci_package_sections :: proc(pkg: ^bindings.Uci_Package, alloc: mem.Allocator) -
 		}
 
 		append(&out, Uci_Section{
-			name      = bindings.uci_cstr(el.name),
-			type_name = bindings.uci_cstr(sec.type_name),
+			name      = strings.clone(bindings.uci_cstr(el.name), alloc),
+			type_name = strings.clone(bindings.uci_cstr(sec.type_name), alloc),
 			anonymous = sec.anonymous,
 			options   = opts[:],
 		})
@@ -978,8 +1249,8 @@ session_acl_dir :: proc() -> string {
 }
 
 uci_list_configs :: proc(alloc: mem.Allocator) -> (names: []string, ok: bool) {
-	sync.lock(&g_lock)
-	defer sync.unlock(&g_lock)
+	sync.lock(&g_uci_lock)
+	defer sync.unlock(&g_uci_lock)
 
 	ctx := uci_ctx()
 	if ctx == nil {
@@ -1000,14 +1271,15 @@ uci_list_configs :: proc(alloc: mem.Allocator) -> (names: []string, ok: bool) {
 }
 
 // ---------------------------------------------------------------------------
-// P3-3（S1）：接管 uci 对象
+// P3-3：接管 uci 对象（15 方法全实现）
 //
 // 与 P3-2 的 session 同构：一个 handler 覆盖全部方法，入站 blobmsg → JSON 文本 →
 // uci_call → 回复 JSON → blobmsg。方法表的顺序照抄上游（uci.c:1768-1784）。
 //
-// 目前只有只读的 `configs` / `get` 在 uci_object.odin 里真跑，其余回 NOT_SUPPORTED(8)
-// （分片见 .ai-memory/p3-luci-server.md）。也就是说设备上接管这个对象后，
-// **写方法不会改动 /etc/config**——写路径要等 S3 并用真机 golden 对着 uci CLI 验。
+// 写路径（五个写操作 + `commit`/`revert` + apply 系）走本文件的写事务
+// （`Uci_Write_Txn`：一次调用 = 建会话 ctx → load → 改 → save → unload），
+// **会真的改 /etc/config**——接管后要按 P3-3 S3 的验收步骤走：先备份 /etc/config，
+// 再用**副本**对着 `uci` CLI 逐条比。
 // ---------------------------------------------------------------------------
 
 @(private)
@@ -1055,7 +1327,7 @@ register_uci_object :: proc(ctx: ^bindings.Ubus_Context) {
 		)
 		return
 	}
-	fmt.println("[molly] ubus 对象已注册: uci（只读 configs/get，写方法回 NOT_SUPPORTED）")
+	log_object_registered("uci", len(g_uci_methods))
 }
 
 @(private)
@@ -1066,17 +1338,24 @@ uci_handler :: proc "c" (
 	method: cstring,
 	msg: ^bindings.Blob_Attr,
 ) -> c.int {
-	// 与 session_handler 同构。这段桥接两边完全一样，但 session 那条路径已经在设备上
-	// 验过——抽公共 proc 的改动留到 P3-4/P3-5 一起做，先别动它。
+	// 与 session_handler 同构（请求 arena 见那边的说明）。这段桥接两边完全一样，
+	// 抽公共 proc 的改动留待统一做。
 	context = runtime.default_context()
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena)
+	defer mem.dynamic_arena_destroy(&arena)
+	context.allocator = mem.dynamic_arena_allocator(&arena)
 	alloc := context.allocator
 
 	params := "{}"
 	if msg != nil {
-		js := bindings.blobmsg_format_json(msg, false)
+		js := bindings.blobmsg_format_json(msg, true)
 		if js != nil {
-			defer bindings.c_free(rawptr(js))
-			params = string(js)
+			// defer 是**块**作用域：把 c_free 写在 if 里，会在本 if 结束时立刻释放，
+			// 之后的 `params` 就是悬垂指针（设备上表现为 SIGSEGV）。先克隆进请求
+			// arena 再释放——与 luci-rpc 那两个回调的写法一致。
+			params = strings.clone(string(js), alloc)
+			bindings.c_free(rawptr(js))
 		}
 	}
 
@@ -1142,8 +1421,8 @@ uci_set_savedir :: proc(sid: string) -> bool {
 
 // `state`：读**已提交态**（上游把 savedir 切到 /var/state，uci.c:619-620）。
 uci_state_sections :: proc(config: string, alloc: mem.Allocator) -> (sections: []Uci_Section, status: int) {
-	sync.lock(&g_lock)
-	defer sync.unlock(&g_lock)
+	sync.lock(&g_uci_lock)
+	defer sync.unlock(&g_uci_lock)
 
 	ctx := uci_ctx_with_savedir("/var/state")
 	if ctx == nil {
@@ -1162,8 +1441,8 @@ uci_state_sections :: proc(config: string, alloc: mem.Allocator) -> (sections: [
 
 // `changes`：枚举该 config 的 `p->saved_delta`（uci.c:1250-1251、:1285-1286）。
 uci_delta_changes :: proc(sid, config: string, alloc: mem.Allocator) -> (changes: []Uci_Change, status: int) {
-	sync.lock(&g_lock)
-	defer sync.unlock(&g_lock)
+	sync.lock(&g_uci_lock)
+	defer sync.unlock(&g_uci_lock)
 
 	ctx := uci_ctx_with_savedir(uci_savedir_of(sid, alloc))
 	if ctx == nil {
@@ -1241,8 +1520,8 @@ uci_trigger_event :: proc(ctx: ^bindings.Ubus_Context, config: string, alloc: me
 // `commit`：uci.c:1344-1351 —— load → uci_commit(ctx, &p, false) → unload → 触发事件。
 // `overwrite=false` 与上游一致（uci.h:235-243：不覆盖，写完清掉 delta）。
 uci_commit :: proc(sid, config: string, alloc: mem.Allocator) -> int {
-	sync.lock(&g_lock)
-	defer sync.unlock(&g_lock)
+	sync.lock(&g_uci_lock)
+	defer sync.unlock(&g_uci_lock)
 
 	ctx := uci_ctx_with_savedir(uci_savedir_of(sid, alloc))
 	if ctx == nil {
@@ -1272,8 +1551,8 @@ uci_commit :: proc(sid, config: string, alloc: mem.Allocator) -> int {
 
 // `revert`：uci.c:1353-1360 —— uci_lookup_ptr(package) → uci_revert → unload。
 uci_revert :: proc(sid, config: string, alloc: mem.Allocator) -> int {
-	sync.lock(&g_lock)
-	defer sync.unlock(&g_lock)
+	sync.lock(&g_uci_lock)
+	defer sync.unlock(&g_uci_lock)
 
 	ctx := uci_ctx_with_savedir(uci_savedir_of(sid, alloc))
 	if ctx == nil {
@@ -1300,8 +1579,8 @@ uci_revert :: proc(sid, config: string, alloc: mem.Allocator) -> int {
 // P3-3（S3）：写事务
 //
 // 一次方法调用 = 一个事务 =「建会话 ctx → load → 改 → save → unload」。
-// 事务期间**一直持 g_lock**：libuci 不是线程安全的，而且写路径是多步操作，
-// 中间不能让别的请求插进来（读路径也是同样的锁，见 uci_config_sections）。
+// 事务期间**一直持 g_uci_lock**：libuci 不是线程安全的，而且写路径是多步操作，
+// 中间不能让别的请求插进来（读路径也是同一把 uci 锁，见 uci_config_sections）。
 //
 // 注意：`uci_save` 只把改动写进 savedir 里的 delta 文件，**不碰 /etc/config**；
 // 真正落盘要 `commit`（S2 已实现）。
@@ -1314,18 +1593,18 @@ Uci_Write_Txn :: struct {
 }
 
 uci_write_begin :: proc(sid, config: string, alloc: mem.Allocator) -> (^Uci_Write_Txn, int) {
-	sync.lock(&g_lock)
+	sync.lock(&g_uci_lock)
 
 	ctx := uci_ctx_with_savedir(uci_savedir_of(sid, alloc))
 	if ctx == nil {
-		sync.unlock(&g_lock)
+		sync.unlock(&g_uci_lock)
 		return nil, UCI_STATUS_UNKNOWN_ERROR
 	}
 
 	pkg: ^bindings.Uci_Package
 	if bindings.uci_load(ctx, strings.clone_to_cstring(config, alloc), &pkg) != 0 || pkg == nil {
 		bindings.uci_free_context(ctx)
-		sync.unlock(&g_lock)
+		sync.unlock(&g_uci_lock)
 		return nil, UCI_STATUS_NOT_FOUND
 	}
 
@@ -1349,7 +1628,7 @@ uci_write_end :: proc(txn: ^Uci_Write_Txn) {
 		bindings.uci_free_context(txn.ctx)
 	}
 	free(txn)
-	sync.unlock(&g_lock)
+	sync.unlock(&g_uci_lock)
 }
 
 uci_write_sections :: proc(txn: ^Uci_Write_Txn, alloc: mem.Allocator) -> ([]Uci_Section, int) {
@@ -1661,8 +1940,8 @@ uci_write_reorder :: proc(txn: ^Uci_Write_Txn, section: string, pos: int, alloc:
 // 否则「恢复旧配置」会被污染。我们的每调用一个 ctx 的实现里，等价做法就是
 // 让这个 ctx 的 delta 目录指向 /dev/null（libuci 在那里找不到 delta 文件）。
 uci_apply_config :: proc(config: string, no_delta: bool, alloc: mem.Allocator) -> int {
-	sync.lock(&g_lock)
-	defer sync.unlock(&g_lock)
+	sync.lock(&g_uci_lock)
+	defer sync.unlock(&g_uci_lock)
 
 	ctx := uci_ctx_with_savedir(no_delta ? "/dev/null" : uci_savedir_of("", alloc))
 	if ctx == nil {
@@ -1708,10 +1987,11 @@ uci_reload_config :: proc(alloc: mem.Allocator) -> int {
 }
 
 // ---------------------------------------------------------------------------
-// P3-4（第一批）：file 对象
+// P3-4：接管 file 对象（8 方法全实现）
 //
 // 与 uci 同构（一个 handler 覆盖全部方法 + blobmsg ⇄ JSON 桥），方法表照抄上游
-// file.c 的 file_methods[] 顺序。
+// file.c 的 file_methods[] 顺序。实现在 file_object.odin（平台无关），
+// 所以 darwin 上断言的就是设备上跑的这一份。
 // ---------------------------------------------------------------------------
 
 @(private)
@@ -1752,7 +2032,7 @@ register_file_object :: proc(ctx: ^bindings.Ubus_Context) {
 		)
 		return
 	}
-	fmt.println("[molly] ubus 对象已注册: file（read；其余方法待 P3-4 续，回 NOT_SUPPORTED）")
+	log_object_registered("file", len(g_file_methods))
 }
 
 @(private)
@@ -1763,16 +2043,23 @@ file_handler :: proc "c" (
 	method: cstring,
 	msg: ^bindings.Blob_Attr,
 ) -> c.int {
-	// 与 session_handler / uci_handler 同构（抽公共 proc 的改动留到 P3-5 一起做）
+	// 与 session_handler / uci_handler 同构（请求 arena 见 session_handler 的说明）
 	context = runtime.default_context()
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena)
+	defer mem.dynamic_arena_destroy(&arena)
+	context.allocator = mem.dynamic_arena_allocator(&arena)
 	alloc := context.allocator
 
 	params := "{}"
 	if msg != nil {
-		js := bindings.blobmsg_format_json(msg, false)
+		js := bindings.blobmsg_format_json(msg, true)
 		if js != nil {
-			defer bindings.c_free(rawptr(js))
-			params = string(js)
+			// defer 是**块**作用域：把 c_free 写在 if 里，会在本 if 结束时立刻释放，
+			// 之后的 `params` 就是悬垂指针（设备上表现为 SIGSEGV）。先克隆进请求
+			// arena 再释放——与 luci-rpc 那两个回调的写法一致。
+			params = strings.clone(string(js), alloc)
+			bindings.c_free(rawptr(js))
 		}
 	}
 
@@ -1794,12 +2081,12 @@ file_handler :: proc "c" (
 }
 
 // ---------------------------------------------------------------------------
-// P3-5（S1）：接管 luci-rpc 对象
+// P3-5：接管 luci-rpc 对象（6 方法全实现）
 //
 // 与 session/uci/file 同构：一个 handler 覆盖全部方法。方法表照抄上游
-// （luci.c:2033-2040，对象名 `luci-rpc`）。目前 getBoardJSON/getDHCPLeases 在
-// luci_object.odin 里真跑，其余 4 个（netlink/iwinfo/getifaddrs 绑定）回
-// NOT_SUPPORTED(8)，属 S2。
+// （luci.c:2033-2040，对象名是 `luci-rpc`——不是 `luci`）。平台无关的部分
+// （getBoardJSON/getDHCPLeases 与各方法的解析）在 luci_object.odin；
+// 设备绑定（netlink 邻居表、iwinfo、getifaddrs）走本文件与 iwinfo.odin 的 linux 实现。
 // ---------------------------------------------------------------------------
 
 @(private)
@@ -1838,7 +2125,7 @@ register_luci_object :: proc(ctx: ^bindings.Ubus_Context) {
 		)
 		return
 	}
-	fmt.println("[molly] ubus 对象已注册: luci-rpc（getBoardJSON/getDHCPLeases/getDUIDHints，其余回 NOT_SUPPORTED）")
+	log_object_registered("luci-rpc", len(g_luci_methods))
 }
 
 @(private)
@@ -1849,16 +2136,23 @@ luci_handler :: proc "c" (
 	method: cstring,
 	msg: ^bindings.Blob_Attr,
 ) -> c.int {
-	// 与 session/uci/file 的 handler 同构（抽公共 proc 的改动留到 P3-6/P3-7 一起做）
+	// 与 session/uci/file 的 handler 同构（请求 arena 见 session_handler 的说明）
 	context = runtime.default_context()
+	arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&arena)
+	defer mem.dynamic_arena_destroy(&arena)
+	context.allocator = mem.dynamic_arena_allocator(&arena)
 	alloc := context.allocator
 
 	params := "{}"
 	if msg != nil {
-		js := bindings.blobmsg_format_json(msg, false)
+		js := bindings.blobmsg_format_json(msg, true)
 		if js != nil {
-			defer bindings.c_free(rawptr(js))
-			params = string(js)
+			// defer 是**块**作用域：把 c_free 写在 if 里，会在本 if 结束时立刻释放，
+			// 之后的 `params` 就是悬垂指针（设备上表现为 SIGSEGV）。先克隆进请求
+			// arena 再释放——与 luci-rpc 那两个回调的写法一致。
+			params = strings.clone(string(js), alloc)
+			bindings.c_free(rawptr(js))
 		}
 	}
 
@@ -1908,22 +2202,24 @@ luci_readsys :: proc(path: string, alloc: mem.Allocator) -> string {
 	return strings.trim_space(string(data))
 }
 
+// 返回的串落在调用方给的 alloc（请求 arena）上。**别**用隐式的 `context.allocator`：
+// 这个 proc 在地址/邻居遍历里被反复调用，堆分配器下就是「每次请求漏一串地址」。
 @(private)
-luci_sa2str :: proc(sa: ^bindings.Sockaddr_Base, buf: [^]u8) -> string {
+luci_sa2str :: proc(sa: ^bindings.Sockaddr_Base, buf: [^]u8, alloc: mem.Allocator) -> string {
 	switch sa.family {
 	case 2: // AF_INET：sin_addr 在偏移 4
 		got := posix.inet_ntop(.INET, rawptr(&sa.data[2]), buf, 16)
 		if got != nil {
-			return strings.clone(string(got), context.allocator)
+			return strings.clone(string(got), alloc)
 		}
 	case 10: // AF_INET6：sin6_addr 在偏移 8
 		got := posix.inet_ntop(.INET6, rawptr(&sa.data[6]), buf, 46)
 		if got != nil {
-			return strings.clone(string(got), context.allocator)
+			return strings.clone(string(got), alloc)
 		}
 	case 17: // AF_PACKET：sll_addr 在偏移 12（= data[10]），取 6 字节（ea2str）
 		mac := sa.data[10:16]
-		out := make([]u8, 17, context.allocator)
+		out := make([]u8, 17, alloc)
 		digits := "0123456789abcdef"
 		for i := 0; i < 6; i += 1 {
 			out[i * 3] = digits[mac[i] >> 4]
@@ -2026,14 +2322,14 @@ luci_netdev_json :: proc(
 				continue
 			}
 			entry := make(json.Object, 2, alloc)
-			entry["address"] = json.Value(json.String(luci_sa2str(ifa.addr, &buf[0])))
+			entry["address"] = json.Value(json.String(luci_sa2str(ifa.addr, &buf[0], alloc)))
 			if ifa.netmask != nil {
-				entry["netmask"] = json.Value(json.String(luci_sa2str(ifa.netmask, &buf[0])))
+				entry["netmask"] = json.Value(json.String(luci_sa2str(ifa.netmask, &buf[0], alloc)))
 			}
 			if ifa.dstaddr != nil && (u32(ifa.flags) & LUCI_IFF_POINTOPOINT) != 0 {
-				entry["remote"] = json.Value(json.String(luci_sa2str(ifa.dstaddr, &buf[0])))
+				entry["remote"] = json.Value(json.String(luci_sa2str(ifa.dstaddr, &buf[0], alloc)))
 			} else if ifa.dstaddr != nil && (u32(ifa.flags) & LUCI_IFF_BROADCAST) != 0 {
-				entry["broadcast"] = json.Value(json.String(luci_sa2str(ifa.dstaddr, &buf[0])))
+				entry["broadcast"] = json.Value(json.String(luci_sa2str(ifa.dstaddr, &buf[0], alloc)))
 			}
 			append(&arr, json.Value(entry))
 			ifa_flags |= u32(ifa.flags)
@@ -2059,7 +2355,7 @@ luci_netdev_json :: proc(
 			u32(ifa.addr.data[4]) << 16 | u32(ifa.addr.data[5]) << 24,
 		)
 		if hatype == u16(1) {
-			obj["mac"] = json.Value(json.String(luci_sa2str(ifa.addr, &buf[0])))
+			obj["mac"] = json.Value(json.String(luci_sa2str(ifa.addr, &buf[0], alloc)))
 		}
 		obj["type"] = json.Value(json.Integer(i64(hatype)))
 		obj["ifindex"] = json.Value(json.Integer(i64(ifindex)))
@@ -2136,6 +2432,16 @@ luci_netdev_json :: proc(
 	return obj
 }
 
+// freeifaddrs 的 nil 安全包装。存在的理由只有一个：让调用方能写
+// **无条件**的 `defer free_ifaddrs_if_any(ifa_start)` —— Odin 的 defer 是块作用域，
+// 有条件分支里写 `defer` 会在那个块结束时就执行（踩过：链表被提前释放 → 段错误）。
+@(private)
+free_ifaddrs_if_any :: proc(p: ^bindings.Ifaddrs) {
+	if p != nil {
+		bindings.freeifaddrs(p)
+	}
+}
+
 // getNetworkDevices 的回复（luci.c:860-896）。
 @(private)
 luci_network_devices_json :: proc(alloc: mem.Allocator) -> (string, int) {
@@ -2144,9 +2450,14 @@ luci_network_devices_json :: proc(alloc: mem.Allocator) -> (string, int) {
 	ifa_start: ^bindings.Ifaddrs
 	if bindings.getifaddrs(&ifa_start) != 0 {
 		ifa_start = nil // 上游失败也继续（只是没有地址信息）
-	} else if ifa_start != nil {
-		defer bindings.freeifaddrs(ifa_start)
 	}
+	// **必须无条件** `defer` 在函数体作用域。Odin 的 defer 是**块**作用域：
+	// 写成 `else if ia { defer … }` 或 `if ia != nil { defer … }` 都会在那个 if
+	// **块结束时**（也就是紧接这里）就 freeifaddrs，而下面的 luci_netdev_json 还要
+	// 遍历这个链表 → 读已释放内存 → SIGSEGV（就是 getNetworkDevices 打崩 molly 的元凶，
+	// 与 session login 的悬垂 params 属同一类坑）。
+	// 用 nil 安全的包装，这样失败路径也不用特判。
+	defer free_ifaddrs_if_any(ifa_start)
 
 	entries, derr := os.read_directory_by_path("/sys/class/net", -1, alloc)
 	if derr == nil {
@@ -2172,8 +2483,22 @@ luci_network_devices_json :: proc(alloc: mem.Allocator) -> (string, int) {
 // iwinfo 未实现（见 S2b′），所以重塑等价于「跳过所有 iwinfo 键」。
 // ---------------------------------------------------------------------------
 
+// 回调把回复克隆到哪里：由消费者在 invoke 前设成**本次请求的 arena**。
+// `proc "c"` 里拿不到 Odin 的 context，用默认堆分配器的话每次调用都漏一份回复 JSON
+// （消费方那侧原本也没人 free）。
+@(private)
+g_luci_reply_alloc: mem.Allocator
+
 @(private)
 g_luci_invoke_reply: string
+
+// 这两个全局串都指向请求 arena，handler 一返回就失效——消费完立刻清空，别把悬垂指针
+// 留在全局（它们的生命周期只该覆盖一次**同步**的 invoke）。
+@(private)
+luci_reply_globals_reset :: proc() {
+	g_luci_invoke_reply = ""
+	g_luci_rrdns_reply = ""
+}
 
 @(private)
 luci_invoke_data_cb :: proc "c" (req: rawptr, msg_type: c.int, msg: ^bindings.Blob_Attr) {
@@ -2181,12 +2506,12 @@ luci_invoke_data_cb :: proc "c" (req: rawptr, msg_type: c.int, msg: ^bindings.Bl
 	if msg == nil {
 		return
 	}
-	js := bindings.blobmsg_format_json(msg, false)
+	js := bindings.blobmsg_format_json(msg, true)
 	if js == nil {
 		return
 	}
 	defer bindings.c_free(rawptr(js))
-	g_luci_invoke_reply = strings.clone(string(js))
+	g_luci_invoke_reply = strings.clone(string(js), g_luci_reply_alloc)
 }
 
 @(private)
@@ -2205,7 +2530,10 @@ luci_wireless_devices_json :: proc(alloc: mem.Allocator) -> (string, int) {
 	bindings.blobmsg_buf_init(&req)
 	defer bindings.blob_buf_free(&req)
 
+	// 回调按 g_luci_reply_alloc 克隆（= 本次请求的 arena，随 handler 返回一起释放）
+	g_luci_reply_alloc = alloc
 	g_luci_invoke_reply = ""
+	defer luci_reply_globals_reset()
 	if rc := bindings.ubus_invoke_fd(
 		ctx,
 		id,
@@ -2796,12 +3124,13 @@ luci_rrdns_data_cb :: proc "c" (req: rawptr, msg_type: c.int, msg: ^bindings.Blo
 	if msg == nil {
 		return
 	}
-	js := bindings.blobmsg_format_json(msg, false)
+	js := bindings.blobmsg_format_json(msg, true)
 	if js == nil {
 		return
 	}
 	defer bindings.c_free(rawptr(js))
-	g_luci_rrdns_reply = strings.clone(string(js))
+	// 分配器由消费者（luci_host_hints_rrdns）在 invoke 前置好（见 g_luci_reply_alloc）
+	g_luci_rrdns_reply = strings.clone(string(js), g_luci_reply_alloc)
 }
 
 @(private)
@@ -2843,7 +3172,9 @@ luci_host_hints_rrdns :: proc(hints: ^map[string]^Luci_Hint, alloc: mem.Allocato
 	_ = bindings.blobmsg_add_u32(&req, "timeout", 250)
 	_ = bindings.blobmsg_add_u32(&req, "limit", u32(len(addrs)))
 
+	g_luci_reply_alloc = alloc
 	g_luci_rrdns_reply = ""
+	defer luci_reply_globals_reset()
 	if rc := bindings.ubus_invoke_fd(ctx, id, "lookup", req.head, luci_rrdns_data_cb, nil, 1000, -1); rc != 0 {
 		return
 	}

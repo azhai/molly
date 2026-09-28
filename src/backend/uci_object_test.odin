@@ -299,9 +299,11 @@ test_uci_call_readonly :: proc(t: ^testing.T) {
 	_, status = uci_call("get", `{"config":42}`, alloc)
 	testing.expect_value(t, status, UCI_STATUS_INVALID_ARGUMENT)
 
-	// S1 未实现的方法：一律 NOT_SUPPORTED——接管到设备上也不会动 /etc/config
-	// 注意：`changes`（S2）、五个写操作（S3）与 apply 系（S4）已是真实现，不在这个集合里
-	// ——它们的参数校验/文件检查先于平台能力。见 test_uci_changes_darwin_fixture、
+	// darwin 上 provider 不实现的方法（savedir 模型 + 写事务）回 NOT_SUPPORTED(8)：
+	// 这是**平台能力缺口**，不是「molly 还没写」——linux 上这三个都是真实现
+	// （写事务见 linux.odin 的 `Uci_Write_Txn`）。所以接管到设备上它们是会动 /etc/config 的。
+	// 注意：`changes`、五个写操作与 apply 系在 darwin 也能跑到底（参数校验/文件检查先于
+	// 平台能力），不在这个集合里。见 test_uci_changes_darwin_fixture、
 	// test_uci_write_method_validation、test_uci_delete_rename_order_validation 与
 	// test_uci_apply_family_neutral_paths。
 	for m in ([]string {

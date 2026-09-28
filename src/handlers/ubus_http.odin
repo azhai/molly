@@ -403,10 +403,15 @@ invoke :: proc(
 	//   3) 才轮到参数表校验（`uh_ubus_send_request` 里的 -32602）。
 	// ACL 判定委托给 session 的 ACL 引擎（"ubus" scope：object=ubus 对象名、
 	// function=方法名）——与上游 uhttpd 调 `session.access` 等价。
+	//
+	// 例外：`session` 对象对自己的会话是自服务的（get/set/unset/destroy 由 session
+	// 对象按 sid 鉴权，见 backend.session_self_service）。不放行的话，acl.d 没有任何组
+	// 授予 session.get，LuCI dispatcher 登录后读不到会话 → 整站 403。
 	if _, _, ok := backend.list_objects(path, alloc); !ok {
 		return rpc_error_json(.Object, id_json, alloc)
 	}
-	if !backend.session_access_ubus(sid, path, method) {
+	self_service := path == "session" && backend.session_self_service(sid, method)
+	if !self_service && !backend.session_access_ubus(sid, path, method) {
 		return rpc_error_json(.Access, id_json, alloc)
 	}
 

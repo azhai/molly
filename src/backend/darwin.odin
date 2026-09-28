@@ -137,7 +137,7 @@ call_object :: proc(obj_path: string, method: string, params_json: string, sid: 
 		return {outcome = .Ok, ret = 0, reply = reply}
 	}
 
-	// file 也是 molly 自己的对象（P3-4 第一批：`read` 与路径/权限核心已实现，其余回 8）。
+	// file 也是 molly 自己的对象（P3-4：8 方法全实现）。
 	// 与 uci 不同，file 是**平台无关的真实现**（只用 core:os 与 realpath），所以 macOS 上
 	// 断言的就是设备上跑的那份代码。sid 注入同上。
 	if obj_path == "file" {
@@ -152,8 +152,9 @@ call_object :: proc(obj_path: string, method: string, params_json: string, sid: 
 		return {outcome = .Ok, ret = 0, reply = reply}
 	}
 
-	// uci 同样是 molly 自己提供的对象（P3-3 的 S1：`configs`/`get` 已实现，其余方法
-	// 回 NOT_SUPPORTED(8)——见 uci_object.odin 顶部）。sid 注入与上面的 session 分支一致。
+	// uci 同样是 molly 自己提供的对象（P3-3：15 方法全实现）。darwin 侧 provider 没有
+	// savedir 模型与写事务，写操作/`state`/apply 系回 NOT_SUPPORTED(8)——见 uci_object.odin
+	// 顶部。sid 注入与上面的 session 分支一致。
 	if obj_path == "uci" {
 		params := params_json
 		if len(sid) > 0 {
@@ -341,6 +342,16 @@ FAKE_UCI: []Fake_Config = {
 // 所以这里返回 false 只是让 main 打一行「未启动」，不影响任何验证路径。
 start_ubus_server :: proc() -> bool {
 	return false
+}
+
+// 私有总线开关的 darwin 空实现：macOS 上根本没有 ubus，忽略即可。
+// （linux 侧真的会拿它去 `ubus_connect`，见 linux.odin 的 g_ubus_socket_c。）
+set_ubus_socket :: proc(path: string) {
+}
+
+// darwin 没有私有总线，恒为空串。
+ubus_socket_path :: proc() -> string {
+	return ""
 }
 
 // ---------------------------------------------------------------------------

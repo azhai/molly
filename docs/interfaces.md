@@ -15,7 +15,7 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 | `--listen` | `0.0.0.0:8080` | **只接受数字地址**（`0.0.0.0:8080`、`[::]:8080`）；不做 DNS 解析，主机名直接报错退出 |
 | `--docroot` | `/www` | 静态文件根目录；启动时去掉尾部 `/` |
 | `--menu-dir` | `/usr/share/luci/menu.d` | LuCI 菜单目录（`*.json`）；同样去尾部 `/` |
-| `--luci-cgi` | 空 | 把 `/cgi-bin/luci` 交给子进程执行（如 `/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc`，复刻 uhttpd 的 `ucode_prefix` 接线，ADR 0003 的 T1）。留空 = 用内置的 Odin dispatcher（§5） |
+| `--luci-cgi` | 空 | 把 `/cgi-bin/luci` 交给子进程执行（设备上填 `/www/cgi-bin/luci`，复刻 uhttpd 的 CGI 形态，ADR 0003 的 T1；**不是** `/usr/bin/ucode …/uhttpd.uc`，见 §5.5）。留空 = 用内置的 Odin dispatcher（§5） |
 | `-h` / `--help` | — | 打印用法并正常退出 |
 
 - **参数错误**（未知参数、缺参数、地址无法解析、监听失败）：stderr 打印原因 + 用法，**退出码 2**。
@@ -210,6 +210,16 @@ darwin 的事件源是 `molly.probe` 的 `emit` 方法（**测试专用**，真�
 | 命中且 `action.type == "view"` | 200 + 占位页（见 §5.3） |
 | 命中但 `action.type` 不是 `view`（`cbi` / `form` / `template` / `function` / `call`） | 501，正文 `not implemented: action.type=<t> view=<path> menu=<请求路径>` |
 | 未命中（含 `satisfied == false` 的节点） | 404 |
+| **无会话** 且路径上出现过 `auth.login` 的节点（P3-6 收尾） | **403** + `X-LuCI-Login-Required: yes` + 登录提示页（见 §5.3）；上游在这一步渲染主题的登录表单（`dispatcher.uc:930-960`），molly 只对齐状态码与响应头 |
+
+登录判定按上游两条语义实现（顺序也一致：**先判登录，再判 404**）：
+
+- **最后者胜**：`ctx.auth = node.auth || ctx.auth`（`ctx_append`，`dispatcher.uc:463`）——更深的
+  节点只要带 `auth`（哪怕没有 `login`）就把前面的顶掉。所以 `/cgi-bin/luci/admin` 要登录，
+  而 `/cgi-bin/luci/admin/uci/apply_rollback`（自带的 `auth` 里没有 `login`）不要。
+- **firstchild 的 login 模式**：`login = !session && (login_allowed || child.auth?.login)`
+  （`:593`）——无会话时 ACL 缺组的子节点也进竞选，否则真实 menu.d 上整棵 `/admin` 子树都
+  不可见，用户看到的是一片 404，而上游是要把他导到登录页的。
 
 501 的正文**故意带命中信息**：真实 menu.d 里非 `view` 的 action 占相当比例（413 条路径中
 `view` 311 / `function` 31 / `alias` 21 / `template` 6 / `call` 1，`firstchild` 43 是中间层），
@@ -238,11 +248,41 @@ darwin 的事件源是 `molly.probe` 的 `emit` 方法（**测试专用**，真�
   `resolved.node.readonly`，`dispatcher.uc:1002-1003`）。
 - 所有插值都做 HTML 转义（`request_args` 是彻头彻尾的客户端输入）。
 
+登录提示页（§5.2 最后一行那个 403 的正文；同样可断言）：
+
+```html
+<!DOCTYPE html>…<h1>Login required</h1>
+<dl>
+  <dt>login</dt><dd>required (no session)</dd>
+  <dt>path</dt><dd>{请求路径，空路径显示为 "/"}</dd>
+  <dt>hint</dt><dd>POST /ubus 调 session.login 取 sid，再带 Cookie: sysauth_http=<sid></dd>
+</dl>
+```
+
+它存在的理由是可诊断：设备上没有它时，无会话访问 `/cgi-bin/luci/**` 就是一片裸 404，
+看不出「是要登录」还是「路径不存在」（2026-09-27 实测踩过）。
+
 ### 5.5 CGI 模式（`--luci-cgi`，ADR 0003 的 T1）
 
 给了 `--luci-cgi` 时，§5.1–§5.3 的**内置 dispatcher 不再参与**：整个 `/cgi-bin/luci` 前缀按
-CGI 规范交给子进程（设备上是 `/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc`），方法不限，
-由脚本自己判定。
+CGI 规范交给子进程，方法不限，由脚本自己判定。
+
+**设备上填什么**：`/www/cgi-bin/luci`（LuCI 安装的 CGI 兜底脚本，`#!/usr/bin/env ucode` +
+`dispatch(request(getenv(), read, write))`，复刻 uhttpd 的 CGI 形态）。
+
+**别填 `/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc`**（曾写在 README/`-h` 里，2026-09-27 纠正）：
+那个文件是 uhttpd **进程内** 加载的 ucode **模板**——首行是 `{%`（ucode 的模板块标记）、
+定义 `global.handle_request(env)`、收发走 uhttpd 注入的 `uhttpd.recv`/`uhttpd.send`。它必须在
+uhttpd 进程里按模板编译，单独 execve 必然立即语法错：
+
+```
+Syntax error: Expecting expression            （第 1 行 `{%`）
+Syntax error: Imports may only appear at top level   （`import dispatch from 'luci.dispatcher';`）
+Syntax error: Unexpected token  Expecting '}'  （`};`）
+```
+
+症状就是浏览器每个 `/cgi-bin/luci/**` 都得到 **500**，正文 `invalid CGI response (exit 1): ""`，
+而那四条语法错在 **molly 的 stderr** 里（子进程 stderr 继承 molly 的 stderr）。
 
 **请求 → 环境变量**（`src/handlers/cgi_exec.odin` 的 `build_cgi_env`）：
 
@@ -262,6 +302,10 @@ CGI 规范交给子进程（设备上是 `/usr/bin/ucode /usr/share/ucode/luci/u
 **子进程响应 → HTTP 响应**（`parse_cgi_response`）：
 
 - 头块与 body 之间用 `\r\n\r\n` 分隔（同时容忍 `\n\n`）；缺 `Content-Type` 视为脚本错误 → **500**。
+- 子进程没给出合法响应（无输出、或缺 `Content-Type`）时正文是
+  `invalid CGI response (<exit N>|<signal N>|unknown exit status): "<stdout 前 200 字节>"` ——
+  带上**退出码**是为了区分「脚本自己退出（配置/语法问题）」与「被信号杀掉（崩溃）」；
+  子进程的 stderr 继承 molly 的 stderr，报错细节在那里（见下面那段配置陷阱）。
 - `Status: <code> [reason]` 透传状态码（molly 的 `Status` 枚举里没有的码也照原样发，只补常见码的短语）；
   没有 `Status:` 时是 200。非标准的 `HTTP/1.1 200 OK` 起始行也容忍。
 - 其余头（`Location` / `Set-Cookie` / `Cache-Control` …）**原样透传**。
@@ -269,9 +313,9 @@ CGI 规范交给子进程（设备上是 `/usr/bin/ucode /usr/share/ucode/luci/u
 - 请求体由一个短命线程写进子进程 stdin（避免「子进程先回响应、父进程写 body 卡死管道」）；
   `HEAD` 有头无体；keep-alive 语义与其它路径一致。
 
-**验收**：`./tests/cgi_smoke.sh`（30 项，用桩脚本覆盖环境、body 透传、64KB、状态与头透传、
-缺 `Content-Type` → 500、HEAD、keep-alive）。设备上的等价验收：把 `--luci-cgi` 换成真实的
-`/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc`，与原厂 uhttpd 做 golden 对比。
+**验收**：`./tests/cgi_smoke.sh`（31 项，用桩脚本覆盖环境、body 透传、64KB、状态与头透传、
+缺 `Content-Type` → 500、脚本无输出 → 500 且正文带退出码、HEAD、keep-alive）。
+设备上的等价验收：把 `--luci-cgi` 换成真实的 `/www/cgi-bin/luci`，与原厂 uhttpd 做 golden 对比。
 
 ### 5.4 菜单语义
 
@@ -301,7 +345,9 @@ uci_config_sections(config: string, alloc: mem.Allocator) -> (sections: []Uci_Se
 - **判定逻辑不在数据层**：`ok == false` 只表示「读不到」，语义解释（例如「0 个 section」
   「对象不存在」）由 `src/luci` 与 `handlers` 决定。
 - **内存**：返回的字符串一律指向调用方给的 `alloc`（每请求 arena），两个实现都**不得**
-  返回需要调用方 `free` 的堆内存。
+  返回需要调用方 `free` 的堆内存。linux 的 ubus handler 也照此办：每次调用起一个
+  `Dynamic_Arena` 并把 `context.allocator` 一并指过去（见 `docs/architecture.md` §4 的
+  「每次请求的内存」）——**别**把默认（堆）分配器当请求 arena 用，那样每次调用都会漏。
 - **`libuci`/`libubus` 不是线程安全的**：linux provider 用全局单例 + `sync.Mutex` 串行化；
   持锁期间不写 socket（慢客户端不会占住总线）。
 - `Uci_Section{name, type_name, anonymous, options: []Uci_Option{name, is_list, values}}`
@@ -369,12 +415,14 @@ molly 从 P3-2 起**自己提供** ubus 对象。设备上接管的前提是 rpc
 5. **会话不落盘**：上游把会话 freeze 到 `/var/run/rpcd/sessions/<id>`，重启后 thaw 恢复；
    molly 重启即所有会话失效。P3-9 收尾时评估。
 
-## 8. ubus 对象契约：`uci`（P3-3，S1 只读 + S2 delta）
+## 8. ubus 对象契约：`uci`（P3-3，15 方法全实现：S1 只读 / S2 delta / S3 写操作 / S4 apply 系）
 
 权威来源：`rpcd@e37ed9d8` 的 `uci.c`（15 个方法，`uci.c:1766-1784`）。实现
 `src/backend/uci_object.odin`（平台无关），linux 的注册与 blobmsg ⇄ JSON 桥在 `linux.odin`。
+**写路径（写操作 / `commit` / `revert` / apply 系）只在 linux 上实现**，darwin 侧
+provider 不做 savedir 与写事务，对应方法回 `8`。
 
-### 8.1 已实现（S1）
+### 8.1 方法契约（15 个方法）
 
 | 方法 | 入参（JSON） | 成功回复 | 失败码 |
 | --- | --- | --- | --- |
@@ -602,7 +650,7 @@ stat 类回复的字段（`file.c:634-651`）：`type`（`file`/`directory`/`sym
 **对象名是 `luci-rpc`**。实现 `src/backend/luci_object.odin`（平台无关），linux 的注册在
 `linux.odin`、darwin 的 `/ubus/call/luci-rpc` 路由在 `darwin.odin`。
 
-### 10.1 已实现（S1）
+### 10.1 方法契约（文件/解析驱动的 3 个方法）
 
 | 方法 | 入参 | 成功回复 | 失败码 |
 | --- | --- | --- | --- |
@@ -766,11 +814,15 @@ pkttype 10 / halen 11 / addr 12-19（`linux/if_packet.h`），S2d 实现 ifaddrs
 单元：`src/backend/session_test.odin` 的 `test_session_login_test_permission`
 （组列表判定：`fnmatch`、`!` 取反、write 蕴含 read）、`test_session_load_acls_from_fixtures`
 （表/数组两种形态）、`test_session_default_session_acls`（哨兵会话只有 unauthenticated）；
-`src/luci/menu_test.odin` 的 `test_acl_prunes_and_readonly` 与
-`test_acl_first_child_skips_and_marks_readonly`（同一棵缓存树、不同会话给出不同可见性/只读）。
+`src/luci/menu_test.odin` 的 `test_acl_prunes_and_readonly`、
+`test_acl_first_child_skips_and_marks_readonly`（同一棵缓存树、不同会话给出不同可见性/只读）、
+`test_login_required_without_session` / `test_login_not_required_with_session` /
+`test_auth_login_last_node_wins`（无会话 → 登录提示；有会话 → 照 ACL 解析；`ctx.auth` 最后者胜）。
 
-`tests/http_smoke.sh` 的 dispatcher 节：带 cookie 的登录会话用 `-b "sysauth_http=$P2SID"`，
-并有一小节专门验「无 cookie → 404 / 只读会话 → 200 + `readonly=yes` / 撤销 write 后恢复可见」。
+`tests/http_smoke.sh` 的 dispatcher 节：带 cookie 的登录会话用 `-b "sysauth_http=$P2SID"`；
+**无 cookie（= 要登录）**验 403 + `X-LuCI-Login-Required` + 提示页正文与路径；**缺组**则用
+默认/哨兵会话（有会话但没权限，因而不触发登录分支）验 404 与 firstchild 跳过；再用撤销 write
+的只读会话验 `readonly=yes`。
 
 ### 11.5 已知偏离（真机 golden 对比时核对）
 
@@ -778,9 +830,11 @@ pkttype 10 / halen 11 / addr 12-19（`linux/if_packet.h`），S2d 实现 ifaddrs
    （`dispatcher.uc:996-1000`）；molly 把缺组一律当「节点不可见」→ `404`。上游下降时
    `!satisfied` 就 `break`，所以那条 403 分支实际上很难走到；molly 的模型里两者同源，
    语义更自洽。真机 golden 对比时留意这个差异。
-2. **登录页不在这里**：上游 dispatcher 自己渲染 `sysauth` 视图并 `Set-Cookie`
-   （`:955-970`）；molly 的内置 dispatcher 只认**既有** cookie（登录页属 `--luci-cgi` 的
-   ucode 侧，ADR 0003）。所以无会话访问带 `depends.acl` 的路径得到的是 404，而不是跳登录页。
+2. **登录页的正文**：上游 `:930-960` 会先拿表单里的 `luci_username` / `luci_password` 试登录
+   （成功则 `Set-Cookie` 并继续去目标页），拿不到会话才回 403 + `X-LuCI-Login-Required: yes`
+   + 主题的 `sysauth` 登录表单。molly 的内置 dispatcher **只认既有 cookie**（登录表单与
+   `Set-Cookie` 属 `--luci-cgi` 的 ucode 侧，ADR 0003）：状态码与响应头对齐上游，
+   正文换成可断言的登录提示页（§5.3）——golden 对比时差异只在正文。
 3. **测试专用组**：`smoke-full.json` 在真机上不存在，golden 对比时会看到差异。
 4. **ACL 的存储格式**：molly 沿用 JSON 化的 `acls`（上游是 blobmsg 数组），
    对 `session.access` 的可观测结果一致。
@@ -795,14 +849,14 @@ pkttype 10 / halen 11 / addr 12-19（`linux/if_packet.h`），S2d 实现 ifaddrs
 | 契约 | 权威来源 | molly 的验证 |
 |---|---|---|
 | `/ubus` 各形态、错误码、会话来源 | 上游 uhttpd 的 `ubus.c`（25.12.2 对应提交） | `tests/http_smoke.sh` 的 `/ubus` 两节 + `-32000/-32601/-32700/-32602` 断言 |
-| dispatcher 语义（建树、`depends.fs`/`uci`、firstchild、通配、alias、**`depends.acl` 裁树与只读**） | `modules/luci-base/ucode/dispatcher.uc`（luci `d6167ea`） | `tests/http_smoke.sh` 的 dispatcher 节 + `src/luci/menu_test.odin` + `.ai-memory/r8_probe.py` |
+| dispatcher 语义（建树、`depends.fs`/`uci`、firstchild、通配、alias、**`depends.acl` 裁树与只读**、**`auth.login` → 403 + 登录提示**） | `modules/luci-base/ucode/dispatcher.uc`（luci `d6167ea`） | `tests/http_smoke.sh` 的 dispatcher 节 + `src/luci/menu_test.odin` + `.ai-memory/r8_probe.py` |
 | HTTP 层上限与 keep-alive | uhttpd 行为（部分自定，风险 R7） | `tests/http_smoke.sh` 的「上限与错误码」「keep-alive」「管道请求」节 |
 | 静态文件与 MIME | uhttpd 行为 | `tests/http_smoke.sh` 静态节 + `src/http/mime_test.odin` |
 | `luci-rpc` 对象（6 方法：board/leases/duid/network/wireless/host hints） | `luci@d6167ea` 的 `luci.c` | `src/backend/luci_object_test.odin`（4 用例组）+ `tests/http_smoke.sh` 的「P3-5 luci-rpc 对象」节（17 项）；S2b/c/d 三个设备绑定方法只能交叉编译 + 设备验证 |
 | `file` 对象（8 方法、各方法的权限名、符号链接复查、exec 的两层 ACL） | `rpcd@e37ed9d8` 的 `file.c` | `src/backend/file_object_test.odin`（2 用例组）+ `tests/http_smoke.sh` 的「P3-4 file 对象」节（26 项） |
 | `uci` 对象（S1：`configs`/`get` 的回复形状、`.index`、`match`/`type`、ACL 钩子；S2：`changes` 的三形态、`state`/`commit`/`revert` 的状态码、savedir 清理；S3：五个写操作的参数校验、写计划与错误聚合；S4：apply 系的中性路径（5/4/2 与状态码顺序）） | `rpcd@e37ed9d8` 的 `uci.c` | `src/backend/uci_object_test.odin` + `uci_write_test.odin`（11 用例组）+ `tests/http_smoke.sh` 的「P3-3 uci 对象」节（36 项） |
 | `session` 对象（10 方法、状态码、dump 形状、ACL 匹配） | `rpcd@e37ed9d8` 的 `session.c` | `src/backend/session_test.odin`（11 用例）+ `tests/http_smoke.sh` 的「P3-2 session 对象」节（13 项） |
-| 入站 ACL（acl.d 两种形态与加载、`!` 取反、`/ubus` 前置校验顺序与 `-32002`、dispatcher 的 `depends.acl` 裁树与只读） | `rpcd@e37ed9d8` 的 `session.c` + 上游 uhttpd 的 `ubus.c` + `dispatcher.uc` 的 `check_acl_depends` | `src/backend/session_test.odin`（3 用例）+ `src/luci/menu_test.odin`（2 用例）+ `tests/http_smoke.sh` 的 `/ubus`、P3-2、dispatcher 三处 ACL 断言 |
+| 入站 ACL（acl.d 两种形态与加载、`!` 取反、`/ubus` 前置校验顺序与 `-32002`、dispatcher 的 `depends.acl` 裁树与只读、无会话 → 403 + 登录提示） | `rpcd@e37ed9d8` 的 `session.c` + 上游 uhttpd 的 `ubus.c` + `dispatcher.uc` 的 `check_acl_depends` / `resolve_firstchild` / `:930-960` | `src/backend/session_test.odin`（3 用例）+ `src/luci/menu_test.odin`（5 用例，含 3 个登录判定）+ `tests/http_smoke.sh` 的 `/ubus`、P3-2、dispatcher 三处 ACL/登录断言 |
 | 真机 golden 对比 | 原厂固件响应样本 | **待第 7 步**（替换前须先在设备上抓全量样本存档） |
 
 其它文档：[`build-and-run.md`](build-and-run.md)（配置与部署运行）、

@@ -37,8 +37,9 @@
 > （非致命，**逐对象**打一行诊断）——要接管就先 `/etc/init.d/rpcd stop`，再重启 molly。
 > 接管后跑 `./tests/device_smoke.sh` 一把验收（含真实 crypt 登录、uci 写路径、SSE）。
 > 启动时不再有「transitional mode」这回事（P3-9 删掉了那条 WARN）。
-> 生产渲染走 ADR 0003 的 `--luci-cgi`（设备 ucode），内置 dispatcher 是对照实现；
-> 两者都还没有**登录页**（无会话访问带 ACL 的路径是 404，不是跳登录）。
+> 生产渲染走 ADR 0003 的 `--luci-cgi`（设备 ucode，**登录表单也由它渲染**）；
+> 内置 dispatcher 是对照实现：没有模板，但无会话访问带 `depends.acl` 的路径按上游回
+> **403 + `X-LuCI-Login-Required: yes` + 登录提示页**（P3-6 收尾起，不再是整站裸 404）。
 
 ## 快速开始
 
@@ -70,8 +71,11 @@ curl -s               http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview  
 
 - `--menu-dir` 默认 `/usr/share/luci/menu.d`；macOS 上要显式指向 `tests/fixtures/menu.d`。
 - `--luci-cgi` 非空时，`/cgi-bin/luci` **整个前缀**交给该子进程执行；设备上填
-  `"/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc"` 即复刻 uhttpd 的 `ucode_prefix` 接线（ADR 0003）。
-  留空则用内置的 Odin dispatcher：只出占位页（会按会话 ACL 裁树、标只读），模板渲染仍属 P3。
+  `"/www/cgi-bin/luci"`（LuCI 装的 CGI 兜底脚本，`#!/usr/bin/env ucode`，复刻 uhttpd 的 CGI 形态，
+  ADR 0003）。**别填** `"/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc"`：那是 uhttpd **进程内**
+  加载的 ucode 模板（首行 `{%`），当脚本跑必然语法错、每个请求都回
+  `500 invalid CGI response (exit 1)`（细节见 `docs/interfaces.md` §5.5）。
+  留空则用内置的 Odin dispatcher：只出占位页（会按会话 ACL 裁树、标只读、无会话给登录提示）。
 
 目标机产物（`build/molly` 是 aarch64 ELF）：
 

@@ -69,6 +69,23 @@ serve_luci :: proc(s: ^http.Server, conn: ^http.Connection, req: ^http.Request, 
 			keep_alive = req.keep_alive,
 			head_only  = req.method == .Head,
 		})
+	case .Login_Required:
+		// 上游 dispatcher.uc:942-960：403 Forbidden + `X-LuCI-Login-Required: yes` + 登录页
+		// （正文由主题的 sysauth 模板渲染）。molly 把状态码与响应头对齐，正文换成占位提示
+		// （render_login_required）——所以要用 respond_full 才能带自定义头。
+		return http.respond_full(
+			conn,
+			403,
+			"Forbidden",
+			[]http.Extra_Header {
+				{name = "Content-Type", value = "text/html; charset=utf-8"},
+				{name = "X-LuCI-Login-Required", value = "yes"},
+			},
+			page.body,
+			req.keep_alive,
+			req.method == .Head,
+			alloc,
+		)
 	}
 	return false
 }

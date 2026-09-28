@@ -114,7 +114,7 @@ build/molly: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamical
 | 第 3 步（17 项） | 静态文件与 `index.html` 回落、MIME、路径逃逸（`..` / `%2e%2e` / NUL）、管道请求（一条连接上 POST 后紧跟 GET，数回包里有几个 `HTTP/1.1`） |
 | 第 4 步（17 项） | `/ubus` 前缀边界（如 `/ubus.html` 不能被 ubus 路由抢走）、方法限制、`/ubus/list` 形状 |
 | 第 5b 步（33 项） | 旧式 `POST /ubus` 与批请求、新式 `POST /ubus/call/<path>`、`Authorization: Bearer <sid>`、全部 JSON-RPC 错误码、`ubus_rpc_session` 拒绝、错误优先级 |
-| 第 6 步（28 项） | `/cgi-bin/luci` 前缀与尾斜杠、`Content-Type: text/html`、root `firstchild` 跳过 unsatisfied、指定路径、查询串剥离、`depends.acl` 裁树（无 cookie → 404 / 只读会话 → 200 + `readonly=yes` / firstchild 跳过与恢复）、中间层 `firstchild`、非 view → 501、通配段进 `request_args`、`depends.fs`/`depends.uci`、未知路径 404、POST → 405、HEAD 无 body |
+| 第 6 步（28 项 → 现 34 项） | `/cgi-bin/luci` 前缀与尾斜杠、`Content-Type: text/html`、root `firstchild` 跳过 unsatisfied、指定路径、查询串剥离、**无会话 → 403 + `X-LuCI-Login-Required: yes` + 登录提示页（`auth.login`，P3-6 收尾）**、哨兵会话（有会话但缺组）→ `depends.acl` 裁树 404 / firstchild 跳过、只读会话 → 200 + `readonly=yes` + 撤销 write 后恢复、中间层 `firstchild`、非 view → 501、通配段进 `request_args`、`depends.fs`/`depends.uci`、未知路径 404（带会话；无会话在被门控的子树下是 403）、POST → 405、HEAD 无 body |
 | 第 6b 步（改写 4 条 + 新增 20 条） | **逐键 spec**：白名单外的键只忽略该键 → 200、`order` 写成 string 只忽略该键（节点用默认权重，root `firstchild` 不变）；**逐键合并**：同路径多文件时未出现的键保留（title 不被清空）；**通配**：无剩余段用 base action、有剩余段用 `wildcardaction`；**`depends.fs`**：file / executable / directory / absent 四类型判定、object-AND 与 array-OR、非 object 取值一律忽略；**`depends.uci`**：`true`（config 有 section）/ 具名 section / `@type` 命中匿名 section / option 值精确匹配 / config 存在但无 section / config 不存在 / object-AND / 非 object 取值忽略 |
 
 ### 6.2 手工抽查

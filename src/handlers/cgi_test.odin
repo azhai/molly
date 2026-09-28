@@ -185,10 +185,14 @@ test_split_command :: proc(t: ^testing.T) {
 	alloc, ar := mk_arena()
 	defer drop_arena(ar)
 
-	argv := split_command("  /usr/bin/ucode   /usr/share/ucode/luci/uhttpd.uc  ", alloc)
-	testing.expect_value(t, len(argv), 2)
+	// 多空白、两端空白：按空白切分（命令里带参数时用）
+	// 注意这里只是**切分**的样本，别把它当成设备上的推荐取值——设备上应填 `/www/cgi-bin/luci`
+	// （见 cgi_exec.odin 头部与 docs/interfaces.md §5.5；uhttpd.uc 是模板，不能当脚本跑）
+	argv := split_command("  /usr/bin/ucode   -L   /usr/share/ucode  ", alloc)
+	testing.expect_value(t, len(argv), 3)
 	testing.expect_value(t, argv[0], "/usr/bin/ucode")
-	testing.expect_value(t, argv[1], "/usr/share/ucode/luci/uhttpd.uc")
+	testing.expect_value(t, argv[1], "-L")
+	testing.expect_value(t, argv[2], "/usr/share/ucode")
 
 	testing.expect_value(t, len(split_command("   ", alloc)), 0)
 	testing.expect_value(t, len(split_command("", alloc)), 0)
