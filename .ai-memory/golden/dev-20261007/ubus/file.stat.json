@@ -1,0 +1,14 @@
+{
+	"path": "/etc/hosts",
+	"type": "file",
+	"size": 110,
+	"mode": 33188,
+	"atime": 1788681816,
+	"mtime": 1788681816,
+	"ctime": 1788681816,
+	"inode": 105,
+	"uid": 0,
+	"gid": 0,
+	"user": "root",
+	"group": "root"
+}

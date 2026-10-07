@@ -1,0 +1,1 @@
+Command failed: ubus call file md5 {"path":"/etc/hostname"} (Not found)

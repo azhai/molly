@@ -1,0 +1,6 @@
+HTTP/1.1 500 Ubus Protocol Error
+Connection: Keep-Alive
+Transfer-Encoding: chunked
+Keep-Alive: timeout=20
+Content-Type: application/json
+

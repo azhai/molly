@@ -1,0 +1,1 @@
+Command failed: ubus call file read {"path":"/etc/hostname"} (Not found)

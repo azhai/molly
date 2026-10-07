@@ -1,0 +1,22 @@
+{
+	"configs": [
+		"attendedsysupgrade",
+		"baresip",
+		"bridger",
+		"dhcp",
+		"dropbear",
+		"firewall",
+		"fstab",
+		"ksmbd",
+		"luci",
+		"network",
+		"openssl",
+		"radius",
+		"rpcd",
+		"system",
+		"ubihealthd",
+		"ubootenv",
+		"uhttpd",
+		"wireless"
+	]
+}

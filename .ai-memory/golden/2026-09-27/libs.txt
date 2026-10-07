@@ -1,0 +1,2 @@
+lrwxrwxrwx    1 root     root             7 Sep  6 16:03 /lib/ld-musl-aarch64.so.1 -> libc.so
+ls: /usr/lib/lib{uci,ubus,ubox,blobmsg_json}.so*: No such file or directory

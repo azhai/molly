@@ -1,0 +1,10 @@
+ucode: unrecognized option: v
+ucode: unrecognized option: v
+Require either -e/-p expression or source file
+DISTRIB_ID='ImmortalWrt'
+DISTRIB_RELEASE='25.12.2'
+DISTRIB_REVISION='r38135-0c4cd0f9920a'
+DISTRIB_TARGET='mediatek/filogic'
+DISTRIB_ARCH='aarch64_cortex-a53'
+DISTRIB_DESCRIPTION='ImmortalWrt 25.12.2 r38135-0c4cd0f9920a'
+DISTRIB_TAINTS=''

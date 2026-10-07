@@ -1,0 +1,72 @@
+{
+	"values": {
+		"cfg01e48a": {
+			".anonymous": true,
+			".type": "system",
+			".name": "cfg01e48a",
+			".index": 0,
+			"hostname": "mocca.vod",
+			"timezone": "CST-8",
+			"zonename": "Asia/Shanghai",
+			"ttylogin": "0",
+			"log_size": "128",
+			"urandom_seed": "0",
+			"clock_hourcycle": "h23",
+			"log_proto": "udp",
+			"conloglevel": "4",
+			"cronloglevel": "7"
+		},
+		"ntp": {
+			".anonymous": false,
+			".type": "timeserver",
+			".name": "ntp",
+			".index": 1,
+			"server": [
+				"time5.cloud.tencent.com",
+				"ntp5.aliyun.com"
+			]
+		},
+		"led_lan1": {
+			".anonymous": false,
+			".type": "led",
+			".name": "led_lan1",
+			".index": 2,
+			"name": "LAN1",
+			"sysfs": "mdio-bus:05:green:lan",
+			"trigger": "netdev",
+			"mode": "link tx rx",
+			"dev": "lan1"
+		},
+		"led_wanact": {
+			".anonymous": false,
+			".type": "led",
+			".name": "led_wanact",
+			".index": 3,
+			"name": "WANACT",
+			"sysfs": "mdio-bus:06:green:wan",
+			"trigger": "netdev",
+			"mode": "tx rx",
+			"dev": "eth1"
+		},
+		"led_wanlink": {
+			".anonymous": false,
+			".type": "led",
+			".name": "led_wanlink",
+			".index": 4,
+			"name": "WANLINK",
+			"sysfs": "blue:wan",
+			"trigger": "netdev",
+			"mode": "link",
+			"dev": "eth1"
+		},
+		"cfg06529b": {
+			".anonymous": true,
+			".type": "imm_init",
+			".name": "cfg06529b",
+			".index": 5,
+			"lang": "1",
+			"system_chn": "1",
+			"apk_mirror": "https://mirrors.vsean.net/openwrt"
+		}
+	}
+}

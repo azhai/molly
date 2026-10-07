@@ -1,0 +1,12 @@
+HTTP/1.1 403 Forbidden
+Connection: Keep-Alive
+Transfer-Encoding: chunked
+Keep-Alive: timeout=20
+x-luci-login-required: yes
+content-type: text/html; charset=UTF-8
+cache-control: no-cache
+expires: 0
+x-frame-options: SAMEORIGIN
+x-xss-protection: 1; mode=block
+x-content-type-options: nosniff
+
