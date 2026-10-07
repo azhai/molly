@@ -1,4 +1,17 @@
-# 双界面：专家版迁到 /pro，`/` 新增新手版
+# 双界面：专家版 + 新手版（当前布局：专家版 `/plus`、新手版 `/lite`、`/` 是入口）
+
+> **当前布局（2026-10-07 最后一次改动）**
+>
+> | 界面 | 路径 | 说明 |
+> |---|---|---|
+> | 专家版 | `/plus/`（`--luci-prefix /plus`，备份 `/etc/init.d/molly.bak-plus`） | 完整 LuCI，内容由设备 ucode dispatcher 渲染 |
+> | 新手版 | `/lite/` | 一页六件事，编译进二进制的单文件 |
+> | 入口 | `/` | **302** → `/lite/`（用 302 不用 301：前缀还会再挪，301 会被浏览器永久缓存） |
+>
+> 下面是这条线一路演进的过程记录（更早的 `/pro`、新手版挂在 `/` 的形态留在正文里，
+> 那些描述在各自的时间点都是准确的）。
+
+## 需求原文（第一版：前缀改 /pro）
 
 需求（2026-10-07，用户原话）：「将当前的网址前缀从 `/cgi-bin/luci/` 改为 `/pro/`，这套称为专家版；
 在 `/` 下面再增加一套新手版，只需要常见功能并简化操作界面，主要是系统状态、实时负载图、重启路由、
@@ -68,33 +81,75 @@
 `/cgi-bin/*` 当 CGI **执行**、从不吐正文，所以 `handlers/static.odin` 里改成一律 **403**（策略性
 拒绝，不是「文件不存在」）。这条在 http_smoke 里有三条断言钉住。
 
-## Go 版（gomolly）同样落地
+## Go 版落地（2026-10-07 后期，仓库只剩 Go 实现）
 
-同一套形态在 `gomolly/`（独立 `go.mod`）里也做了，**设备现在跑的就是 Go 版**：
-`/usr/sbin/molly` = gomolly aarch64（17.7MB），Odin 版备份在 `/usr/sbin/molly.odin.bak`。
+原来 Odin 与 Go 两份实现并存（Odin 在 `src/`、Go 在 `gomolly/`）。**现在仓库只剩 Go 版，
+且它已经提升到仓库根**（`go.mod` 在根；module 名 2026-10-07 之后是 `github.com/azhai/molly`，
+原先叫 `gomolly`）；Odin 的 `src/`、`build.sh`
+已从工作区移除（git 历史里还在，最近一次相关提交是 `34acda7 修改URL，分为新手版与专家版`）。
+设备上跑的是 Go 版：`/usr/sbin/molly` = gomolly aarch64，Odin 版备份在 `/usr/sbin/molly.odin.bak`。
 
-| 点 | Odin 版 | Go 版 |
-|---|---|---|
-| 前缀 | `handlers.LUCI_PREFIX` 变量 + `luci_set_prefix` | `handlers.LuciPrefix` 变量 + `SetLuciPrefix` |
-| 新手版页面 | `#load`（`src/novice/assets/index.html`） | `go:embed`（`internal/novice/index.html`） |
-| 会话读取 | `luci_sid_from_cookie`（`sysauth_molly` 起三个名字） | 同名同义 `luciSIDFromCookie` |
-| `/cgi-bin/*` | 403 | 403（同一策略） |
-| 路由 | `handle()` 里加新手版分支 | `router.ServeHTTP` 里加同一分支 |
-| 两份页面副本 | — | `internal/novice/sync_test.go` 守住逐字节一致 |
+| 点 | 实现 |
+|---|---|
+| 前缀 | `handlers.LuciPrefix` 变量 + `SetLuciPrefix`（`--luci-prefix`） |
+| 新手版页面 | `go:embed`，落在 **`webassets/novice/index.html`** |
+| 会话读取 | `luciSIDFromCookie`（`sysauth_molly` 起三个名字） |
+| `/cgi-bin/*` | 403（上游 uhttpd 只执行它、从不吐正文） |
+| 路由 | `router.ServeHTTP` 里 `IsNovicePath` 分支，排在静态文件之前 |
 
-**为什么页面要复制一份**：`go:embed` 不能引用包目录之外的路径（`..` 会被拒），而两个二进制
-各自要自包含。这与 `internal/webassets/` 抄 luci-static 是同一个约定（那里用
-`tools/embed-assets.sh`）。一致性由那个测试兜底——改了 Odin 那份忘了 Go 那份会红。
+### 前端资源统一到项目根 `webassets/`
 
-**CLI 完全一致**（`--listen/--docroot/--menu-dir/--luci-prefix/--luci-cgi/--ubus-socket`），
-所以设备上同一个 `/etc/init.d/molly` 两个二进制都能用，换二进制就能换实现。
+`internal/webassets/` 搬到根目录并改名 `webassets/`（import 变成 `gomolly/webassets`），
+同时把新手版页面也并了进去——它们本来就是同一类东西：**要编进二进制的前端资源**。
 
-Go 版门禁：`gofmt -l` 干净、`go vet` 干净、`go test -count=1 ./...` 全绿、
-`tests/smoke.sh` **299/0**；真机 **23/23**（同 Odin 版的验证清单）。
+- `webassets/luci-static/`：设备 LuCI 静态资源的**兜底副本**，可选（`-tags embed_assets`），
+  由 `tools/embed-assets.sh` 从设备抄入（已 gitignore）；
+- `webassets/novice/index.html`：新手版整页，**恒编入**（`webassets.NoviceHTML`）。
 
-顺手改掉 gomolly smoke 的两条旧断言：`/` 改判新手版；目录回落覆盖换到
-`/luci-static/sub/`（因为共享 fixture 里我加了它自己的 `index.html`）；`/cgi-bin/luci-static`
-的边界断言从 404 改 403（现在由 `/cgi-bin/*` 策略拒绝，与「被 dispatcher 抢走」的 404 可区分）。
+页面不再需要第二份副本（Odin 实现已不在仓库），当初那个 `sync_test.go` 一致性守卫随之删除。
+`go:embed` 不能引用包目录之外的路径（`..` 会被拒），所以「资源挨着包放」是这个结构的前提。
+
+### 两套界面是同一条会话（本次的第二个改动）
+
+改之前：新手版由页面里的 JS 自己调 `session login`，sid 存在 `localStorage`；专家版由
+ucode dispatcher 登录、cookie 作用域是 `path=/pro/`。结果是**两条互不相认的会话**：在哪边
+登录，另一边都还得再登一次。
+
+改法两条，缺一不可：
+
+1. **登录/退出改成服务端**（`handlers.ServeNovice` 的 POST 分支）：
+   `action=login|logout` → `deps.CallObject("session","login"|"destroy", …)` →
+   `Set-Cookie: sysauth_molly=<sid>; path=/; HttpOnly; SameSite=strict` → 302 回 `/`
+   （失败回 `/?login_error=1`）。用的就是**专家版那一个** `session` 对象，所以「统一」是
+   同一条链路的自然结果，不是又实现了一套鉴权。页面里的 `localStorage`/影子会话随之删掉。
+2. **专家版会话 cookie 的 path 放宽到 `/`**（`internal/handlers/cgi.go` 的
+   `widenSessionCookiePath`）：上游 dispatcher 用 `path=${build_url()}`，也就是专家版前缀
+   `/pro/`；而 cookie 是**按 path 作用域**收发的，`/pro/` 作用域的 cookie 浏览器不会在 `/`
+   上发回来。放宽到 `/` 之后两套界面读写同一个 cookie 槽位 —— 这才叫一条会话。
+   只动名字以 `sysauth` 开头的 cookie，其余 Set-Cookie 逐字节透传。
+
+**验证**（真机 18/0）：新手版登录下发的 cookie（`Path=/`）拿去专家版页面 → 200 且标题正确；
+专家版登录下发的 cookie 现在是 `path=/`（被放宽了）→ 新手版页面注入同一个 sid 且 RPC 可用；
+退出清掉共用 cookie，之后该 sid 立刻不可用（403）；密码错回 `/?login_error=1` 且不下发 cookie。
+
+### 门禁
+
+`gofmt -l` 干净、`go vet` 干净、`go test -count=1 ./...` 全绿、`tests/smoke.sh` **310/0**
+（含新增的会话统一一节）；真机会话统一 **18/0**、功能面 23/23。
+
+## 顺带修掉的重构遗留
+
+这次仓库提升（Go 实现上移一级）打断了几处相对路径，一并修了：
+
+- Go 测试里的 fixture 路径 `../../../tests/…` → `../../tests/…`（`internal/luci`、
+  `internal/backend`、`internal/handlers`）；`luci_darwin.go` 的兜底路径改成**相对进程 cwd**
+  的 `tests/fixtures/board.json`（与 `darwin.go` 里 acl.d 的写法一致）。
+- `tests/smoke.sh` 的 `ROOT="$(cd .. && pwd)"` → `$(dirname "$0")/..`（写死 `cd ..` 只在
+  「脚本位于仓库根的子目录」时成立）。
+- **`tests/fixtures/` 从工作区被删掉了**（它是 Odin 仓库的测试数据，Go 的测试与 smoke 都在用，
+  `go-port-plan` 也写明直接复用）——已从 git 恢复。
+- `README.md` 与 `docs/*.md` **仍是 Odin 时代的内容**（描述已删除的 `src/`），本次没动；
+  要不要整篇改写成 Go 版由用户定。
 
 ## 遗留 / 未实测
 

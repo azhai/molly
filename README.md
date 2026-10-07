@@ -70,11 +70,15 @@ curl -s               http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview  
 配置要点：
 
 - **两套界面**（`docs/interfaces.md` §3.1）：
-  - **专家版** = 完整的 LuCI，挂在 `--luci-prefix` 给的路径上（默认 `/cgi-bin/luci`；本站部署用 `/pro`）；
-  - **新手版** = `/`，一页只放最常见的六件事（系统状态、实时负载图、重启、内外网设置、无线中继、
-    DHCP 分配与 MAC 绑定）。页面是**编译进二进制的单文件**（`src/novice/assets/index.html`），
+  - **专家版** = **我们自己实现的 Go+HTML 站点**（十个页面：仪表盘/内外网/无线/DHCP/系统/日志/服务/存储/诊断/备份），
+    挂在 `--luci-prefix` 给的路径上（默认 `/cgi-bin/luci`；本站部署用 `/plus`）。页面是编译进二进制的单文件，
+    **菜单内置在 Go 代码里（不读 menu.d）**，不依赖 ucode / LuCI 主题 / uhttpd——具体动作全部经 `/ubus`；
+    设备额外需要的命令授权集中在 `tools/molly-acl.json`；给 `--luci-cgi` 则退回设备 ucode 渲染的完整 LuCI；
+  - **新手版** = `/lite`，一页只放最常见的六件事（系统状态、实时负载图、重启、内外网设置、无线中继、
+    DHCP 分配与 MAC 绑定）。页面是**编译进二进制的单文件**（`webassets/novice/index.html`），
     数据面全走既有 `/ubus`——没有新手版专属 API，也没有第二套鉴权；
-  - 两者**共用同一个会话 cookie**，所以任一边登录过，另一边直接可用。
+  - `/` 是入口，**302** 跳到 `/lite/`；
+  - 两者**共用同一个会话 cookie**（`sysauth_molly`，`path=/`），所以任一边登录过，另一边直接可用。
 - `--menu-dir` 默认 `/usr/share/luci/menu.d`；macOS 上要显式指向 `tests/fixtures/menu.d`。
 - `--luci-cgi` 非空时，**专家版前缀**整体交给该子进程执行；设备上填
   `"/www/cgi-bin/luci"`（LuCI 装的 CGI 兜底脚本，`#!/usr/bin/env ucode`，复刻 uhttpd 的 CGI 形态，

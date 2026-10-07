@@ -144,10 +144,12 @@ curl -sD- -o/dev/null http://127.0.0.1:8080/cgi-bin/luci/admin/status/routes  # 
 ```bash
 GOSYMS=1 ./build.sh --target          # 第一次上机保留符号，便于抓崩溃栈
 scp build/molly root@<设备>:/tmp/
-ssh root@<设备> '/tmp/molly --listen 0.0.0.0:8081 --docroot /www --menu-dir /usr/share/luci/menu.d'
+ssh root@<设备> '/tmp/molly --listen 0.0.0.0:8081 --docroot /www --luci-prefix /plus'
 ```
 
-`--menu-dir` 在设备上就是默认值，写出来只是为了明确 dispatcher 读的是哪一份菜单。
+自研站点（`--luci-render app`，默认）**不读 menu.d**——菜单是 `webassets/expert.Menu` 里内置的数据，
+所以设备部署**不要**传 `--menu-dir`：留着既没用，又会让人误以为页面来自那批 json。
+只有退回内置/ucode dispatcher（`--luci-render builtin|cgi`）时才需要它。
 
 规则：
 

@@ -24,7 +24,8 @@
 | M3 ✅ | dispatcher：menu.d 建树、`depends` 求值、ACL 裁树、无会话 403 登录提示、占位页/404 + `--luci-cgi` 子进程桥 | 复用 `tests/fixtures/menu.d`；对照 Odin 版 `menu_test.odin` 用例 |
 | M4 ✅ | 四个 ubus 对象（session/uci/file/luci-rpc）+ probe + SSE | darwin 假数据下 `tests/smoke.sh` 通过 284 失败 0 |
 | M5 ✅ | 交叉编译上设备（cgo + zig cc）+ golden 对比 + RSS 压测 | 真机实测：/ubus 探针 **HTTP 对 HTTP** 归一化对比，差异仅限 §9.3 已记录偏离（详见「M5 设备验收」，脚本的 CLI-vs-HTTP compare 不可直接用作准则） |
-| M6 ✅ | **双界面**：`--luci-prefix`（专家版迁到 `/pro`）+ `/` 新手版（六件事，与专家版共用会话） | 真机 23/23：`/pro/` 登录与页面、`/` 注入同一 sid、六项功能数据面全通、`/cgi-bin/*` 不外发。细节见 `.ai-memory/dual-ui-prefix-and-novice.md` |
+| M6 ✅ | **双界面**：`--luci-prefix`（专家版迁到 `/plus`，原 `/cgi-bin/luci`）+ `/lite` 新手版（六件事，`/` 是 302 入口），两套界面共用一条会话 | 真机 22/22：`/plus/` 登录与页面、`/lite/` 注入同一 sid、`/` 302、`/cgi-bin/*` 不外发。细节见 `.ai-memory/dual-ui-prefix-and-novice.md` |
+| M7 ✅ | 前端资源统一到根 **`webassets/`**（luci-static 兜底副本 + 新手版页面）；两套界面统一成**一条会话**（服务端登录/退出 + 会话 cookie 的 path 放宽到 `/`） | `go test ./...` 全绿、`tests/smoke.sh` **310/0**；真机会话统一 **18/0**（新手版登录下发的 cookie 在专家版直接 200，反之亦然；退出后立即失效） |
 
 ## 关键设计决策
 
@@ -55,16 +56,33 @@
 
 ## 验证方式（门禁）
 
+现在仓库根就是 module 根，且有 Makefile（2026-10-07 新增）——**日常只用 make**：
+
 ```bash
-cd gomolly
-gofmt -l . && go vet ./... && go test -count=1 ./...   # 每次改动必跑
-go build -o build/gomolly-host ./cmd/gomolly           # darwin 原生
-./tests/smoke.sh                                       # 起 6 个实例（18080 dispatcher + 18081..18085 CGI 桥）
-# M5 起：交叉编译
-CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC="zig cc -target aarch64-linux-musl" ... go build
+make lint      # gofmt 检查 + go vet（每次改动必跑）
+make test      # go test -count=1 ./...
+make smoke     # 起 7 个实例（18080 dispatcher + 18081..18085 CGI 桥 + 18086 前缀可配）
+make build     # darwin 原生：build/gomolly-host
+make target    # 交叉编译设备产物：build/gomolly-arm64
+make deploy    # 交叉编译 + 部署到设备（停服务 → 覆盖 → 启动 → 回状态）
+make help      # 全部目标与可覆盖的变量
 ```
+
+Makefile 里 `target` 的交叉编译配置（就是 M5 那套环境变量，只是收进了 Makefile）：
+
+```
+CGO_ENABLED=1 GOOS=linux GOARCH=arm64 GOARM=8
+CC="zig cc -target aarch64-linux-musl"
+CGO_CFLAGS="--sysroot=$SYSROOT -I$SYSROOT/usr/include" CGO_LDFLAGS="--sysroot=$SYSROOT"
+```
+
+`SYSROOT` 默认 `~/openwrt-sdks/sysroot-aarch64_cortex-a53`（注意目录名是 **aarch64**，
+不是 arm64），`ZIG` 默认 `zig`，两者都能 `make target SYSROOT=... ZIG=...` 覆盖。
+`make target-embed` 是把设备前端资源也编进去的变体（`-tags embed_assets`，需先跑
+`tools/embed-assets.sh`）。
+
 `tests/smoke.sh` = Odin 版 `tests/http_smoke.sh` + `tests/cgi_smoke.sh` 合并成一份，
-覆盖 M1-M3 全部断言（路由/静态/规范化 + /ubus 信封 + dispatcher + CGI 桥）。
+覆盖 M1-M3 全部断言（路由/静态/规范化 + /ubus 信封 + dispatcher + CGI 桥）+ 双界面 + 会话统一。
 
 ## 进度与会话记录（新在前）
 
@@ -633,8 +651,8 @@ unit/test 全绿、`build.sh --target` 511,880 B 能交叉编译。
 
 **三、前端资源 embed 进 Go 二进制（可选 + 兜底）**
 
-新增 `gomolly/internal/webassets/`：默认构建不带资源；`-tags embed_assets` 时把
-`internal/webassets/luci-static/` 编进二进制，**docroot 找不到时兜底**（设备上那份与 ucode
+新增 `webassets/`（项目根）：默认构建不带资源；`-tags embed_assets` 时把
+`webassets/luci-static/` 编进二进制，**docroot 找不到时兜底**（设备上那份与 ucode
 同版本，永远优先——避免「二进制里的 JS 与设备上的 ucode 视图漂移」）。资源用
 `gomolly/tools/embed-assets.sh <host>` 从设备抄，目录已 gitignore。
 

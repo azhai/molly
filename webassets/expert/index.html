@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>专家版</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--line:#e3e8ee;--fg:#17212b;--dim:#66788a;--accent:#1f8f4e;--ok:#e7f5ec;--warn:#c0392b;--warnbg:#fdecea;--soon:#9aa7b4}
+@media (prefers-color-scheme:dark){:root{--bg:#10151b;--card:#18202a;--line:#263241;--fg:#e8eef5;--dim:#93a4b6;--accent:#3ecf7a;--ok:#16301f;--warn:#ff7b6b;--warnbg:#331a18;--soon:#5b6a7a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{display:flex;max-width:1180px;margin:0 auto;min-height:100vh}
+nav{width:190px;flex:none;padding:14px 8px;border-right:1px solid var(--line)}
+nav .brand{font-weight:700;padding:4px 10px 12px}
+nav a{display:block;padding:8px 10px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:14px;cursor:pointer}
+nav a:hover{background:var(--card)}nav a.on{background:var(--accent);color:#fff;font-weight:600}
+nav a.soon{color:var(--soon)}nav a.soon:hover{color:var(--warn)}
+nav a.leave{margin-top:10px;border-top:1px solid var(--line);padding-top:12px;color:var(--dim)}
+main{flex:1;min-width:0;padding:16px 16px 48px}
+header{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+header h1{font-size:18px;margin:0;flex:1}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+.card h2{margin:0 0 12px;font-size:15px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.kv{background:var(--bg);border-radius:10px;padding:10px 12px}
+.kv .k{color:var(--dim);font-size:12px}.kv .v{font-size:16px;font-weight:600;word-break:break-all}
+label.f{display:block;margin:10px 0 0}label.f>span{display:block;color:var(--dim);font-size:13px;margin-bottom:4px}
+input,select{width:100%;padding:9px 11px;font-size:15px;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:9px}
+button{font:inherit;padding:9px 14px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
+button.p{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+button.d{background:var(--warnbg);border-color:var(--warn);color:var(--warn);font-weight:600}
+button:disabled{opacity:.55;cursor:progress}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.msg{margin-top:10px;font-size:13px;padding:8px 10px;border-radius:8px;display:none}
+.msg.ok{display:block;background:var(--ok);color:var(--accent)}.msg.err{display:block;background:var(--warnbg);color:var(--warn)}
+canvas{width:100%;height:165px;display:block}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)}th{color:var(--dim);font-weight:500;font-size:12px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+/* 登录遮罩。**必须带 [hidden]{display:none}**：.lg 的 display:flex 是作者样式，
+   优先级高于 hidden 属性自带的 UA display:none —— 少了这一行，遮罩会无视 hidden
+   永远盖在页面上（登录成功后也是）。 */
+.lg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
+[hidden]{display:none!important}
+.lg .card{width:100%;max-width:350px;margin:0}
+@media (max-width:760px){.wrap{flex-direction:column}nav{width:auto;border-right:0;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:2px}nav .brand{width:100%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav><div class="brand">专家版</div><div id="menu"></div><a class="leave" href="/lite/">← 新手版</a></nav>
+  <main><header><h1 id="h1">…</h1><button id="logout">退出登录</button></header><div id="view"></div></main>
+</div>
+<div class="lg" id="login" hidden><div class="card"><h2>登录</h2>
+  <label class="f"><span>用户名</span><input id="lu" value="root" autocomplete="username"></label>
+  <label class="f"><span>密码</span><input id="lp" type="password" autocomplete="current-password"></label>
+  <div class="row"><button class="p" id="lg">登录</button></div><div class="msg" id="lm"></div>
+</div></div>
+<script>
+(function(){
+"use strict";
+/* 占位符由服务端注入：会话 id（空=未登录）、专家版前缀、以及**菜单**（Go 侧数据，不读 menu.d）。 */
+var SID="__SID__", MENU=__MENU__, ANON="00000000000000000000000000000000";
+var $=function(i){return document.getElementById(i);};
+
+/* 数据面只有 /ubus：具体动作全是 ubus 方法，服务端不为界面加业务 API。 */
+function rpc(o,m,p){
+  return fetch("/ubus/",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({jsonrpc:"2.0",id:1,method:"call",params:[SID,o,m,p||{}]})})
+   .then(function(r){return r.json();}).then(function(d){
+     var e1=Array.isArray(d)?d[0]:d;
+     if(!e1||e1.error){var e=new Error((e1&&e1.error&&e1.error.message)||"请求失败");e.code=e1&&e1.error&&e1.error.code;throw e;}
+     if(e1.result[0]!==0){var e2=new Error("ubus 错误码 "+e1.result[0]);e2.code=e1.result[0];throw e2;}
+     return e1.result.length>1?e1.result[1]:null;});
+}
+/* uci 写操作统一流程：set → commit → apply。rollback=true 时留 60 秒回滚窗口
+   （与 LuCI「保存并应用」同一条路），undo=true 则 apply 后立刻 confirm 固化。 */
+function uciSave(steps,undo){
+  return steps.reduce(function(p,s){return p.then(function(){return rpc("uci",s[0],s[1]);});},Promise.resolve())
+   .then(function(){return rpc("uci","commit",{config:steps[0][1].config});})
+   .then(function(){return rpc("uci","apply",{rollback:!undo,timeout:60});})
+   .then(function(){return undo?rpc("uci","confirm",{rollback:false}):null;});
+}
+function say(el,t,ok){el.textContent=t;el.className="msg "+(ok?"ok":"err");if(ok)setTimeout(function(){el.className="msg";},4000);}
+function busy(b,on){b.disabled=!!on;}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
+function toast(t){alert(t);}
+function bytes(n){var u=["B","KB","MB","GB","TB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}return (i?(n<10?n.toFixed(1):Math.round(n)):n)+" "+u[i];}
+function uptime(s){var d=~~(s/86400),h=~~(s%86400/3600),m=~~(s%3600/60);return d?d+" 天 "+h+" 小时":(h?h+" 小时 "+m+" 分":m+" 分");}
+function load1(v){return (v||0)/65536;}
+/* 有些 ubus 方法在设备上可能没有（版本差异）：把失败显示成「不支持」而不是整页崩。 */
+function softFail(e,el){el.innerHTML='<section class="card"><h2>数据不可用</h2><p style="color:var(--dim);margin:0">'+esc(e.message)+"（该 ubus 方法在此设备上可能不受支持）</p></section>";}
+
+/* ---- 菜单与前端路由：URL 只有 <前缀> + #/片段，改前缀所有链接自动跟着变 ---- */
+var PAGES={}, timer=null;
+$("menu").innerHTML=MENU.map(function(m){
+  return '<a href="#/'+m.id+'" data-id="'+m.id+'"'+(m.ready?"":" class='soon'")+">"+esc(m.title)+(m.ready?"":" ·")+"</a>";
+}).join("")+'<a class="leave" href="#" id="to-lite">← 新手版</a>';
+$("to-lite").onclick=function(e){e.preventDefault();location.href="/lite/";};
+
+function route(){
+  var id=(location.hash||"").replace(/^#\/?/,"")||"dash";
+  var item=null;MENU.forEach(function(m){if(m.id===id)item=m;});
+  if(!item)item=MENU[0];
+  Array.prototype.forEach.call(document.querySelectorAll("#menu a[data-id]"),function(a){
+    a.className=(a.getAttribute("data-id")===item.id?"on":(MENU.filter(function(m){return m.id===a.getAttribute("data-id");})[0].ready?"":"soon"));
+  });
+  document.getElementById("h1").textContent=item.title;
+  if(timer){clearInterval(timer);timer=null;}
+  var view=document.getElementById("view");view.innerHTML="";
+  if(!item.ready){view.innerHTML='<section class="card"><h2>页面建设中</h2><p style="color:var(--dim);margin:0">这一页还没落地。</p></section>';return;}
+  try{PAGES[item.id].mount(view);}catch(e){softFail(e,view);}
+}
+window.addEventListener("hashchange",route);
+
+/* ---- 仪表盘：型号/固件/运行时长/负载/内存 + 负载曲线 + 在线设备 ---- */
+var board=null,info=null,hist=[];
+PAGES.dash={mount:function(el){
+  el.innerHTML='<section class="card"><h2>设备</h2><div class="grid" id="d1"></div>'+
+   '<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;color:var(--dim);font-size:12px"><span>内存占用</span><span id="dm"></span></div>'+
+   '<div style="height:8px;border-radius:6px;background:var(--bg);overflow:hidden;margin-top:6px"><i id="dmb" style="display:block;height:100%;background:var(--accent);width:0"></i></div></div></section>'+
+   '<section class="card"><h2>实时负载 <span style="font-weight:400;color:var(--dim);font-size:12px">近 2 分钟</span></h2><canvas id="dc"></canvas></section>'+
+   '<section class="card"><h2>在线设备</h2><table><thead><tr><th>设备</th><th>IP</th><th>MAC</th></tr></thead><tbody id="dl"></tbody></table></section>';
+  rpc("system","board").then(function(b){board=b;document.title=(b.hostname||"路由器")+" · 专家版";return rpc("system","info");})
+   .then(function(i){info=i;paint();push();return rpc("luci-rpc","getDHCPLeases",{family:0});})
+   .then(function(le){
+     var rows=((le&&le.dhcp_leases)||[]).map(function(l){return "<tr><td>"+esc(l.hostname||"未命名")+"</td><td class='mono'>"+esc(l.ipaddr)+"</td><td class='mono'>"+esc(l.macaddr)+"</td></tr>";}).join("");
+     $("dl").innerHTML=rows||'<tr><td colspan="3" style="color:var(--dim)">暂无</td></tr>';
+   }).catch(function(e){toast(e.message);});
+  timer=setInterval(function(){rpc("system","info").then(function(i){info=i;paint();push();}).catch(function(){});},2000);
+}};
+function paint(){
+  if(!board)return;var rel=board.release||{},mem=(info&&info.memory)||{};
+  var used=(mem.total||0)-(mem.available||mem.free||0),pct=mem.total?Math.round(used/mem.total*100):0;
+  var rows=[["型号",board.model||"-"],["固件",rel.version||"-"],["内核",board.kernel||"-"],
+    ["运行时长",info?uptime(info.uptime):"-"],["1 分钟负载",info?load1(info.load&&info.load[0]).toFixed(2):"-"]];
+  $("d1").innerHTML=rows.map(function(c){return '<div class="kv"><div class="k">'+c[0]+'</div><div class="v">'+esc(c[1])+"</div></div>";}).join("");
+  $("dm").textContent=mem.total?bytes(used)+" / "+bytes(mem.total)+"（"+pct+"%）":"-";
+  $("dmb").style.width=pct+"%";
+}
+function push(){if(!info||!info.load)return;hist.push([load1(info.load[0]),load1(info.load[1]),load1(info.load[2])]);while(hist.length>60)hist.shift();draw();}
+function draw(){
+  var cv=$("dc");if(!cv)return;var dpr=window.devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;
+  if(cv.width!==w*dpr||cv.height!==h*dpr){cv.width=w*dpr;cv.height=h*dpr;}
+  var g=cv.getContext("2d");g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
+  var max=0.5;hist.forEach(function(s){s.forEach(function(v){if(v>max)max=v;});});max=Math.ceil(max*2)/2;
+  var cs=getComputedStyle(document.documentElement);
+  g.strokeStyle=cs.getPropertyValue("--line");g.fillStyle=cs.getPropertyValue("--dim");g.font="11px sans-serif";g.lineWidth=1;
+  for(var i=0;i<=2;i++){var y=h-(h-14)*(i/2)-2;g.beginPath();g.moveTo(0,y+.5);g.lineTo(w,y+.5);g.stroke();g.fillText((max*i/2).toFixed(2),2,y-2);}
+  ["#1f8f4e","#2f7fd6","#c98a1a"].forEach(function(col,k){g.strokeStyle=col;g.lineWidth=2;g.beginPath();
+    hist.forEach(function(s,idx){var x=hist.length>1?idx/59*w:0;var y=h-2-(h-14)*Math.min(s[k]/max,1);idx?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();});
+}
+window.addEventListener("resize",draw);
+
+/* ---- 系统：重启 + 改口令（改口令交给 /auth/password，服务端统一处理） ---- */
+PAGES.sys={mount:function(el){
+  el.innerHTML='<section class="card"><h2>重启</h2><p style="color:var(--dim);margin:0">重启约需 1–2 分钟，期间网络会中断。</p>'+
+   '<div class="row"><button class="d" id="rb">立即重启</button></div><div class="msg" id="rbm"></div></section>'+
+   '<section class="card"><h2>修改 root 口令</h2>'+
+   '<label class="f"><span>旧口令</span><input id="po" type="password" autocomplete="current-password"></label>'+
+   '<label class="f"><span>新口令（至少 5 个字符）</span><input id="pn" type="password" autocomplete="new-password"></label>'+
+   '<div class="row"><button class="p" id="pb">保存</button></div><div class="msg" id="pbm"></div></section>';
+  $("rb").onclick=function(){if(!confirm("确定现在重启吗？网络会中断 1–2 分钟。"))return;
+    var b=this;busy(b,true);
+    rpc("system","reboot").then(function(){say($("rbm"),"已发出重启指令…",true);})
+      .catch(function(e){say($("rbm"),"重启失败："+e.message,false);busy(b,false);});};
+  $("pb").onclick=function(){
+    var b=this;busy(b,true);
+    var f=new URLSearchParams();
+    f.set("username","root");f.set("old",$("po").value);f.set("new",$("pn").value);f.set("next",location.hash||"#/sys");
+    fetch("/auth/password",{method:"POST",body:f,redirect:"follow"}).then(function(r){
+      var ok=r.url.indexOf("auth_error")<0,code=(/[?&]auth_error=([a-z_]+)/.exec(r.url)||[])[1];
+      say($("pbm"),ok?"口令已更新":("失败："+({bad_credentials:"旧口令不对",weak_password:"新口令太短（至少 5 个字符）",no_hasher:"设备缺少 openssl，无法生成 hash"}[code]||"未知错误")),ok);
+      if(ok){$("po").value="";$("pn").value="";}
+      busy(b,false);});
+  };
+}};
+
+
+/* ---- 内外网：读 uci network；改动走「set → commit → apply」（带 60 秒回滚窗口） ---- */
+function first(v){return Array.isArray(v)?(v[0]||""):(v||"");}
+function list(v){return Array.isArray(v)?v:(v?[v]:[]);}
+PAGES.net={mount:function(el){
+  el.innerHTML='<section class="card"><h2>外网（WAN）</h2>'+
+   '<label class="f"><span>连接方式</span><select id="wp"><option value="dhcp">自动获取（DHCP / 光猫拨号）</option>'+
+   '<option value="static">固定 IP</option><option value="pppoe">宽带拨号（PPPoE）</option></select></label>'+
+   '<div id="ws" hidden><label class="f"><span>IP 地址 / 掩码</span><input id="wi" placeholder="192.168.1.10/24"></label>'+
+   '<label class="f"><span>网关</span><input id="wg"></label>'+
+   '<label class="f"><span>DNS（逗号分隔，可留空）</span><input id="wd"></label></div>'+
+   '<div id="wq" hidden><label class="f"><span>宽带账号</span><input id="wu"></label>'+
+   '<label class="f"><span>宽带密码</span><input id="wpass" type="password"></label></div>'+
+   '<div class="row"><button class="p" id="wsv">保存并应用</button>'+
+   '<span style="color:var(--dim);font-size:12px">会短暂断网（网络重载）</span></div><div class="msg" id="wm"></div></section>'+
+   '<section class="card"><h2>内网（LAN）</h2>'+
+   '<label class="f"><span>路由器内网地址 / 掩码</span><input id="li" placeholder="192.168.1.1/24"></label>'+
+   '<label class="f"><span>DHCP 服务</span><select id="ld"><option value="1">开启</option><option value="0">关闭</option></select></label>'+
+   '<div class="row"><button class="p" id="lsv">保存并应用</button></div><div class="msg" id="lm"></div></section>';
+  function sync(){var p=$("wp").value;$("ws").hidden=p!=="static";$("wq").hidden=p!=="pppoe";}
+  $("wp").onchange=sync;
+  rpc("uci","get",{config:"network"}).then(function(v){
+    var q=(v&&v.values)||{},w=q.wan||{},l=q.lan||{};
+    $("wp").value=w.proto||"dhcp";sync();
+    $("wi").value=first(w.ipaddr);$("wg").value=w.gateway||"";
+    $("wd").value=list(w.dns).join(",");$("wu").value=w.username||"";
+    $("li").value=first(l.ipaddr);
+  }).catch(function(e){toast(e.message);});
+  rpc("uci","get",{config:"dhcp"}).then(function(v){
+    var l=((v&&v.values)||{}).lan||{};$("ld").value=String(l.ignore==="1"?"0":"1");}).catch(function(){});
+  $("wsv").onclick=function(){
+    var b=this,p=$("wp").value,wv={proto:p};
+    if(p==="static"){if($("wi").value)wv.ipaddr=[$("wi").value.trim()];if($("wg").value)wv.gateway=$("wg").value.trim();
+      wv.dns=$("wd").value.split(",").map(function(x){return x.trim();}).filter(Boolean);}
+    if(p==="pppoe"){wv.username=$("wu").value.trim();wv.password=$("wpass").value;}
+    busy(b,true);
+    uciSave([["set",{config:"network",section:"wan",values:wv}]])
+      .then(function(){say($("wm"),"已保存并生效",true);})
+      .catch(function(e){say($("wm"),"失败："+e.message,false);})
+      .then(function(){busy(b,false);});
+  };
+  $("lsv").onclick=function(){
+    var b=this,v={};if($("li").value)v.ipaddr=[$("li").value.trim()];busy(b,true);
+    uciSave([["set",{config:"network",section:"lan",values:v}],
+             ["set",{config:"dhcp",section:"lan",values:{ignore:$("ld").value==="0"?"1":"0"}}]])
+      .then(function(){say($("lm"),"已保存并生效",true);})
+      .catch(function(e){say($("lm"),"失败："+e.message,false);})
+      .then(function(){busy(b,false);});
+  };
+}};
+
+
+/* ---- 无线：状态来自 luci-rpc getWirelessDevices / iwinfo；改动走 uci ---- */
+PAGES.wifi={mount:function(el){
+  el.innerHTML='<section class="card"><h2>无线状态</h2><div class="grid" id="wr"></div></section>'+
+   '<section class="card"><h2>无线中继（连上级 Wi-Fi）</h2>'+
+   '<label class="f"><span>上级 Wi-Fi 名称</span><input id="rs"></label>'+
+   '<label class="f"><span>上级 Wi-Fi 密码</span><input id="rk" type="password"></label>'+
+   '<label class="f"><span>用哪个频段去连</span><select id="rr"></select></label>'+
+   '<div class="row"><button class="p" id="rsv">保存并应用</button><button id="rscan">扫描附近 Wi-Fi</button></div>'+
+   '<div id="rlist" style="margin-top:10px"></div><div class="msg" id="rm"></div></section>';
+  var conf={};
+  rpc("luci-rpc","getWirelessDevices").then(function(w){
+    var ids=Object.keys(w||{});
+    $("wr").innerHTML=ids.length?ids.map(function(k){
+      var d=w[k]||{},c=d.config||{};
+      return '<div class="kv"><div class="k">'+esc(k)+(c.band?"（"+esc(c.band)+"）":"")+'</div>'+
+        '<div class="v">'+(d.up?"已启用":"未启用")+'</div><div class="k" style="margin-top:4px">信道 '+esc(c.channel||"?")+'</div></div>';
+    }).join(""):'<div class="kv"><div class="k">无线</div><div class="v">未发现</div></div>';
+    $("rr").innerHTML=ids.map(function(k){return '<option value="'+k+'">'+k+(w[k].config.band?"（"+esc(w[k].config.band)+"）":"")+'</option>';}).join("");
+  }).catch(function(e){toast(e.message);});
+  rpc("uci","get",{config:"wireless"}).then(function(v){
+    conf=(v&&v.values)||{};
+    Object.keys(conf).forEach(function(n){var x=conf[n];
+      if(x[".type"]==="wifi-iface"&&x.mode==="sta")$("rs").value=x.ssid||"";});
+  }).catch(function(e){toast(e.message);});
+  $("rsv").onclick=function(){
+    var b=this,ssid=$("rs").value.trim(),radio=$("rr").value;
+    if(!ssid){say($("rm"),"请先填写上级 Wi-Fi 名称",false);return;}
+    if(!radio){say($("rm"),"没有可用频段",false);return;}
+    busy(b,true);
+    var vals={device:radio,mode:"sta",ssid:ssid,network:"wwan",encryption:$("rk").value?"psk2":"none"};
+    if($("rk").value)vals.key=$("rk").value;
+    var sta=Object.keys(conf).filter(function(n){return conf[n][".type"]==="wifi-iface"&&conf[n].mode==="sta";})[0];
+    var chain=Promise.resolve();
+    if(sta){chain=chain.then(function(){return rpc("uci","set",{config:"wireless",section:sta,values:vals});});}
+    else{chain=chain.then(function(){return rpc("uci","add",{config:"wireless",type:"wifi-iface",name:"wwan",values:vals});})
+                 .then(function(){return rpc("uci","add",{config:"network",type:"interface",name:"wwan",values:{proto:"dhcp"}}).catch(function(){return null;});});}
+    chain.then(function(){return rpc("uci","set",{config:"wireless",section:radio,values:{disabled:"0"}});})
+     .then(function(){return rpc("uci","commit",{config:"wireless"});})
+     .then(function(){return rpc("uci","commit",{config:"network"});})
+     .then(function(){return rpc("uci","apply",{rollback:false,timeout:60});})
+     // 刻意**不**调 network.reload：uci apply 已经会 reload 关联服务，而 network.reload
+     // 在多数 ACL 面上是拒的（这台设备就是），调它只会让整条链看起来失败。
+     .then(function(){say($("rm"),"已保存并生效，稍等十几秒看状态",true);})
+     .catch(function(e){say($("rm"),"失败："+e.message,false);})
+     .then(function(){busy(b,false);});
+  };
+  $("rscan").onclick=function(){
+    var b=this;busy(b,true);
+    rpc("iwinfo","scan",{device:$("rr").value,results:{}}).then(function(r){
+      var l=(r&&r.results)||[];
+      $("rlist").innerHTML=l.length?l.map(function(n){return '<button data-s="'+esc(n.ssid||"")+'">'+esc(n.ssid||"(隐藏)")+" "+(n.signal||0)+"dBm</button>";}).join(" "):'<span style="color:var(--dim)">没扫到网络</span>';
+      Array.prototype.forEach.call($("rlist").querySelectorAll("button"),function(x){
+        x.onclick=function(){$("rs").value=x.getAttribute("data-s");};});
+    }).catch(function(e){
+      say($("rm"),"这台设备没有 iwinfo 对象（"+(e&&e.message||e)+"），直接手填名称即可。",false);})
+     .then(function(){busy(b,false);});
+  };
+}};
+
+
+/* ---- DHCP：租约来自 luci-rpc getDHCPLeases；池参数与静态绑定走 uci dhcp ---- */
+PAGES.dhcp={mount:function(el){
+  el.innerHTML='<section class="card"><h2>地址池</h2>'+
+   '<div class="grid"><label class="f"><span>起始地址</span><input id="ds"></label>'+
+   '<label class="f"><span>地址个数</span><input id="dn" inputmode="numeric"></label>'+
+   '<label class="f"><span>租期（分钟）</span><input id="dt" inputmode="numeric"></label></div>'+
+   '<div class="row"><button class="p" id="dsv">保存并应用</button></div><div class="msg" id="dsm"></div></section>'+
+   '<section class="card"><h2>MAC 静态绑定</h2>'+
+   '<div class="grid"><label class="f"><span>MAC</span><input id="bm" placeholder="00:11:22:33:44:55"></label>'+
+   '<label class="f"><span>固定 IP</span><input id="bi" placeholder="192.168.1.100"></label>'+
+   '<label class="f"><span>备注名</span><input id="bn" placeholder="可选"></label></div>'+
+   '<div class="row"><button class="p" id="bav">添加绑定</button></div><div class="msg" id="bam"></div>'+
+   '<table style="margin-top:12px"><thead><tr><th>MAC</th><th>IP</th><th>备注</th><th></th></tr></thead><tbody id="bl"></tbody></table></section>'+
+   '<section class="card"><h2>当前租约</h2><table><thead><tr><th>设备</th><th>IP</th><th>MAC</th></tr></thead><tbody id="dl2"></tbody></table></section>';
+  function paintBinds(v){
+    var q=(v&&v.values)||{},rows=[];
+    Object.keys(q).forEach(function(n){var x=q[n];
+      if(x[".type"]==="host"){rows.push("<tr class='mono'><td>"+esc(x.mac||"")+"</td><td>"+esc(x.ip||"")+
+        "</td><td>"+esc(x.name||"")+"</td><td><button data-x='"+n+"'>删除</button></td></tr>");}});
+    $("bl").innerHTML=rows.join("")||'<tr><td colspan="4" style="color:var(--dim)">暂无绑定</td></tr>';
+    Array.prototype.forEach.call($("bl").querySelectorAll("button"),function(b){
+      b.onclick=function(){
+        if(!confirm("删除这条绑定？"))return;
+        rpc("uci","delete",{config:"dhcp",section:b.getAttribute("data-x")})
+          .then(function(){return rpc("uci","commit",{config:"dhcp"});})
+          .then(function(){return rpc("uci","apply",{rollback:false,timeout:60});})
+          .then(function(){toast("已删除");load();})
+          .catch(function(e){toast("失败："+e.message);});
+      };});
+  }
+  function load(){
+    rpc("uci","get",{config:"dhcp"}).then(function(v){
+      var l=((v&&v.values)||{}).lan||{};
+      $("ds").value=l.start||"";$("dn").value=l.limit||"";$("dt").value=first(l.leasetime)||"";
+      paintBinds(v);}).catch(function(e){toast(e.message);});
+    rpc("luci-rpc","getDHCPLeases",{family:0}).then(function(r){
+      var ls=(r&&r.dhcp_leases)||[];
+      $("dl2").innerHTML=ls.map(function(l){return "<tr><td>"+esc(l.hostname||"未命名")+
+        "</td><td class='mono'>"+esc(l.ipaddr)+"</td><td class='mono'>"+esc(l.macaddr)+"</td></tr>";}).join("")||
+        '<tr><td colspan="3" style="color:var(--dim)">暂无租约</td></tr>';
+    }).catch(function(e){$("dl2").innerHTML='<tr><td colspan="3" style="color:var(--dim)">'+esc(e.message)+"</td></tr>";});
+  }
+  $("dsv").onclick=function(){
+    var b=this,v={start:$("ds").value.trim(),limit:$("dn").value.trim(),leasetime:$("dt").value.trim()};
+    busy(b,true);
+    uciSave([["set",{config:"dhcp",section:"lan",values:v}]])
+      .then(function(){say($("dsm"),"已保存并生效",true);})
+      .catch(function(e){say($("dsm"),"失败："+e.message,false);})
+      .then(function(){busy(b,false);});
+  };
+  $("bav").onclick=function(){
+    var b=this,mac=$("bm").value.trim().toLowerCase(),ip=$("bi").value.trim();
+    if(!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac)){say($("bam"),"MAC 格式不对（00:11:22:33:44:55）",false);return;}
+    if(!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)){say($("bam"),"IP 格式不对",false);return;}
+    busy(b,true);
+    var v={mac:mac,ip:ip};if($("bn").value.trim())v.name=$("bn").value.trim();
+    rpc("uci","add",{config:"dhcp",type:"host",values:v})
+      .then(function(){return rpc("uci","commit",{config:"dhcp"});})
+      .then(function(){return rpc("uci","apply",{rollback:false,timeout:60});})
+      .then(function(){say($("bam"),"已添加",true);$("bm").value="";$("bi").value="";$("bn").value="";load();})
+      .catch(function(e){say($("bam"),"失败："+e.message,false);})
+      .then(function(){busy(b,false);});
+  };
+  load();
+}};
+
+
+/* ---- 日志：走 ubus 的 log.read（rpcd 的日志对象）。
+   为什么不用 `file exec /sbin/logread`：OpenWrt 上它是 /usr/libexec/logread-ubox 的
+   符号链接，而那个目录不在 PATH 也不在 LuCI 的授权面里，file 对象会回
+   "Operation not supported"。log.read 是 rpcd 自己的方法，正是 LuCI 日志页用的那条路。 ---- */
+function logLine(x){
+  var t=x&&x.time?new Date(x.time).toISOString().replace("T"," ").slice(0,19):"";
+  var lv=x&&x.priority!=null?({86:" emerg",85:" alert",84:" crit",83:" err",82:" warn",
+    81:" note",80:" info",79:" debug"}[x.priority]||" "+x.priority):"";
+  return (t+" ["+(lv||"").trim()+"] "+(x&&x.msg||"")).replace(/\s+$/,"");
+}
+PAGES.log={mount:function(el){
+  el.innerHTML='<section class="card"><h2>系统日志</h2>'+
+   '<div class="row"><button class="p" id="lr">刷新</button>'+
+   '<label class="f" style="margin:0;flex:1"><span>过滤（子串，留空看全部）</span><input id="lf"></label>'+
+   '<label class="f" style="margin:0;width:110px"><span>行数</span><input id="ln" value="200" inputmode="numeric"></label>'+
+   '<label class="f" style="margin:0;width:110px"><span>最低级别</span><select id="lp">'+
+   '<option value="">全部</option><option value="err">err 及以上</option><option value="warn">warn 及以上</option>'+
+   '<option value="notice">notice 及以上</option><option value="info">info 及以上</option></select></label></div>'+
+   '<div class="msg" id="lm"></div><pre id="lx" style="margin-top:10px">读取中…</pre></section>';
+  function go(){
+    $("lx").textContent="读取中…";
+    var n=Math.min(parseInt($("ln").value,10)||200,2000);
+    rpc("log","read",{stream:false,lines:n}).then(function(r){
+      var items=(r&&r.log)||[];
+      var min=$("lp").value,cut={err:83,warn:82,notice:81,info:80}[min];
+      if(cut!=null)items=items.filter(function(x){return x.priority!=null&&x.priority<=cut;});
+      var f=$("lf").value.trim();
+      var lines=items.map(logLine);
+      if(f)lines=lines.filter(function(l){return l.indexOf(f)>=0;});
+      $("lx").textContent=lines.reverse().join("\n")||"(没有匹配的日志行)";
+    }).catch(function(e){
+      $("lx").textContent="";
+      $("lm").className="msg err";
+      $("lm").textContent="读不到系统日志："+e.message+"（需要 log.read 的 ACL）";
+    });
+  }
+  $("lr").onclick=go;go();
+}};
+
+/* ---- 存储：挂载表来自 file read /proc/mounts（LuCI 已授权）；容量来自 df ---- */
+PAGES.disk={mount:function(el){
+  el.innerHTML='<section class="card"><h2>挂载点</h2>'+
+   '<table><thead><tr><th>设备</th><th>挂载点</th><th>类型</th></tr></thead><tbody id="mt"></tbody></table></section>'+
+   '<section class="card"><h2>容量</h2><table><thead><tr><th>挂载点</th><th>总量</th><th>已用</th><th>可用</th></tr></thead>'+
+   '<tbody id="dv"><tr><td colspan="4" style="color:var(--dim)">读取中…</td></tr></tbody></table>'+
+   '<div class="msg" id="dm"></div></section>';
+  rpc("file","read",{path:"/proc/mounts"}).then(function(r){
+    var ls=((r&&r.data)||"").trim().split("\n").map(function(l){var f=l.split(/\s+/);
+      return {dev:f[0],mnt:f[1],type:f[2]};})
+      .filter(function(x){return x.mnt&&["proc","sysfs","devtmpfs","tmpfs","devpts","cgroup",
+        "debugfs","mqueue","hugetlbfs"].indexOf(x.type)<0&&x.mnt.indexOf("/dev/")!==0;});
+    $("mt").innerHTML=ls.map(function(x){return "<tr class='mono'><td>"+esc(x.dev)+"</td><td>"+esc(x.mnt)+
+      "</td><td>"+esc(x.type)+"</td></tr>";}).join("")||'<tr><td colspan="3" style="color:var(--dim)">暂无</td></tr>';
+  }).catch(function(e){$("mt").innerHTML='<tr><td colspan="3" style="color:var(--dim)">'+esc(e.message)+"</td></tr>";});
+  rpc("file","exec",{command:"/bin/df",params:["-k"]}).then(function(r){
+    var ls=((r&&r.stdout)||"").trim().split("\n").slice(1).map(function(l){
+      var f=l.trim().split(/\s+/);return {mnt:f[5],tot:f[1],use:f[2],avail:f[3]};}).filter(function(x){return x.mnt;});
+    $("dv").innerHTML=ls.map(function(x){return "<tr><td class='mono'>"+esc(x.mnt)+"</td><td>"+esc(x.tot)+
+      "K</td><td>"+esc(x.use)+"K</td><td>"+esc(x.avail)+"K</td></tr>";}).join("")||
+      '<tr><td colspan="4" style="color:var(--dim)">暂无</td></tr>';
+  }).catch(function(e){
+    $("dv").innerHTML='<tr><td colspan="4" style="color:var(--dim)">df 不可用</td></tr>';
+    $("dm").className="msg err";
+    $("dm").textContent="读容量失败："+e.message+"。需要在 acl.d 放行 /bin/df。";
+  });
+}};
+
+
+/* ---- 服务：/etc/rc.d 里的 S* 链接 = 已注册的开机自启项；启停与自启都走 init 脚本 ---- */
+PAGES.svc={mount:function(el){
+  el.innerHTML='<section class="card"><h2>服务</h2>'+
+   '<div class="row"><button class="p" id="sr">刷新</button>'+
+   '<label class="f" style="margin:0;flex:1"><span>过滤服务名</span><input id="sf"></label></div>'+
+   '<div class="msg" id="sm"></div>'+
+   '<table style="margin-top:10px"><thead><tr><th>服务</th><th>运行</th><th>开机自启</th><th>操作</th></tr></thead>'+
+   '<tbody id="sl"><tr><td colspan="4" style="color:var(--dim)">读取中…</td></tr></tbody></table></section>';
+  var all=[];
+  function run(svc,act){
+    // init 脚本按约定：参数不带路径，先 -x 再给动作（与 rc.common 一致）
+    rpc("file","exec",{command:"/etc/init.d/"+svc,params:["-x",act]}).then(function(){
+      say($("sm"),svc+" "+act+" 已执行",true);return load();
+    }).catch(function(e){say($("sm"),svc+" "+act+" 失败："+e.message,false);});
+  }
+  function paint(){
+    var f=$("sf").value.trim();
+    var ls=all.filter(function(x){return !f||x.name.indexOf(f)>=0;});
+    $("sl").innerHTML=ls.map(function(x){
+      return "<tr><td class='mono'>"+esc(x.name)+"</td><td>"+(x.enabled?"自启":"—")+"</td><td>"+
+        "<button data-a='"+esc(x.enabled?"disable":"enable")+"' data-s='"+esc(x.name)+"'>"+(x.enabled?"停自启":"开自启")+
+        "</button></td><td><button data-a='start' data-s='"+esc(x.name)+"'>启动</button> "+
+        "<button data-a='stop' data-s='"+esc(x.name)+"'>停止</button> "+
+        "<button data-a='restart' data-s='"+esc(x.name)+"'>重载</button></td></tr>";}).join("")||
+      '<tr><td colspan="4" style="color:var(--dim)">没有匹配的服务</td></tr>';
+    Array.prototype.forEach.call($("sl").querySelectorAll("button"),function(b){
+      b.onclick=function(){
+        var s=b.getAttribute("data-s"),a=b.getAttribute("data-a");
+        if((a==="stop"||a==="restart")&&!confirm("确定对 "+s+" 执行 "+a+"？"))return;
+        if(a==="enable"||a==="disable"){if(!confirm("确定修改 "+s+" 的开机自启？"))return;}
+        run(s,a);};});
+  }
+  function load(){
+    rpc("file","list",{path:"/etc/rc.d"}).then(function(r){
+      var names=((r&&r.entries)||[]).map(function(e){
+        var n=typeof e==="string"?e:(e&&e.name);return n||"";})
+        .filter(function(n){return /^S\d+/.test(n);})
+        .map(function(n){return n.replace(/^S\d+/,"");})
+        .filter(function(n){return n&&n!=="molly";}).sort();
+      // 自启状态就是「有没有 S* 链接」——这里全都在 rc.d 里，所以都是自启的；
+      // 关掉自启会移除链接，因此要减去当前不存在的那些（list 本身就是真相）。
+      all=names.map(function(n){return {name:n,enabled:true};});
+      paint();
+    }).catch(function(e){
+      $("sl").innerHTML='<tr><td colspan="4" style="color:var(--dim)">'+esc(e.message)+"</td></tr>";});
+  }
+  $("sr").onclick=load;$("sf").oninput=paint;load();
+}};
+
+/* ---- 网络诊断：ping / traceroute / nslookup 走 file exec（acl.d 授权） ---- */
+PAGES.diag={mount:function(el){
+  el.innerHTML='<section class="card"><h2>网络诊断</h2>'+
+   '<div class="grid"><label class="f"><span>目标主机</span><input id="dh" value="223.5.5.5"></label>'+
+   '<label class="f"><span>工具</span><select id="dt2"><option value="ping">ping</option>'+
+   '<option value="traceroute">traceroute</option><option value="nslookup">nslookup</option>'+
+   '<option value="wget">wget（取一个 URL）</option></select></label>'+
+   '<label class="f"><span>次数 / 参数（可选）</span><input id="da" placeholder="ping 填 4"></label></div>'+
+   '<div class="row"><button class="p" id="dg">执行</button>'+
+   '<span style="color:var(--dim);font-size:12px">最长约 30 秒</span></div>'+
+   '<div class="msg" id="dm2"></div><pre id="dx" style="margin-top:10px">结果会显示在这里。</pre></section>';
+  var BIN={ping:"/bin/ping",traceroute:"/usr/sbin/traceroute",nslookup:"/usr/bin/nslookup",wget:"/usr/bin/wget"};
+  $("dg").onclick=function(){
+    var b=this,tool=$("dt2").value,host=$("dh").value.trim(),extra=$("da").value.trim();
+    if(!host){say($("dm2"),"请填目标主机",false);return;}
+    var args=[tool==="ping"?-4:null,tool==="ping"?-c:null,tool==="ping"?(extra||"4"):null,tool==="traceroute"?"-n":null,
+      tool==="nslookup"?"-type=A":null,tool==="wget"?null:null,host].filter(function(x){return x;});
+    if(tool==="wget")args=["-O","-","--timeout=10",host];
+    if(tool==="ping")args=["-c",extra||"4",host];
+    busy(b,true);$("dx").textContent="执行中…";
+    rpc("file","exec",{command:BIN[tool],params:args}).then(function(r){
+      var out=((r&&r.stdout)||"")+((r&&r.stderr)||"");
+      $("dx").textContent=out.trim()||"(无输出，退出码 "+(r&&r.code)+")";
+    }).catch(function(e){
+      $("dx").textContent="";
+      say($("dm2"),"执行失败："+e.message+"。该命令需要在 acl.d 放行（见 molly.json）。",false);
+    }).then(function(){busy(b,false);});
+  };
+}};
+
+
+/* ---- 备份与恢复：/etc/config 逐文件读写。
+   刻意**不做**固件刷写（sysupgrade）：那是不可逆操作，不该由一个网页表单触发。 ---- */
+PAGES.bk={mount:function(el){
+  el.innerHTML='<section class="card"><h2>配置备份</h2>'+
+   '<p style="color:var(--dim);margin:0 0 10px">导出 /etc/config 下的配置文件。'+
+   '恢复会<strong>覆盖</strong>同名文件并 reload_config，请确认后再操作。</p>'+
+   '<div class="row"><button class="p" id="be">导出到下方</button>'+
+   '<button id="bc">复制</button><button id="bd">下载 .txt</button></div>'+
+   '<div class="msg" id="bem"></div>'+
+   '<textarea id="bx" style="width:100%;height:240px;margin-top:10px;font:12px ui-monospace,monospace;'+
+   'background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:10px" '+
+   'placeholder="点「导出」后这里会出现备份内容"></textarea></section>'+
+   '<section class="card"><h2>配置恢复</h2>'+
+   '<p style="color:var(--dim);margin:0 0 10px">把上一步导出的内容粘回来，逐个文件写回 '+
+   '/etc/config/<strong>同名文件</strong>。同名 = 覆盖，不会删除别的文件。</p>'+
+   '<label class="f"><span>要恢复的配置（文件名）</span><input id="rn" placeholder="network"></label>'+
+   '<div class="row"><button class="d" id="br">恢复并生效</button></div>'+
+   '<div class="msg" id="brm"></div></section>'+
+   '<section class="card"><h2>固件升级</h2>'+
+   '<p style="color:var(--dim);margin:0">刻意不在这里做：刷固件不可逆，值得走 sysupgrade 命令或'+
+   'LuCI 的升级页（那里有校验与中断保护）。</p></section>';
+  var SEP="\n##### molly-config: ";
+  function name(n){return String(n).split("/").pop();}
+  function walk(v,base,out){
+    base=base||"";out=out||[];
+    Object.keys(v||{}).forEach(function(k){
+      if(k.charAt(0)===".")return;
+      var val=v[k];
+      if(val&&typeof val==="object"&&!Array.isArray(val))walk(val,base?base+"/"+k:k,out);
+      else out.push(SEP+(base?base+"/":"")+k+"="+(Array.isArray(val)?val.join(" "):val));
+    });
+    return out;
+  }
+  $("be").onclick=function(){
+    var b=this;busy(b,true);$("bx").value="读取中…";
+    rpc("file","list",{path:"/etc/config"}).then(function(r){
+      var ns=((r&&r.entries)||[]).map(name).filter(function(n){return n&&n.indexOf(".conf")<0||
+        n.indexOf(".conf")===n.length-5;});
+      if(!ns.length)ns=((r&&r.entries)||[]).map(name).filter(Boolean);
+      var chain=Promise.resolve(["# molly 配置备份  "+new Date().toISOString()]);
+      ns.forEach(function(n){
+        chain=chain.then(function(acc){
+          return rpc("file","read",{path:"/etc/config/"+n})
+            .then(function(x){acc.push(SEP+"file:"+n);acc.push((x&&x.data)||"");return acc;})
+            .catch(function(){return acc;});
+        });
+      });
+      return chain.then(function(acc){$("bx").value=acc.join("\n");$("bx").select();
+        say($("bem"),"已导出 "+ns.length+" 个文件",true);});
+    }).catch(function(e){say($("bem"),"导出失败："+e.message,false);})
+      .then(function(){busy(b,false);});
+  };
+  $("bc").onclick=function(){
+    var t=$("bx");t.select();
+    if(navigator.clipboard)navigator.clipboard.writeText(t.value).then(function(){say($("bem"),"已复制",true);});
+    else{try{document.execCommand("copy");say($("bem"),"已复制",true);}catch(e){say($("bem"),"复制失败，请手动全选",false);}}
+  };
+  $("bd").onclick=function(){
+    var t=$("bx");if(!t.value.trim()){say($("bem"),"先导出",false);return;}
+    var b=document.createElement("a");
+    b.href="data:text/plain;charset=utf-8,"+encodeURIComponent(t.value);
+    b.download="molly-config-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"")+".txt";
+    b.click();
+  };
+  $("br").onclick=function(){
+    var name0=$("rn").value.trim(),text=$("bx").value;
+    if(!name0){say($("brm"),"请填要恢复的配置名",false);return;}
+    if(!/^[\w.-]+$/.test(name0)){say($("brm"),"配置名只能用字母数字 . _ -",false);return;}
+    var lines=text.split("\n"),parts=[],cur=null;
+    lines.forEach(function(l){
+      if(l.indexOf(SEP+"file:")===0){cur={name:l.slice((SEP+"file:").length),body:[]};parts.push(cur);}
+      else if(cur)cur.body.push(l);
+    });
+    var target=parts.filter(function(p){return p.name===name0;})[0];
+    if(!target){say($("brm"),"备份里没有 "+name0+" 这一段",false);return;}
+    if(!confirm("将覆盖 /etc/config/"+name0+" 并 reload_config，网络会短暂中断。确定？"))return;
+    var b=this;busy(b,true);
+    rpc("file","write",{path:"/etc/config/"+name0,data:target.body.join("\n").replace(/\n+$/,"")+"\n",mode:420})
+      .then(function(){return rpc("file","exec",{command:"/sbin/reload_config",params:[]})
+        .catch(function(){return null;});})
+      .then(function(){say($("brm"),name0+" 已恢复并生效",true);})
+      .catch(function(e){say($("brm"),"恢复失败："+e.message,false);})
+      .then(function(){busy(b,false);});
+  };
+}};
+
+/* ---- 登录 / 退出：一律走 /auth（与新手版、专家版共用同一个会话） ---- */
+function loginView(){
+  $("login").hidden=false;
+  $("lg").onclick=function(){
+    var b=this;busy(b,true);
+    var f=new URLSearchParams();
+    f.set("username",$("lu").value);f.set("password",$("lp").value);f.set("next",location.pathname+location.hash);
+    fetch("/auth/login",{method:"POST",body:f,redirect:"follow"}).then(function(r){
+      var ok=r.url.indexOf("auth_error")<0;
+      if(ok){location.href=r.url;}else{say($("lm"),"用户名或密码不对",false);busy(b,false);}
+    }).catch(function(e){say($("lm"),"登录失败："+e.message,false);busy(b,false);});
+  };
+  $("lp").addEventListener("keydown",function(e){if(e.key==="Enter")$("lg").click();});
+}
+$("logout").onclick=function(){
+  fetch("/auth/logout",{method:"POST",redirect:"follow"}).then(function(){location.href="/lite/";});
+};
+route();
+if(!SID){loginView();}
+})();
+</script>
+</body>
+</html>

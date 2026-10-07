@@ -51,6 +51,6 @@ Thumbs.db
 *.log
 logs/
 
-# gomolly：从设备抄入的前端资源（tools/embed-assets.sh 生成，不进仓库）
-gomolly/internal/webassets/luci-static/*
-!gomolly/internal/webassets/luci-static/.gitkeep
+# molly：从设备抄入的前端资源（tools/embed-assets.sh 生成，不进仓库）
+molly/internal/webassets/luci-static/*
+!molly/internal/webassets/luci-static/.gitkeep

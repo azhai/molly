@@ -1,0 +1,67 @@
+{
+	"molly-expert-ui": {
+		"description": "Grant the self-built expert web UI the commands it needs. Kept in one file so it is obvious what this deployment adds on top of LuCI's own rules; LuCI's own exec grants (reboot, sysupgrade, ksmbd...) are untouched.",
+		"read": {
+			"file": {
+				"/proc/mounts": [
+					"read"
+				],
+				"/proc/partitions": [
+					"read"
+				],
+				"/etc/rc.d": [
+					"list"
+				],
+				"/etc/rc.d/*": [
+					"list",
+					"read"
+				],
+				"/etc/config": [
+					"list"
+				],
+				"/etc/config/*": [
+					"read"
+				],
+				"/bin/df": [
+					"exec"
+				],
+				"/bin/ping": [
+					"exec"
+				],
+				"/usr/sbin/traceroute": [
+					"exec"
+				],
+				"/usr/bin/nslookup": [
+					"exec"
+				],
+				"/usr/bin/wget": [
+					"exec"
+				]
+			},
+			"ubus": {
+				"log": [
+					"read"
+				]
+			}
+		},
+		"write": {
+			"file": {
+				"/etc/init.d/*": [
+					"exec"
+				],
+				"/etc/config/*": [
+					"write"
+				],
+				"/sbin/reload_config": [
+					"exec"
+				]
+			},
+			"ubus": {
+				"network": [
+					"reload",
+					"status"
+				]
+			}
+		}
+	}
+}

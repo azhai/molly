@@ -11,7 +11,7 @@ molly 的测试按三层组织，每层解决不同问题、判据也不同。**
 | 集成 | `tests/http_smoke.sh` | 整条链路：监听 → 请求解析 → 路由 → handler → 响应字节（真起 server、真 curl） | `通过 N，失败 0`（当前 265 项） | 不覆盖真机 `libuci`/`libubus` 行为 |
 | 接口 | `tests/http_smoke.sh` + `tests/cgi_smoke.sh` 里按接口分节的断言（`/ubus` 两种 JSON-RPC 形态、**入站 ACL 的前置校验（对象不存在 `-32000` 优先于 ACL、会话销毁后 fail-closed `-32002`、acl.d 与 grant 合并进同一张 ACL 表）**、`session` 对象十方法、`luci-rpc` 的 `getBoardJSON`/`getDHCPLeases`/`getDUIDHints`（family 过滤与 blobmsg 的类型缺省行为、duid%iaid 去重）、`file` 的 `read`+`write`+`remove`+`md5`+`stat`/`lstat`/`list`+`exec`（PATH 查找 4、env+会话 6、两层 ACL：路径对象与整条命令行串）（含**各方法权限名不同**的断言：只授 read/write 时 stat/list 被 6 拒、补授 list 后放行；base64 写读、append 不截断、md5 对目录 8、递归删除、`list` 的 target）、`uci` 的 `configs`/`get`/`changes`/`state`/`commit`/`revert` 、`set`/`add`/`delete`/`rename`/`order` 与 apply 系（`confirm`/`rollback` 的 5、`apply` 的 4）、`/cgi-bin/luci` 的 action 分派（含 **`depends.acl` 裁树与登录判定**：无 cookie → 403 + `X-LuCI-Login-Required: yes` + 登录提示页正文与路径、哨兵会话（有会话但缺组）→ 404、只读会话 → 200 + `readonly=yes`、撤销 write 后恢复可见）、**`/ubus/subscribe` 的 SSE**（ACL 点 `:subscribe` → 未授权回 `{"code":-13}`、未知对象回 `{"code":4}`、授权后 `text/event-stream`、假事件源推一条后收到 `event:`/`data:` 帧）、CGI 环境与响应头透传） | 对外契约：状态码、正文形状、错误码、`Content-Type`、CGI 变量、会话生命周期 | 同上（cgi_smoke 当前 30 项）；契约条款钉在断言里——改契约必须先改断言 | 不覆盖真机 acl.d 的内容与 golden（fixture 是裁剪版 + 一个测试专用组）；登录**表单**与 `Set-Cookie` 属 `--luci-cgi` 的 ucode 侧（这里只到 403 + 提示页）；`state`/`commit`/`revert` 的真行为只在 linux 上 |
 | 语义回归（离线取证） | `.ai-memory/r8_probe.py` | dispatcher 与上游 luci 提交 `d6167ea` 的语义是否一致 | `不一致条目: 0 / 11` | 只覆盖探针列出的 11 条 + 真实样本统计；不是门禁 |
-| 真机验收（在设备上跑） | `tests/device_smoke.sh` + `tests/golden.sh` + `gomolly/tests/device_luci.sh` | 只在设备上才成立的那些：`ubus -v list` 里有 molly 的四对象与 `molly.probe`、真实 `/etc/shadow`+`crypt` 登录、uci 写路径（**只碰自建的 `/etc/config/mollytest`**）、`/ubus/subscribe` 真收帧、rpcd 与 molly 的**逐字段 golden 对比**（`/ubus` 探针 + HTTP 面）、以及 **T1 桥接承接原版 LuCI 的端到端验收**（登录→页面→静态→RPC→批量→并发，见 `gomolly/tests/device_luci.sh`） | device_smoke 的 **HTTP 面 / crypt 登录 / SSE 三节须全绿**；`golden.sh` 须为「差异 0 或只剩 §7.1 列出的已记录偏离」；`device_luci.sh` 须「失败 0」；§1（ubus 列表格式）与 §7（RSS 崩溃）仍**不能**以「失败 0」为准——见下 §7.1 | 不覆盖并发压测曲线与 RSS 曲线（`--rss` 只报数，不判） |
+| 真机验收（在设备上跑） | `tests/device_smoke.sh` + `tests/golden.sh` + `molly/tests/device_luci.sh` | 只在设备上才成立的那些：`ubus -v list` 里有 molly 的四对象与 `molly.probe`、真实 `/etc/shadow`+`crypt` 登录、uci 写路径（**只碰自建的 `/etc/config/mollytest`**）、`/ubus/subscribe` 真收帧、rpcd 与 molly 的**逐字段 golden 对比**（`/ubus` 探针 + HTTP 面）、以及 **T1 桥接承接原版 LuCI 的端到端验收**（登录→页面→静态→RPC→批量→并发，见 `molly/tests/device_luci.sh`） | device_smoke 的 **HTTP 面 / crypt 登录 / SSE 三节须全绿**；`golden.sh` 须为「差异 0 或只剩 §7.1 列出的已记录偏离」；`device_luci.sh` 须「失败 0」；§1（ubus 列表格式）与 §7（RSS 崩溃）仍**不能**以「失败 0」为准——见下 §7.1 | 不覆盖并发压测曲线与 RSS 曲线（`--rss` 只报数，不判） |
 
 ## 2. 单元测试
 
@@ -185,7 +185,7 @@ molly 缺陷**，不能直接以「失败 0 / 差异 0」判定。其中第 2 �
    （T1 桥接出的页面头与原厂一致），另两条见第 4 项。
 3. **`device_smoke.sh` §7 `--rss` 崩溃（脚本缺陷）**：line 198 `"...$rss（目标…"` 里全角括号
    紧跟变量名，`set -uo pipefail` 下被当成 `$rss（目标…` 变量 → `rss: unbound variable`。
-   RSS 改为另行单测（实测 gomolly `VmRSS 10,056 kB`）。
+   RSS 改为另行单测（实测 molly `VmRSS 10,056 kB`）。
 4. **静态面的两条真实偏离（曾记为 R7，2026-10-07 已对齐）**：由 `golden.sh` 的 HTTP 面查出。
    当时 `.html` 带 charset、404 是 `text/plain`，都与 uhttpd 不一致。现在两版实现（Odin
    `src/http/mime.odin` + `src/handlers/static.odin`、Go `internal/httpx/mime.go` +
@@ -197,8 +197,8 @@ molly 缺陷**，不能直接以「失败 0 / 差异 0」判定。其中第 2 �
    - **404 是 `text/html`**，正文 `<h1>Not Found</h1>The requested URL <路径> was not found
      on this server.`。**故意偏离**：uhttpd 把请求路径原样回显，molly 做 HTML 转义（把未转义
      的请求数据拼进 HTML 是 XSS 面）。正文不参与 golden。
-   契约断言同步更新（`tests/http_smoke.sh`、`src/http/mime_test.odin`、`gomolly/tests/smoke.sh`、
-   `gomolly/internal/httpx/uri_test.go`，并各加一条 404 Content-Type 断言）。
+   契约断言同步更新（`tests/http_smoke.sh`、`src/http/mime_test.odin`、`molly/tests/smoke.sh`、
+   `molly/internal/httpx/uri_test.go`，并各加一条 404 Content-Type 断言）。
    对齐后 golden 的 **HTTP 面 7 对全 ok**，只剩 `/ubus` 面 §9.3 的已记录偏离（3 处）。
 
 `device_smoke.sh` 的 **HTTP 面（§2）/ crypt 登录（§3）/ SSE（§5）三节**在真机上是可用的判据，
