@@ -30,8 +30,13 @@ Supersedes [ADR 0002](0002-api-first-own-web-ui.md)（API-first + 自研 Mithril
 2. **molly 复刻 uhttpd 侧的接线**，分两步落地（先复刻、后优化）：
    - **T1（先做）**：molly 承接 `/cgi-bin/luci` 前缀，按 CGI 规范构造环境（`SCRIPT_NAME` /
      `PATH_INFO` / `REQUEST_METHOD` / `CONTENT_LENGTH` / `HTTP_*` …），以子进程方式执行
-     `/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc`，把 stdout 作为响应流回。等价于上游的 CGI 兜底形态，
-     零新增 C 绑定。
+     **CGI 兜底脚本**，把 stdout 作为响应流回。零新增 C 绑定。
+     **目标路径必须是兜底脚本，不是 `uhttpd.uc`**：`uhttpd.uc` 是 uhttpd 的**进程内模板**
+     （首行 `{%`，定义 `global.handle_request`，收发走 uhttpd 注入的 `uhttpd.recv/send`），
+     单独 execve 它必然 `Syntax error: Expecting expression`——2026-10-07 真机踩过，
+     **不要照抄本 ADR 早期写的那条 `/usr/share/ucode/luci/uhttpd.uc`**。应填
+     `/www/cgi-bin/luci`（LuCI 装的 `#!/usr/bin/env ucode` 脚本）；给 molly 单独一份
+     docroot 时同理（设备上用的是 `/www-molly/cgi-bin/luci`）。
    - **T2（后续，可选）**：绑定 `libucode`（VM API）把 `uhttpd.uc` 跑在同一进程里，并自己实现
      `uhttpd.recv` / `uhttpd.send` 两个原语——这才是 uhttpd `ucode_prefix` 的进程内形态；等 T1 跑通、
      需要压掉 fork 开销时再做。
@@ -44,6 +49,21 @@ Supersedes [ADR 0002](0002-api-first-own-web-ui.md)（API-first + 自研 Mithril
    但 P3 不再需要它参与请求处理；`docs/architecture.md` 要标注它的当前状态。
 6. **前端的取舍回到上游**：不写自研 Mithril 界面（ADR 0002 作废），继续用 LuCI 自带的浏览器端资源
    （`/luci-static/resources/view/*.js` 由 molly 的静态文件路径送出即可）。
+
+## 真机核对（2026-10-07，ImmortalWrt 25.12.2 / 192.168.1.1）
+
+- **Lua 已经不在链路上**（原本以为 `template` 那几条要 Lua）：设备上无 `lua` 二进制、无 lua 包，
+  `.lua` 与 `.htm` 文件数都是 **0**；menu.d 里 `type: template` 只剩 **1 条**（概览页
+  `admin/status/overview` → `admin_status/index`），其 `admin_status/index.ut` 存在 → 走 ucode
+  模板，**`render_lua` 是死路径**。唯一残留的「lua」是 `/usr/lib/lua/luci/i18n/*.lmo`——那是
+  **翻译数据**，由 ucode 的 `load_catalog` 直接读（`dispatcher.uc:110`），不是运行时。
+- **前端资源可以自带**：`gomolly/internal/webassets/` + `-tags embed_assets` 能把
+  `/www/luci-static`（142 文件 / 1.7 MB）编进二进制作**兜底**，实测空 docroot 下界面照常
+  （`device_luci.sh` 通过 47 / 失败 0 + 真实浏览器渲染无报错）。渲染侧（ucode + menu.d +
+  acl.d，共约 216 KB）仍必须留在设备上——ucode 从文件系统读它们。
+- **静态面已逐条对齐 uhttpd**（R7 收尾）：MIME 不带 charset、`.js` = `text/javascript`、
+  表外 `application/octet-stream`、404 为 `text/html` + `Not Found` 正文。golden 的 HTTP 面
+  因此 7 对全 ok。
 
 ## Options considered
 
@@ -71,7 +91,14 @@ Supersedes [ADR 0002](0002-api-first-own-web-ui.md)（API-first + 自研 Mithril
 
 ## Follow-ups
 
-- [ ] P3-8″-T1：`/cgi-bin/luci` → 子进程 ucode 的桥接 + CGI 环境构造；拿原厂 uhttpd 的响应做 golden 对比。
+- [x] P3-8″-T1：`/cgi-bin/luci` → 子进程 ucode 的桥接 + CGI 环境构造。Odin 版
+      （`src/handlers/cgi_exec.odin`）与 Go 版（`gomolly/internal/handlers/cgi.go`）逐条对齐；
+      **2026-10-07 Go 版真机验收完成**（登录 → 9 页 → 5 静态资源 → 6 条 RPC → 12 条批量 →
+      真实浏览器 4 页无报错 → 120 并发无 503，详见 `go-port-plan.md` 同日条目）。
+      **逐头 golden 也已补上**：`tests/golden.sh` 的 compare 新增 **HTTP 面**（原厂 uhttpd(:80)
+      vs molly(:8080)，只比状态码 + 契约头，见那里的 `norm_http`），`/cgi-bin/luci/` 与
+      `/cgi-bin/luci/admin/status/overview` 判 **ok**；顺带查出两条静态头偏离（`.html` 的
+      charset、404 的 `text/html`），记为 R7，见 `docs/testing.md` §7.1 第 4 条。
 - [ ] 设备侧核对：`uci get uhttpd.main.ucode_prefix`、`ls -l /usr/bin/ucode /usr/share/ucode/luci/`、
       `opkg list-installed | grep -E 'ucode|luci-base|lua'`（确认接线与「无 Lua」现状）。
 - [ ] 在 `docs/architecture.md` 标注 Odin dispatcher 的「保留但不在请求路径」状态与两种模式的启用条件。

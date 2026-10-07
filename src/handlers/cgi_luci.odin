@@ -19,7 +19,31 @@ import "molly:luci"
 // **登录取会话本身**仍不在这里：上游由 dispatcher 渲染登录页，molly 按 ADR 0003
 // 把整个前缀交给设备 ucode（`--luci-cgi`），这里只认既有会话。
 
-LUCI_PREFIX :: "/cgi-bin/luci"
+// 专家版（LuCI）的 URL 前缀。默认是上游形态 "/cgi-bin/luci"，`--luci-prefix` 可改
+// （本仓部署把它放到 "/pro"，把 "/" 留给新手版）。
+//
+// 为什么是变量而不是常量：这一个值同时决定三件事——**路由判据**、CGI 的
+// **SCRIPT_NAME**、以及 **PATH_INFO 的切分点**。三者必须同源，散着写就会出现
+// 「路由换了、SCRIPT_NAME 没换」这种 ucode 侧全错的组合（dispatcher 的 build_url
+// 就是拿 SCRIPT_NAME 拼所有页面 URL 的）。
+LUCI_PREFIX := "/cgi-bin/luci"
+
+// 设置专家版前缀。返回 false 表示形态不合法（要 '/' 开头、不以 '/' 结尾、不含空白
+// 与 '?'/'#'）。传入的字符串由调用方保证生命周期（main 直接引用 os.args 的切片，
+// argv 内存活到进程结束）。
+luci_set_prefix :: proc(p: string) -> bool {
+	if len(p) < 2 || p[0] != '/' || p[len(p) - 1] == '/' {
+		return false
+	}
+	for c in p {
+		switch c {
+		case ' ', '\t', '?', '#':
+			return false
+		}
+	}
+	LUCI_PREFIX = p
+	return true
+}
 
 serve_luci :: proc(s: ^http.Server, conn: ^http.Connection, req: ^http.Request, path: string) -> bool {
 	alloc := mem.dynamic_arena_allocator(&conn.arena)
@@ -90,9 +114,13 @@ serve_luci :: proc(s: ^http.Server, conn: ^http.Connection, req: ^http.Request, 
 	return false
 }
 
-// 从 `Cookie` 头里取 LuCI 的会话 id。上游按 `HTTPS` 二选一（`sysauth_https` /
-// `sysauth_http`，dispatcher.uc:963-966）——这里两个都收，谁在就用谁，省掉对
-// 代理链的猜测。cookie 之间用 ';' 分隔，取不到就回空串（调用方按「无会话」处理）。
+// 从 `Cookie` 头里取会话 id。三种名字都收：
+//   - `sysauth_molly`：molly 侧 dispatcher 补丁下发的专属名（与 :80 的
+//     `sysauth_http` 并列共存，避免同主机同路径的 cookie 互相覆盖）；
+//   - `sysauth_https` / `sysauth_http`：上游按 `HTTPS` 二选一
+//     （dispatcher.uc:963-966），以及未打补丁的形态。
+// 谁在就用谁，省掉对代理链与补丁状态的猜测。cookie 之间用 ';' 分隔，取不到回空串
+// （调用方按「无会话」处理）。新手版也用这个函数，于是两套界面共用同一个登录。
 @(private)
 luci_sid_from_cookie :: proc(req: ^http.Request) -> string {
 	header, has_header := http.header_value(req, "Cookie")
@@ -100,7 +128,7 @@ luci_sid_from_cookie :: proc(req: ^http.Request) -> string {
 		return ""
 	}
 
-	for name in ([]string{"sysauth_https", "sysauth_http"}) {
+	for name in ([]string{"sysauth_molly", "sysauth_https", "sysauth_http"}) {
 		rest := header
 		for len(rest) > 0 {
 			part: string

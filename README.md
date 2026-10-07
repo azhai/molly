@@ -69,8 +69,14 @@ curl -s               http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview  
 
 配置要点：
 
+- **两套界面**（`docs/interfaces.md` §3.1）：
+  - **专家版** = 完整的 LuCI，挂在 `--luci-prefix` 给的路径上（默认 `/cgi-bin/luci`；本站部署用 `/pro`）；
+  - **新手版** = `/`，一页只放最常见的六件事（系统状态、实时负载图、重启、内外网设置、无线中继、
+    DHCP 分配与 MAC 绑定）。页面是**编译进二进制的单文件**（`src/novice/assets/index.html`），
+    数据面全走既有 `/ubus`——没有新手版专属 API，也没有第二套鉴权；
+  - 两者**共用同一个会话 cookie**，所以任一边登录过，另一边直接可用。
 - `--menu-dir` 默认 `/usr/share/luci/menu.d`；macOS 上要显式指向 `tests/fixtures/menu.d`。
-- `--luci-cgi` 非空时，`/cgi-bin/luci` **整个前缀**交给该子进程执行；设备上填
+- `--luci-cgi` 非空时，**专家版前缀**整体交给该子进程执行；设备上填
   `"/www/cgi-bin/luci"`（LuCI 装的 CGI 兜底脚本，`#!/usr/bin/env ucode`，复刻 uhttpd 的 CGI 形态，
   ADR 0003）。**别填** `"/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc"`：那是 uhttpd **进程内**
   加载的 ucode 模板（首行 `{%`），当脚本跑必然语法错、每个请求都回

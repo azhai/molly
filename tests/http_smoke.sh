@@ -82,8 +82,20 @@ view_of() {
 echo "== 基本响应 =="
 out=$(curl -s -D- "$BASE/")
 check "状态行" "HTTP/1.1 200 OK" "$(printf '%s' "$out" | head -1 | tr -d '\r')"
-check "Content-Length" "13" "$(printf '%s' "$out" | awk '/^Content-Length/{print $2}' | tr -d '\r')"
-check "body" "hello, molly" "$(curl -s "$BASE/")"
+# `/` 是**新手版**（编译进二进制的单文件页），不再是 docroot 的 index.html——
+# 静态「目录回落 index.html」改由 /luci-static/sub/ 覆盖（见「静态文件」一节）。
+# 这里钉住新手版的三个关键性质：它是内联那一页、占位符被替换干净、以及服务端会把
+# 会话 cookie 里的 sid 注入进页面（新手版与专家版共用会话就靠这一步）。
+check "新手版 Content-Type" "text/html; charset=utf-8" "$(header_of Content-Type "$BASE/")"
+check "新手版标题" "路由器 · 新手版" \
+  "$(curl -s "$BASE/" | grep -o '<title>[^<]*</title>' | head -1 | sed 's/<[^>]*>//g')"
+check "新手版占位符已替换" "0" \
+  "$(curl -s "$BASE/" | grep -c '__SID__\|__EXPERT_PREFIX__' || true)"
+check "会话 cookie 的 sid 被注入页面" "yes" \
+  "$(curl -s -H 'Cookie: sysauth_molly=0123456789abcdef0123456789abcdef' "$BASE/" \
+    | grep -q '0123456789abcdef0123456789abcdef' && echo yes || echo no)"
+check "非法 cookie 不外泄进页面" "0" \
+  "$(curl -s -H 'Cookie: sysauth_molly=<script>x</script>' "$BASE/" | grep -c '<script>x' || true)"
 
 echo
 echo "== keep-alive =="
@@ -120,17 +132,29 @@ check "POST 小 body 被完整接收" "405" "$(status_of -X POST -d 'hello' "$BA
 
 echo
 echo "== 静态文件 =="
-# 目录 → index.html；/luci-static/* 天然落在 <docroot>/luci-static/*，不需要别名
-check "/ 回落 index.html" "200" "$(status_of "$BASE/")"
-check "/index.html" "200" "$(status_of "$BASE/index.html")"
-check "html Content-Type" "text/html; charset=utf-8" "$(header_of Content-Type "$BASE/index.html")"
+# 目录 → index.html；/luci-static/* 天然落在 <docroot>/luci-static/*，不需要别名。
+# `/` 与 `/index.html` 归新手版（见「基本响应」），所以目录回落用 /luci-static/sub/
+# 覆盖——fixture 在那个目录里放了它自己的 index.html。
+check "目录回落 index.html" "200" "$(status_of "$BASE/luci-static/sub/")"
+check "/index.html 由新手版接管" "text/html; charset=utf-8" \
+  "$(header_of Content-Type "$BASE/index.html")"
+# Content-Type 逐条对齐原厂 uhttpd（2026-10-07 真机实测）：**不带 charset**。
+check "html Content-Type" "text/html" "$(header_of Content-Type "$BASE/luci-static/sub/")"
 check "/luci-static/*.css" "200" "$(status_of "$BASE/luci-static/test.css")"
-check "css Content-Type" "text/css; charset=utf-8" "$(header_of Content-Type "$BASE/luci-static/test.css")"
+check "css Content-Type" "text/css" "$(header_of Content-Type "$BASE/luci-static/test.css")"
 check "深层目录映射" "200" "$(status_of "$BASE/luci-static/sub/note.txt")"
-check "txt Content-Type" "text/plain; charset=utf-8" "$(header_of Content-Type "$BASE/luci-static/sub/note.txt")"
+check "txt Content-Type" "text/plain" "$(header_of Content-Type "$BASE/luci-static/sub/note.txt")"
 check "未命中 → 404" "404" "$(status_of "$BASE/nope")"
+# uhttpd 的 404 是 text/html（正文是 `Not Found` 那条；正文里含路径，不逐字节钉）
+check "404 Content-Type" "text/html" "$(header_of Content-Type "$BASE/nope")"
 check "目录无 index.html → 404" "404" "$(status_of "$BASE/luci-static/")"
 check "文件上的 POST → 405" "405" "$(status_of -X POST -d '' "$BASE/index.html")"
+# docroot 里的 /cgi-bin/* 不外发：上游 uhttpd 只执行它、从不吐脚本正文，molly 不在
+# docroot 上执行 CGI（执行只走 --luci-cgi），所以策略性拒绝。换过专家版前缀之后这条
+# 尤其重要——那段路径不再被 LuCI 路由吃掉，脚本文件会直接暴露出来。
+check "/cgi-bin/* 不外发" "403" "$(status_of "$BASE/cgi-bin/luci")"
+check "/cgi-bin 本身也拒绝" "403" "$(status_of "$BASE/cgi-bin")"
+check "/cgi-bin/* 的 404 面" "403" "$(status_of "$BASE/cgi-bin/nope")"
 
 echo
 echo "== /ubus GET 路由与 list 正文 =="
@@ -499,6 +523,43 @@ print(data.count(b"HTTP/1.1 "))
 PY
 )
 check "POST(body) 后接 GET 都得到响应" "2" "$pipelined"
+
+echo
+echo "== 专家版前缀可配（--luci-prefix）+ 新手版 =="
+# 再起一份实例，把专家版让到 /pro（本站部署形态）。目的是钉住「前缀是一个同源值」：
+# 它同时是路由判据、CGI 的 SCRIPT_NAME、以及新手版页面上注入的链接——任何一处不同步
+# 都会在这里露馅（比如只改了路由，页面里还链到 /cgi-bin/luci）。
+PORT2=$((PORT + 1))
+BASE2="http://127.0.0.1:$PORT2"
+"$BIN" --listen "127.0.0.1:$PORT2" --docroot tests/fixtures/www \
+  --menu-dir tests/fixtures/menu.d --luci-prefix /pro >/tmp/molly-smoke-prefix.log 2>&1 &
+SERVER2_PID=$!
+for _ in $(seq 1 30); do
+  if curl -s -o /dev/null "$BASE2/"; then break; fi
+  sleep 0.1
+done
+# 会话是**进程内**的，第二份实例得自己登一个（直接拿第一份实例的 sid 会得到
+# 「无会话 → 按 ACL 裁树」的另一棵树，断言就会看起来像前缀改坏了）。
+# cookie 名用 sysauth_molly，顺带覆盖「专家版补丁后的专属名」也能被认出来。
+SID2=$(curl -s -X POST "$BASE2/ubus/call/session" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"login","params":{"username":"root","password":"test1234"}}' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"]["ubus_rpc_session"])')
+COOKIE2="sysauth_molly=$SID2"
+check "新前缀 /pro/ 有菜单页" "200" "$(status_of -b "$COOKIE2" "$BASE2/pro/")"
+check "新前缀 root firstchild" "Overview" "$(h1_of -b "$COOKIE2" "$BASE2/pro/")"
+check "新前缀下的子路径" "200" \
+  "$(status_of -b "$COOKIE2" "$BASE2/pro/admin/status/overview")"
+# 旧前缀不再由 dispatcher 服务，而且**也不会退化成静态下载**：/cgi-bin/* 走 403
+# （见 static.odin 的那段注释——改前缀前它是被 serve_luci 吃掉的）。
+check "旧前缀不再由 dispatcher 服务" "403" \
+  "$(status_of -b "$COOKIE2" "$BASE2/cgi-bin/luci/")"
+check "占位页 Content-Type（新前缀）" "text/html; charset=utf-8" \
+  "$(header_of Content-Type -b "$COOKIE2" "$BASE2/pro/")"
+# 前缀是否真的贯穿到页面：新手版页里那句 JS 常量应当就是新前缀
+check "新手版注入的是新前缀" "1" \
+  "$(curl -s "$BASE2/" | grep -c 'EXPERT_PREFIX = "/pro"' || true)"
+check "新手版仍在 /" "200" "$(status_of "$BASE2/")"
+kill "$SERVER2_PID" 2>/dev/null; wait "$SERVER2_PID" 2>/dev/null
 
 echo
 echo "== 并发上限 =="

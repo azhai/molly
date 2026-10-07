@@ -24,7 +24,7 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 
 ```
                  main.odin
-                    │  handle(): 规范化 → /ubus → /cgi-bin/luci → 静态
+                    │  handle(): 规范化 → /ubus → 专家版前缀 → 新手版 / → 静态
         ┌───────────┴────────────┐
         ▼                        ▼
    handlers/                 http/            ← 传输层：谁都不依赖（叶子）
@@ -83,10 +83,11 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 
 | 文件 | 内容 |
 |---|---|
-| `main.odin` | CLI 解析、`--listen/--docroot/--menu-dir`、SIGPIPE 忽略、`http.Server` 装配、`handle` 路由分派、`matches_prefix`（带边界）。 |
-| `handlers/static.odin` | `/www` 下的静态文件（目录 → `index.html`，非 GET/HEAD → 405）。 |
+| `main.odin` | CLI 解析、`--listen/--docroot/--menu-dir/--luci-prefix`、SIGPIPE 忽略、`http.Server` 装配、`handle` 路由分派、`matches_prefix`（带边界）。 |
+| `handlers/static.odin` | `/www` 下的静态文件（目录 → `index.html`，非 GET/HEAD → 405）。`/cgi-bin/*` 一律 403——上游 uhttpd 只执行它、从不吐脚本正文，见 `interfaces.md` §3。 |
 | `handlers/ubus_http.odin` | `/ubus` 的三种形态与 JSON-RPC 信封（详见 `interfaces.md` §4）。 |
-| `handlers/cgi_luci.odin` | `/cgi-bin/luci` 的**两种模式**：`--luci-cgi` 非空 → 交给子进程（ADR 0003 的 T1）；否则 → `luci.dispatch` → 200/404/501/**403 登录提示**（带 `X-LuCI-Login-Required: yes`），只接 GET/HEAD。 |
+| `handlers/cgi_luci.odin` | **专家版前缀**的两种模式：`--luci-cgi` 非空 → 交给子进程（ADR 0003 的 T1）；否则 → `luci.dispatch` → 200/404/501/**403 登录提示**（带 `X-LuCI-Login-Required: yes`），只接 GET/HEAD。前缀是变量（`--luci-prefix`），因为同一值还要当 CGI 的 `SCRIPT_NAME` 用。 |
+| `handlers/novice.odin` | **新手版**（`/`）：把编译进来的单文件页（`src/novice/assets/index.html`，`#load`）发出去，并把会话 cookie 里的 sid 与专家版前缀替换进占位符。数据面完全走既有 `/ubus`，没有新手版专属 API。 |
 | `handlers/cgi_exec.odin` | CGI 桥接：环境构造（纯函数）→ `fork`/`execve` → 响应解析（纯函数）→ 透传状态与额外头。两个纯函数有单元测试，桩脚本有 `tests/cgi_smoke.sh`。 |
 
 ## 4. 一次请求的调用链

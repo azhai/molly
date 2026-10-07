@@ -22,6 +22,11 @@ DEFAULT_LISTEN   :: "0.0.0.0:8080"
 DEFAULT_DOCROOT  :: "/www"
 DEFAULT_MENU_DIR :: "/usr/share/luci/menu.d"
 
+// 两套界面：
+//   "/"（或 --luci-prefix 给的前缀）= **专家版**，完整的 LuCI（菜单/ACL/所有页面）；
+//   "/"                                = **新手版**，一页只放最常见的几件事（内置单文件页）。
+// 二者共用同一个会话 cookie，所以登录一次两边都能用。
+
 USAGE :: `molly —— ImmortalWrt LuCI 的服务端替换层（Odin）
 
 用法：
@@ -30,12 +35,18 @@ USAGE :: `molly —— ImmortalWrt LuCI 的服务端替换层（Odin）
   --listen   监听地址，必须是数字地址，不接受主机名（默认 0.0.0.0:8080）
   --docroot  静态文件根目录（默认 /www）
   --menu-dir LuCI 菜单目录（menu.d）（默认 /usr/share/luci/menu.d）
-  --luci-cgi 把 /cgi-bin/luci 交给子进程执行，设备上填 CGI 兜底脚本
+  --luci-cgi 把专家版前缀交给子进程执行，设备上填 CGI 兜底脚本
              "/www/cgi-bin/luci"（LuCI 装的 '#!/usr/bin/env ucode' 脚本，复刻 uhttpd
              的 CGI 形态，ADR 0003）。留空则用内置的 Odin dispatcher。
              注意**别**填 "/usr/bin/ucode /usr/share/ucode/luci/uhttpd.uc"：那个
              文件是 uhttpd 进程内加载的 ucode 模板（首行 {%），当脚本跑必然
              语法错、每个请求都回 500。
+  --luci-prefix PREFIX
+            专家版（LuCI）的 URL 前缀，默认 "/cgi-bin/luci"（上游形态）。本仓部署
+            用 "/pro" 把它让到 /pro/ 下，"/" 留给新手版（见下）。
+            这一个值同时决定路由、CGI 的 SCRIPT_NAME 与 PATH_INFO 的切分点——
+            dispatcher 的 build_url 就是拿 SCRIPT_NAME 拼所有页面 URL 的，所以
+            它必须与 ucode 侧看到的一致。
   --ubus-socket PATH
              让 molly 把 ubus 对象注册在**另一条独立的 ubus 总线**上（那条总线上要先
              跑一个 ubusd -s <PATH>）。配了它，系统总线上的 session/uci/file/luci-rpc
@@ -56,6 +67,7 @@ main :: proc() {
 	menu_dir := DEFAULT_MENU_DIR
 	luci_cgi := ""
 	ubus_socket := ""
+	luci_prefix := "" // 空 = 用 handlers 里的默认（/cgi-bin/luci）
 
 	args := os.args[1:]
 	for i := 0; i < len(args); i += 1 {
@@ -90,6 +102,12 @@ main :: proc() {
 				die("--ubus-socket 缺少参数")
 			}
 			ubus_socket = args[i]
+		case "--luci-prefix":
+			i += 1
+			if i >= len(args) {
+				die("--luci-prefix 缺少参数")
+			}
+			luci_prefix = args[i]
 		case "-h", "--help":
 			fmt.print(USAGE)
 			return
@@ -107,6 +125,15 @@ main :: proc() {
 	for len(menu_dir) > 1 && menu_dir[len(menu_dir) - 1] == '/' {
 		menu_dir = menu_dir[:len(menu_dir) - 1]
 	}
+	// 前缀：路由、CGI 的 SCRIPT_NAME、PATH_INFO 切分点三处同源，所以只在这里设一次。
+	if len(luci_prefix) > 0 {
+		if !handlers.luci_set_prefix(luci_prefix) {
+			die(fmt.tprintf(
+				"--luci-prefix 形态不合法：%q（要 '/' 开头、不以 '/' 结尾、不含空白与 ?/#）",
+				luci_prefix,
+			))
+		}
+	}
 
 	// parse_endpoint 只解析数字地址（0.0.0.0:8080 / [::]:8080），不做 DNS 解析。
 	endpoint, ok := net.parse_endpoint(listen)
@@ -123,10 +150,11 @@ main :: proc() {
 	fmt.println("[molly] docroot:", docroot)
 	fmt.println("[molly] menu.d:", menu_dir)
 	if len(luci_cgi) > 0 {
-		fmt.println("[molly] /cgi-bin/luci →", luci_cgi)
+		fmt.println("[molly] 专家版 LuCI", handlers.LUCI_PREFIX, "→", luci_cgi)
 	} else {
-		fmt.println("[molly] /cgi-bin/luci → 内置 dispatcher")
+		fmt.println("[molly] 专家版 LuCI", handlers.LUCI_PREFIX, "→ 内置 dispatcher")
 	}
+	fmt.println("[molly] 新手版 → /（内置单文件页，与专家版共用会话）")
 	// P3-9：不再有「transitional mode」这回事——session/uci/file/luci-rpc 都由 molly
 	// 自己提供（P3-2…P3-5）。设备上 rpcd 还占着同名对象时，注册会失败，由 ubus 线程
 	// 逐个对象打一行诊断（见 linux.odin）——那是事实陈述，不是「过渡模式」声明。
@@ -184,6 +212,12 @@ handle :: proc(s: ^http.Server, conn: ^http.Connection, req: ^http.Request) -> b
 	// 否则 /cgi-bin/luci-static 这类真实文件会被 dispatcher 抢走。
 	if matches_prefix(path, handlers.LUCI_PREFIX) {
 		return handlers.serve_luci(s, conn, req, path)
+	}
+
+	// 新手版：只吃 `/` 与 `/index.html`（页面是单文件、内联 CSS/JS，没有子路径），
+	// 排名在静态文件之前，于是 docroot 里的 index.html 不会把它顶掉。
+	if handlers.is_novice_path(path) {
+		return handlers.serve_novice(s, conn, req, path)
 	}
 
 	// 返回值是「这条连接还能继续用吗」，与 req.keep_alive 的相与在

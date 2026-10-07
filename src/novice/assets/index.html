@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>路由器 · 新手版</title>
+<!--
+  新手版：一页只放最常见的几件事。
+
+  设计约束（改这个文件前先读）：
+   1. **单文件、零依赖**：内联 CSS/JS，编译期由 src/handlers/novice.odin 用 #load 编进
+      二进制。不引外部 CDN、不引 LuCI 的 luci-static——离线与弱网下都要能用。
+   2. **只走 /ubus**：数据面就是既有的 JSON-RPC（params: [sid, obj, method, args]），
+      服务端不为新手版新增任何 API。
+   3. **占位符**：`__SID__`（服务端注入的会话 id，空串表示未登录）与
+      `__EXPERT_PREFIX__`（专家版前缀）。两处都由 molly 在响应时替换。
+   4. 会话与专家版**共用**：同一个 cookie，任一边登录过两边都能用。没会话时才显示登录卡。
+-->
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #fff; --line: #e3e8ee; --fg: #17212b; --dim: #66788a;
+    --accent: #1f8f4e; --accent-dim: #e7f5ec; --warn: #c0392b; --warn-dim: #fdecea;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10151b; --card: #18202a; --line: #263241; --fg: #e8eef5; --dim: #93a4b6;
+      --accent: #3ecf7a; --accent-dim: #16301f; --warn: #ff7b6b; --warn-dim: #331a18;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 16px 16px 48px; }
+  header.top {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 14px 16px; background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); margin-bottom: 14px;
+  }
+  header.top .name { font-size: 17px; font-weight: 600; }
+  header.top .sub { color: var(--dim); font-size: 13px; }
+  header.top .spacer { flex: 1; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 14px;
+  }
+  .card > h2 {
+    margin: 0 0 12px; font-size: 15px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card > h2 .hint { font-weight: 400; color: var(--dim); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .kv { background: var(--bg); border-radius: 10px; padding: 10px 12px; }
+  .kv .k { color: var(--dim); font-size: 12px; }
+  .kv .v { font-size: 16px; font-weight: 600; margin-top: 2px; word-break: break-all; }
+  label.field { display: block; margin: 10px 0 0; }
+  label.field > span { display: block; color: var(--dim); font-size: 13px; margin-bottom: 4px; }
+  input, select {
+    width: 100%; padding: 10px 12px; font-size: 15px; color: var(--fg);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button {
+    font: inherit; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--card); color: var(--fg); cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { background: var(--warn-dim); border-color: var(--warn); color: var(--warn); font-weight: 600; }
+  button:disabled { opacity: .55; cursor: progress; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  .msg { margin-top: 10px; font-size: 13px; padding: 8px 10px; border-radius: 8px; display: none; }
+  .msg.ok { display: block; background: var(--accent-dim); color: var(--accent); }
+  .msg.err { display: block; background: var(--warn-dim); color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  canvas { width: 100%; height: 180px; display: block; }
+  .legend { display: flex; gap: 14px; color: var(--dim); font-size: 12px; margin-top: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+  .login { max-width: 380px; margin: 12vh auto; }
+  .bar { height: 8px; border-radius: 6px; background: var(--bg); overflow: hidden; margin-top: 6px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  a { color: var(--accent); }
+  .foot { color: var(--dim); font-size: 12px; text-align: center; margin-top: 18px; }
+</style>
+</head>
+<body>
+
+<!-- 登录卡：只在没有可用会话时显示 -->
+<div id="login" class="wrap login" hidden>
+  <div class="card">
+    <h2>登录路由器</h2>
+    <label class="field"><span>用户名</span><input id="lg-user" value="root" autocomplete="username"></label>
+    <label class="field"><span>密码</span><input id="lg-pass" type="password" autocomplete="current-password"></label>
+    <div class="row"><button class="primary" id="lg-go">登录</button></div>
+    <div class="msg" id="lg-msg"></div>
+    <p class="foot">专家版在 <a id="lg-expert" href="#">这里</a></p>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="app" class="wrap" hidden>
+  <header class="top">
+    <div>
+      <div class="name" id="h-name">路由器</div>
+      <div class="sub" id="h-sub">加载中…</div>
+    </div>
+    <div class="spacer"></div>
+    <button id="h-expert">专家版</button>
+    <button id="h-logout">退出</button>
+  </header>
+
+  <section class="card">
+    <h2>设备状态 <span class="hint" id="st-updated"></span></h2>
+    <div class="grid" id="st-grid"></div>
+    <div style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;color:var(--dim);font-size:12px">
+        <span>内存占用</span><span id="st-mem-text">–</span>
+      </div>
+      <div class="bar"><i id="st-mem-bar" style="width:0"></i></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>实时负载 <span class="hint">近 2 分钟，每 2 秒采一次</span></h2>
+    <canvas id="chart"></canvas>
+    <div class="legend">
+      <span><i style="background:#1f8f4e"></i>1 分钟</span>
+      <span><i style="background:#2f7fd6"></i>5 分钟</span>
+      <span><i style="background:#c98a1a"></i>15 分钟</span>
+      <span id="chart-now" style="margin-left:auto"></span>
+    </div>
+  </section>
+
+  <section class="card" id="sec-net">
+    <h2>上网设置 <span class="hint">外网（WAN）与内网（LAN）</span></h2>
+
+    <h3 style="font-size:14px;margin:6px 0 2px">外网</h3>
+    <label class="field"><span>连接方式</span>
+      <select id="wan-proto">
+        <option value="dhcp">自动获取（DHCP / 光猫拨号）</option>
+        <option value="static">固定 IP</option>
+        <option value="pppoe">宽带拨号（PPPoE）</option>
+      </select>
+    </label>
+    <div id="wan-static" hidden>
+      <label class="field"><span>IP 地址 / 掩码位数</span><input id="wan-ip" placeholder="例如 192.168.1.10/24"></label>
+      <label class="field"><span>网关</span><input id="wan-gw" placeholder="例如 192.168.1.1"></label>
+      <label class="field"><span>DNS（逗号分隔，可留空）</span><input id="wan-dns" placeholder="223.5.5.5,119.29.29.29"></label>
+    </div>
+    <div id="wan-pppoe" hidden>
+      <label class="field"><span>宽带账号</span><input id="wan-user" autocomplete="off"></label>
+      <label class="field"><span>宽带密码</span><input id="wan-pass" type="password" autocomplete="off"></label>
+    </div>
+
+    <h3 style="font-size:14px;margin:18px 0 2px">内网</h3>
+    <label class="field"><span>路由器内网 IP / 掩码位数</span><input id="lan-ip" placeholder="例如 192.168.1.1/24"></label>
+    <label class="field"><span>内网 DHCP 服务</span>
+      <select id="lan-dhcp"><option value="1">开启（自动给设备分配 IP）</option><option value="0">关闭</option></select>
+    </label>
+
+    <div class="row"><button class="primary" id="net-save">保存并生效</button><span class="hint" style="color:var(--dim);font-size:12px">改内网 IP 后需用新地址重新打开本页</span></div>
+    <div class="msg" id="net-msg"></div>
+  </section>
+
+  <section class="card" id="sec-wifi">
+    <h2>无线中继 <span class="hint">把本机接到上级路由器的 Wi-Fi</span></h2>
+    <div class="grid" id="wifi-state"></div>
+    <label class="field"><span>上级 Wi-Fi 名称（SSID）</span><input id="relay-ssid" placeholder="扫描不到就手填"></label>
+    <label class="field"><span>上级 Wi-Fi 密码</span><input id="relay-key" type="password" autocomplete="off"></label>
+    <label class="field"><span>用哪个频段去连</span><select id="relay-radio"></select></label>
+    <div class="row"><button class="primary" id="relay-save">保存并生效</button><button id="relay-scan">扫描附近 Wi-Fi</button></div>
+    <div id="relay-list" style="margin-top:10px"></div>
+    <div class="msg" id="relay-msg"></div>
+  </section>
+
+  <section class="card" id="sec-dhcp">
+    <h2>已连设备与固定 IP <span class="hint">给设备绑定固定 IP（MAC 绑定）</span></h2>
+    <table>
+      <thead><tr><th>设备</th><th>IP</th><th>MAC</th><th style="width:92px"></th></tr></thead>
+      <tbody id="lease-body"><tr><td colspan="4" style="color:var(--dim)">加载中…</td></tr></tbody>
+    </table>
+    <table style="margin-top:14px">
+      <thead><tr><th>已绑定</th><th>IP</th><th>MAC</th><th style="width:92px"></th></tr></thead>
+      <tbody id="bind-body"><tr><td colspan="4" style="color:var(--dim)">加载中…</td></tr></tbody>
+    </table>
+    <div class="msg" id="dhcp-msg"></div>
+  </section>
+
+  <section class="card" id="sec-sys">
+    <h2>重启路由器</h2>
+    <p style="color:var(--dim);margin:0 0 4px">重启大约需要 1–2 分钟，期间网络会中断。设置已保存的不会丢失。</p>
+    <div class="row"><button class="danger" id="reboot">立即重启</button></div>
+    <div class="msg" id="reboot-msg"></div>
+  </section>
+
+  <p class="foot">新手版 · 需要更多功能请用 <a id="f-expert" href="#">专家版</a></p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // 由 molly 在响应时替换：会话 id（空串 = 未登录）与专家版前缀。
+  var SID_INJECTED = "__SID__";
+  var EXPERT_PREFIX = "__EXPERT_PREFIX__";
+  var ANON_SID = "00000000000000000000000000000000";
+  var LS_KEY = "molly_novice_sid";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var sid = SID_INJECTED || localStorage.getItem(LS_KEY) || "";
+
+  $("lg-expert").href = EXPERT_PREFIX + "/";
+  $("f-expert").href = EXPERT_PREFIX + "/";
+  $("h-expert").onclick = function () { location.href = EXPERT_PREFIX + "/"; };
+
+  // ---- RPC：新手版唯一的服务端接口就是既有的 /ubus ----
+  function rpc(obj, method, params) {
+    return fetch("/ubus/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "call",
+        params: [sid, obj, method, params || {}]
+      })
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      var one = Array.isArray(data) ? data[0] : data;
+      if (!one || one.error) {
+        var e = new Error((one && one.error && one.error.message) || "请求失败");
+        e.code = one && one.error && one.error.code;
+        throw e;
+      }
+      var code = one.result[0], payload = one.result[1];
+      if (code !== 0) { var e2 = new Error("设备返回错误码 " + code); e2.code = code; throw e2; }
+      return payload;
+    });
+  }
+
+  function say(el, text, ok) {
+    el.textContent = text;
+    el.className = "msg " + (ok ? "ok" : "err");
+    if (ok) { setTimeout(function () { el.className = "msg"; }, 4000); }
+  }
+  function busy(btn, on) { btn.disabled = !!on; }
+
+  // ---- 登录 ----
+  function showLogin(hint) {
+    $("login").hidden = false;
+    $("app").hidden = true;
+    if (hint) { say($("lg-msg"), hint, false); }
+  }
+
+  function doLogin() {
+    var btn = $("lg-go");
+    busy(btn, true);
+    var body = {
+      jsonrpc: "2.0", id: 1, method: "call",
+      params: [ANON_SID, "session", "login",
+               { username: $("lg-user").value, password: $("lg-pass").value }]
+    };
+    fetch("/ubus/", { method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var one = Array.isArray(data) ? data[0] : data;
+        if (!one || one.error) { throw new Error((one && one.error && one.error.message) || "登录失败"); }
+        var code = one.result[0], payload = one.result[1] || {};
+        if (code !== 0) { throw new Error(code === 6 || code === 5 ? "用户名或密码不对" : "登录失败（" + code + "）"); }
+        sid = payload.ubus_rpc_session;
+        localStorage.setItem(LS_KEY, sid);
+        boot();
+      })
+      .catch(function (e) { say($("lg-msg"), e.message, false); })
+      .then(function () { busy(btn, false); });
+  }
+  $("lg-go").onclick = doLogin;
+  $("lg-pass").addEventListener("keydown", function (e) { if (e.key === "Enter") { doLogin(); } });
+  $("h-logout").onclick = function () {
+    rpc("session", "destroy", {}).catch(function () {});
+    localStorage.removeItem(LS_KEY);
+    location.reload();
+  };
+
+  // ---- 设备状态 ----
+  var board = null, sysinfo = null;
+
+  function uptimeText(sec) {
+    var d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+    if (d > 0) { return d + " 天 " + h + " 小时"; }
+    if (h > 0) { return h + " 小时 " + m + " 分"; }
+    return m + " 分钟";
+  }
+  function bytesText(n) {
+    var u = ["B", "KB", "MB", "GB"], i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
+  }
+  // procd 的 load 是 16.16 定点（×65536），上游 LuCI 也是这么换算的。
+  function loadVal(v) { return (v || 0) / 65536; }
+
+  function renderStatus() {
+    if (!board) { return; }
+    var rel = board.release || {};
+    $("h-name").textContent = board.hostname || "路由器";
+    $("h-sub").textContent = (board.model || "") + " · " + (rel.description || "");
+    document.title = (board.hostname || "路由器") + " · 新手版";
+
+    var mem = (sysinfo && sysinfo.memory) || {};
+    var used = (mem.total || 0) - (mem.available || mem.free || 0);
+    var pct = mem.total ? Math.round(used / mem.total * 100) : 0;
+    var cards = [
+      ["型号", board.model || "–"],
+      ["固件", rel.version || "–"],
+      ["运行时长", sysinfo ? uptimeText(sysinfo.uptime) : "–"],
+      ["1 分钟负载", sysinfo ? loadVal(sysinfo.load && sysinfo.load[0]).toFixed(2) : "–"]
+    ];
+    $("st-grid").innerHTML = cards.map(function (c) {
+      return '<div class="kv"><div class="k">' + c[0] + '</div><div class="v">' + c[1] + "</div></div>";
+    }).join("");
+    $("st-mem-text").textContent = mem.total
+      ? bytesText(used) + " / " + bytesText(mem.total) + "（" + pct + "%）" : "–";
+    $("st-mem-bar").style.width = pct + "%";
+    $("st-updated").textContent = "更新于 " + new Date().toLocaleTimeString();
+  }
+
+  // ---- 负载图（canvas，无依赖） ----
+  var HIST = 60, series = [], chart = $("chart"), ctx = chart.getContext("2d");
+
+  function pushLoad() {
+    if (!sysinfo || !sysinfo.load) { return; }
+    series.push([loadVal(sysinfo.load[0]), loadVal(sysinfo.load[1]), loadVal(sysinfo.load[2])]);
+    while (series.length > HIST) { series.shift(); }
+    drawChart();
+    $("chart-now").textContent = "当前 " + series[series.length - 1].map(function (v) { return v.toFixed(2); }).join(" / ");
+  }
+
+  function drawChart() {
+    var dpr = window.devicePixelRatio || 1;
+    var w = chart.clientWidth, h = chart.clientHeight;
+    if (chart.width !== w * dpr || chart.height !== h * dpr) {
+      chart.width = w * dpr; chart.height = h * dpr;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    var max = 0.5;
+    series.forEach(function (s) { s.forEach(function (v) { if (v > max) { max = v; } }); });
+    max = Math.ceil(max * 2) / 2;
+
+    // 网格 + 刻度
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--line");
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--dim");
+    ctx.font = "11px sans-serif"; ctx.lineWidth = 1;
+    for (var i = 0; i <= 2; i++) {
+      var y = h - (h - 14) * (i / 2) - 2;
+      ctx.beginPath(); ctx.moveTo(0, y + .5); ctx.lineTo(w, y + .5); ctx.stroke();
+      ctx.fillText((max * i / 2).toFixed(2), 2, y - 2);
+    }
+
+    var colors = ["#1f8f4e", "#2f7fd6", "#c98a1a"];
+    for (var k = 0; k < 3; k++) {
+      ctx.strokeStyle = colors[k]; ctx.lineWidth = 2; ctx.beginPath();
+      series.forEach(function (s, idx) {
+        var x = series.length > 1 ? idx / (HIST - 1) * w : 0;
+        var y = h - 2 - (h - 14) * Math.min(s[k] / max, 1);
+        idx === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+  }
+  window.addEventListener("resize", drawChart);
+
+  function tick() {
+    rpc("system", "info").then(function (info) {
+      sysinfo = info; renderStatus(); pushLoad();
+    }).catch(function () {});
+  }
+
+  // ---- 上网设置 ----
+  function netSections() {
+    return rpc("uci", "get", { config: "network" }).then(function (v) {
+      return (v && v.values) || {};
+    });
+  }
+  function loadNet() {
+    return netSections().then(function (secs) {
+      var wan = secs.wan || {}, lan = secs.lan || {};
+      $("wan-proto").value = wan.proto || "dhcp";
+      var wip = wan.ipaddr, wipv = Array.isArray(wip) ? wip[0] : wip;
+      $("wan-ip").value = wipv || "";
+      $("wan-gw").value = wan.gateway || "";
+      var dns = wan.dns, dnsv = Array.isArray(dns) ? dns.join(",") : (dns || "");
+      $("wan-dns").value = dnsv;
+      var lip = lan.ipaddr, lipv = Array.isArray(lip) ? lip[0] : lip;
+      $("lan-ip").value = lipv || "";
+      toggleProto();
+    }).then(function () {
+      return rpc("uci", "get", { config: "dhcp" });
+    }).then(function (v) {
+      var secs = (v && v.values) || {}, lan = secs.lan || {};
+      $("lan-dhcp").value = String(lan.ignore === "1" ? "0" : "1");
+    }).catch(function (e) { say($("net-msg"), "读取网络设置失败：" + e.message, false); });
+  }
+  function toggleProto() {
+    var p = $("wan-proto").value;
+    $("wan-static").hidden = p !== "static";
+    $("wan-pppoe").hidden = p !== "pppoe";
+  }
+  $("wan-proto").onchange = toggleProto;
+
+  function list(v) { return Array.isArray(v) ? v : (v ? [v] : []); }
+
+  // 改完配置统一走「提交 + 生效」：uci commit 落盘，uci apply 触发 /sbin/reload_config
+  // （与 LuCI 的保存应用同一条路；不带 rollback，所以不需要再确认）。
+  function commitApply(config) {
+    return rpc("uci", "commit", { config: config })
+      .then(function () { return rpc("uci", "apply", { rollback: false }); });
+  }
+
+  function saveNet() {
+    var btn = $("net-save"), p = $("wan-proto").value;
+    busy(btn, true);
+    var wanVals = { proto: p };
+    if (p === "static") {
+      if ($("wan-ip").value) { wanVals.ipaddr = [$("wan-ip").value.trim()]; }
+      if ($("wan-gw").value) { wanVals.gateway = $("wan-gw").value.trim(); }
+      var dns = $("wan-dns").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+      wanVals.dns = dns;
+    } else if (p === "pppoe") {
+      wanVals.username = $("wan-user").value.trim();
+      wanVals.password = $("wan-pass").value;
+    }
+    var steps = [rpc("uci", "set", { config: "network", section: "wan", values: wanVals })];
+    if ($("lan-ip").value) {
+      steps.push(rpc("uci", "set", { config: "network", section: "lan",
+                                     values: { ipaddr: [$("lan-ip").value.trim()] } }));
+    }
+    steps.push(rpc("uci", "set", { config: "dhcp", section: "lan",
+                                   values: { ignore: $("lan-dhcp").value === "0" ? "1" : "0" } }));
+    steps.reduce(function (p, next) { return p.then(next); }, Promise.resolve())
+      .then(function () { return commitApply("network"); })
+      .then(function () { return commitApply("dhcp"); })
+      .then(function () { say($("net-msg"), "已保存并生效", true); })
+      .catch(function (e) { say($("net-msg"), "保存失败：" + e.message, false); })
+      .then(function () { busy(btn, false); });
+  }
+  $("net-save").onclick = saveNet;
+
+  // ---- 无线中继 ----
+  var wdev = null, wconf = null;
+
+  function loadWifi() {
+    return Promise.all([
+      rpc("uci", "get", { config: "wireless" }),
+      rpc("luci-rpc", "getWirelessDevices").catch(function () { return {}; })
+    ]).then(function (r) {
+      wconf = (r[0] && r[0].values) || {}; wdev = r[1] || {};
+      var radios = Object.keys(wdev);
+      $("relay-radio").innerHTML = radios.map(function (k) {
+        var band = (wdev[k].config && wdev[k].config.band) || "";
+        return '<option value="' + k + '">' + k + (band ? "（" + band + "）" : "") + "</option>";
+      }).join("") || '<option value="radio0">radio0</option>';
+
+      // 当前是否已在中继：找 mode=sta 的 wifi-iface
+      var sta = null, staName = null, ssid = "", up = [];
+      Object.keys(wconf).forEach(function (name) {
+        var s = wconf[name];
+        if (s[".type"] === "wifi-iface" && s.mode === "sta") { sta = s; staName = name; ssid = s.ssid || ""; }
+      });
+      Object.keys(wdev).forEach(function (k) { if (wdev[k].up) { up.push(k); } });
+      $("relay-ssid").value = ssid;
+      var rows = [
+        ["无线状态", up.length ? "已启用（" + up.join(" / ") + "）" : "未启用"],
+        ["当前中继", staName ? "已连接 " + (ssid || "（未设名称）") : "未设置"],
+        ["信道", Object.keys(wdev).length ? (Object.keys(wdev).map(function (k) {
+          return (wdev[k].config && wdev[k].config.channel) || "?"; }).join(" / ")) : "–"]
+      ];
+      $("wifi-state").innerHTML = rows.map(function (c) {
+        return '<div class="kv"><div class="k">' + c[0] + '</div><div class="v">' + c[1] + "</div></div>";
+      }).join("");
+    }).catch(function (e) { say($("relay-msg"), "读取无线设置失败：" + e.message, false); });
+  }
+
+  function saveRelay() {
+    var btn = $("relay-save");
+    var ssid = $("relay-ssid").value.trim(), key = $("relay-key").value, radio = $("relay-radio").value;
+    if (!ssid) { say($("relay-msg"), "请先填写上级 Wi-Fi 名称", false); return; }
+    busy(btn, true);
+    var staVals = { device: radio, mode: "sta", ssid: ssid, network: "wwan" };
+    if (key) { staVals.encryption = "psk2"; staVals.key = key; } else { staVals.encryption = "none"; }
+
+    // 已经存在 sta 接口就改它，否则新建 wwan 接口 + 对应的 network 接口
+    var found = Object.keys(wconf).filter(function (n) {
+      return wconf[n][".type"] === "wifi-iface" && wconf[n].mode === "sta";
+    })[0];
+
+    var steps = [];
+    if (found) {
+      steps.push(rpc("uci", "set", { config: "wireless", section: found, values: staVals }));
+    } else {
+      staVals.device = radio;
+      steps.push(rpc("uci", "add", { config: "wireless", type: "wifi-iface", name: "wwan", values: staVals }));
+      if (!wconf.wwan_net && !(wconf["default_radio0"] && false)) {
+        steps.push(rpc("uci", "add", { config: "network", type: "interface", name: "wwan",
+                                       values: { proto: "dhcp" } })
+          .catch(function () { /* 已存在就忽略 */ }));
+      }
+    }
+    // 用来中继的频段必须启用
+    steps.push(rpc("uci", "set", { config: "wireless", section: radio, values: { disabled: "0" } }));
+
+    steps.reduce(function (p, n) { return p.then(n); }, Promise.resolve())
+      .then(function () { return commitApply("wireless"); })
+      .then(function () { return commitApply("network"); })
+      .then(function () { return rpc("network", "reload").catch(function () { return null; }); })
+      .then(function () { say($("relay-msg"), "已保存并生效，稍等十几秒后看「当前中继」", true); loadWifi(); })
+      .catch(function (e) { say($("relay-msg"), "保存失败：" + e.message, false); })
+      .then(function () { busy(btn, false); });
+  }
+  $("relay-save").onclick = saveRelay;
+
+  // 扫描附近 Wi-Fi：走 iwinfo 的 scan（通过 luci-rpc 的无线设备信息拿不到列表，直接调 iwinfo）
+  $("relay-scan").onclick = function () {
+    var btn = this, radio = $("relay-radio").value;
+    busy(btn, true);
+    rpc("iwinfo", "scan", { device: radio, results: {} })
+      .then(function (r) {
+        var list2 = (r && r.results) || [];
+        if (!list2.length) { $("relay-list").innerHTML = '<span style="color:var(--dim)">没扫到网络</span>'; return; }
+        $("relay-list").innerHTML = list2.map(function (n) {
+          var ssid = n.ssid || "(隐藏)";
+          return '<button style="margin:2px" data-ssid="' + ssid.replace(/"/g, "&quot;") + '">' +
+                 ssid + "　" + (n.signal || 0) + "dBm</button>";
+        }).join("");
+        Array.prototype.forEach.call($("relay-list").querySelectorAll("button"), function (b) {
+          b.onclick = function () { $("relay-ssid").value = b.getAttribute("data-ssid"); };
+        });
+      })
+      .catch(function () { say($("relay-msg"), "扫描不可用（可直接手填 SSID）", false); })
+      .then(function () { busy(btn, false); });
+  };
+
+  // ---- DHCP 租约与固定 IP ----
+  function loadDhcp() {
+    return Promise.all([
+      rpc("luci-rpc", "getDHCPLeases", { family: 0 }),
+      rpc("uci", "get", { config: "dhcp" })
+    ]).then(function (r) {
+      var leases = (r[0] && r[0].dhcp_leases) || [];
+      var secs = (r[1] && r[1].values) || {};
+      var hosts = Object.keys(secs).filter(function (n) { return secs[n][".type"] === "host"; });
+
+      $("lease-body").innerHTML = leases.length ? leases.map(function (l) {
+        var name = l.hostname || "未命名设备";
+        return "<tr><td>" + name + '</td><td class="mono">' + (l.ipaddr || "") +
+               '</td><td class="mono">' + (l.macaddr || "") +
+               '</td><td><button data-bind=\'' + JSON.stringify([l.macaddr || "", l.ipaddr || "", name]) + "'>固定</button></td></tr>";
+      }).join("") : '<tr><td colspan="4" style="color:var(--dim)">暂无已连设备</td></tr>';
+
+      $("bind-body").innerHTML = hosts.length ? hosts.map(function (n) {
+        var h = secs[n];
+        return "<tr><td>" + (h.name || "（未命名）") + '</td><td class="mono">' + (h.ip || "") +
+               '</td><td class="mono">' + (h.mac || "") +
+               '</td><td><button data-unbind="' + n + '">解绑</button></td></tr>';
+      }).join("") : '<tr><td colspan="4" style="color:var(--dim)">还没有固定 IP</td></tr>';
+
+      Array.prototype.forEach.call($("lease-body").querySelectorAll("button[data-bind]"), function (b) {
+        b.onclick = function () { bindLease(JSON.parse(b.getAttribute("data-bind")), b); };
+      });
+      Array.prototype.forEach.call($("bind-body").querySelectorAll("button[data-unbind]"), function (b) {
+        b.onclick = function () { unbind(b.getAttribute("data-unbind"), b); };
+      });
+    }).catch(function (e) { say($("dhcp-msg"), "读取失败：" + e.message, false); });
+  }
+
+  function bindLease(triple, btn) {
+    var mac = triple[0], ip = triple[1], name = triple[2];
+    busy(btn, true);
+    rpc("uci", "add", { config: "dhcp", type: "host",
+                        values: { name: name, mac: mac, ip: ip } })
+      .then(function () { return commitApply("dhcp"); })
+      .then(function () { say($("dhcp-msg"), name + " 已固定为 " + ip, true); loadDhcp(); })
+      .catch(function (e) { say($("dhcp-msg"), "绑定失败：" + e.message, false); })
+      .then(function () { busy(btn, false); });
+  }
+
+  function unbind(section, btn) {
+    busy(btn, true);
+    rpc("uci", "delete", { config: "dhcp", section: section })
+      .then(function () { return commitApply("dhcp"); })
+      .then(function () { say($("dhcp-msg"), "已解绑", true); loadDhcp(); })
+      .catch(function (e) { say($("dhcp-msg"), "解绑失败：" + e.message, false); })
+      .then(function () { busy(btn, false); });
+  }
+
+  // ---- 重启 ----
+  $("reboot").onclick = function () {
+    if (!confirm("确定现在重启路由器吗？网络会中断 1–2 分钟。")) { return; }
+    var btn = this; busy(btn, true);
+    rpc("system", "reboot")
+      .then(function () { say($("reboot-msg"), "已发出重启指令，页面稍后会断开…", true); })
+      .catch(function (e) { say($("reboot-msg"), "重启失败：" + e.message, false); busy(btn, false); });
+  };
+
+  // ---- 启动 ----
+  function boot() {
+    $("login").hidden = true; $("app").hidden = false;
+    rpc("system", "board").then(function (b) { board = b; return loadNet(); })
+      .then(function () { return loadWifi(); })
+      .then(function () { return loadDhcp(); })
+      .then(function () { return rpc("system", "info"); })
+      .then(function (i) { sysinfo = i; renderStatus(); pushLoad(); })
+      .catch(function (e) {
+        if (e.code === -32002) { showLogin("会话已过期，请重新登录"); }
+      });
+    setInterval(tick, 2000);
+  }
+
+  if (!sid) {
+    showLogin("");
+  } else {
+    // 先验一下会话是否还有效（专家版登录过就直接可用）
+    rpc("system", "board").then(function (b) {
+      board = b; boot();
+    }).catch(function () {
+      localStorage.removeItem(LS_KEY); sid = "";
+      showLogin("请登录");
+    });
+  }
+})();
+</script>
+</body>
+</html>

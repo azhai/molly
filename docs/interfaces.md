@@ -8,6 +8,7 @@
 
 ```bash
 molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
+      [--luci-prefix PREFIX] [--luci-cgi CMD] [--ubus-socket PATH]
 ```
 
 | 参数 | 默认值 | 说明 |
@@ -15,7 +16,9 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 | `--listen` | `0.0.0.0:8080` | **只接受数字地址**（`0.0.0.0:8080`、`[::]:8080`）；不做 DNS 解析，主机名直接报错退出 |
 | `--docroot` | `/www` | 静态文件根目录；启动时去掉尾部 `/` |
 | `--menu-dir` | `/usr/share/luci/menu.d` | LuCI 菜单目录（`*.json`）；同样去尾部 `/` |
-| `--luci-cgi` | 空 | 把 `/cgi-bin/luci` 交给子进程执行（设备上填 `/www/cgi-bin/luci`，复刻 uhttpd 的 CGI 形态，ADR 0003 的 T1；**不是** `/usr/bin/ucode …/uhttpd.uc`，见 §5.5）。留空 = 用内置的 Odin dispatcher（§5） |
+| `--luci-prefix` | `/cgi-bin/luci` | **专家版（LuCI）的 URL 前缀**。本站部署用 `/pro`，把 `/` 让给新手版（§3.1）。这一个值同时决定路由判据、CGI 的 `SCRIPT_NAME`、以及 `PATH_INFO` 的切分点——dispatcher 的 `build_url` 就是拿 `SCRIPT_NAME` 拼页面 URL 的，必须同源。形态要求：`/` 开头、不以 `/` 结尾、不含空白与 `?`/`#`，否则启动即报错退出 |
+| `--luci-cgi` | 空 | 把**专家版前缀**交给子进程执行（设备上填 `/www/cgi-bin/luci`，复刻 uhttpd 的 CGI 形态，ADR 0003 的 T1；**不是** `/usr/bin/ucode …/uhttpd.uc`，见 §5.5）。留空 = 用内置的 Odin dispatcher（§5） |
+| `--ubus-socket` | 空 | 让 molly 把 ubus 对象注册在另一条独立总线（§7）；留空 = 系统总线，于是与 rpcd 争 `session`/`uci`/`file`/`luci-rpc` |
 | `-h` / `--help` | — | 打印用法并正常退出 |
 
 - **参数错误**（未知参数、缺参数、地址无法解析、监听失败）：stderr 打印原因 + 用法，**退出码 2**。
@@ -71,8 +74,26 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 |---|---|---|---|
 | 0 | — | `http.normalize_path` | 400 / 403 在这里终结，之后 handler 才能安全拼路径 |
 | 1 | `/ubus` | `handlers.serve_ubus` | 见 §4 |
-| 2 | `/cgi-bin/luci` | `handlers.serve_luci` | 见 §5；必须排在静态文件之前，否则真实文件会被抢 |
-| 3 | 其余 | `handlers.serve_static` | docroot + path；目录 → 追加 `/index.html`；非普通文件 → 404 |
+| 2 | `--luci-prefix`（默认 `/cgi-bin/luci`） | `handlers.serve_luci` | 见 §5；必须排在静态文件之前，否则真实文件会被抢 |
+| 3 | `/`、`/index.html` | `handlers.serve_novice` | 新手版单页（§3.1）；排在静态文件之前，docroot 里的 `index.html` 顶不掉它 |
+| 4 | 其余 | `handlers.serve_static` | docroot + path；目录 → 追加 `/index.html`；非普通文件 → 404 |
+| 4′ | `/cgi-bin`、`/cgi-bin/*` | `handlers.serve_static` | **403，不外发**：上游 uhttpd 把 docroot 的 `/cgi-bin/*` 当 CGI **执行**、从不吐脚本正文；molly 只在 `--luci-cgi` 那条命令（绝对路径）上执行 CGI，所以这里策略性拒绝。换过专家版前缀后尤其重要——那条路径不再被 `serve_luci` 吃掉，脚本文件否则会变成可下载的纯文本 |
+
+### 3.1 两套界面
+
+| 界面 | 路径 | 内容 |
+|---|---|---|
+| **专家版** | `--luci-prefix`（本站 `/pro`） | 完整的 LuCI：菜单树、ACL 裁树、全部页面。内容由 `--luci-cgi` 交给设备 ucode dispatcher（§5.5） |
+| **新手版** | `/`、`/index.html` | 一页只放最常见的六件事：系统状态、实时负载图、重启、内外网设置、无线中继、DHCP 分配与 MAC 绑定 |
+
+- 新手版页面是**编译进二进制的单文件**（`src/novice/assets/index.html`，`#load`，内联 CSS/JS），
+  不依赖 docroot 上的文件、也不碰 ucode。服务端只在响应时替换两个占位符：
+  `__SID__`（会话 id，空串 = 未登录）与 `__EXPERT_PREFIX__`（专家版前缀）。
+- 会话 id 取自 Cookie，会被拼进页面的 JS 字符串，所以按**白名单**收窄到「只可能是 32 位 hex」，
+  非法输入直接丢弃（不做转义——两种上下文各转义一遍容易漏）。
+- **两套界面共用同一个会话**（同一个 cookie）与**同一个数据面**（`/ubus` 的 JSON-RPC，
+  前端直接发 `params: [sid, obj, meth, args]`）：服务端不为新手版新增任何 API，也没有第二套鉴权。
+  「登录一次、两边都能用」是这么来的，不是额外协调出来的。
 
 ## 4. `/ubus` 契约
 

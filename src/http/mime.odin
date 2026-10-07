@@ -1,10 +1,13 @@
 package http
 
-// 扩展名 → Content-Type。
-//
-// 取值覆盖 /www 下真正会出现的类型（LuCI 前端只有 html/css/js/json/字体/图片）。
-// 是否逐条与 uhttpd 的 mimetypes.h 一致，要等真机抓样本校准（R7）；未收录的
-// 扩展名统一回 application/octet-stream，比猜一个 text/plain 更安全。
+// 扩展名 → Content-Type。**逐条对齐原厂 uhttpd**（2026-10-07 真机实测，36 个扩展名，
+// 见 tests/golden.sh 的 HTTP 面）。三条容易记错的规则：
+//   1. uhttpd **从不带 charset**（`text/html`、不是 `text/html; charset=utf-8`）；
+//   2. `.js` 是 `text/javascript`，不是 `application/javascript`；
+//   3. 表外扩展名一律 `application/octet-stream`——实测 ico / woff / woff2 / ttf / eot /
+//      otf / mjs / map / webmanifest / md / csv / webm / webp / avif 全是它。
+// uhttpd 表里的长尾（office / deb / rpm / perl / php / x-csrc…）**未收录**：那些文件不会
+// 出现在 molly 送出的路径上（LuCI 前端只有 html/css/js/json/图片），真要用到再补。
 //
 // 匹配规则：取最后一个 '.' 之后的部分，不区分大小写，且不跨 '/'
 // （"/a.b/c" 没有扩展名）。
@@ -15,15 +18,17 @@ content_type_for :: proc(path: string) -> string {
 	}
 	switch {
 	case ascii_equal_fold(ext, "html"), ascii_equal_fold(ext, "htm"):
-		return "text/html; charset=utf-8"
+		return "text/html"
 	case ascii_equal_fold(ext, "css"):
-		return "text/css; charset=utf-8"
-	case ascii_equal_fold(ext, "js"), ascii_equal_fold(ext, "mjs"):
-		return "application/javascript; charset=utf-8"
-	case ascii_equal_fold(ext, "json"), ascii_equal_fold(ext, "map"):
-		return "application/json; charset=utf-8"
-	case ascii_equal_fold(ext, "txt"), ascii_equal_fold(ext, "md"):
-		return "text/plain; charset=utf-8"
+		return "text/css"
+	case ascii_equal_fold(ext, "js"):
+		return "text/javascript"
+	case ascii_equal_fold(ext, "json"):
+		return "application/json"
+	case ascii_equal_fold(ext, "xml"):
+		return "application/xml"
+	case ascii_equal_fold(ext, "txt"), ascii_equal_fold(ext, "conf"), ascii_equal_fold(ext, "log"):
+		return "text/plain"
 	case ascii_equal_fold(ext, "svg"):
 		return "image/svg+xml"
 	case ascii_equal_fold(ext, "png"):
@@ -32,18 +37,24 @@ content_type_for :: proc(path: string) -> string {
 		return "image/jpeg"
 	case ascii_equal_fold(ext, "gif"):
 		return "image/gif"
-	case ascii_equal_fold(ext, "webp"):
-		return "image/webp"
-	case ascii_equal_fold(ext, "ico"):
-		return "image/x-icon"
-	case ascii_equal_fold(ext, "woff"):
-		return "font/woff"
-	case ascii_equal_fold(ext, "woff2"):
-		return "font/woff2"
-	case ascii_equal_fold(ext, "ttf"):
-		return "font/ttf"
-	case ascii_equal_fold(ext, "otf"):
-		return "font/otf"
+	case ascii_equal_fold(ext, "bmp"):
+		return "image/bmp"
+	case ascii_equal_fold(ext, "pdf"):
+		return "application/pdf"
+	case ascii_equal_fold(ext, "zip"):
+		return "application/zip"
+	case ascii_equal_fold(ext, "gz"):
+		return "application/x-gzip"
+	case ascii_equal_fold(ext, "tar"):
+		return "application/x-tar"
+	case ascii_equal_fold(ext, "mp4"):
+		return "video/mp4"
+	case ascii_equal_fold(ext, "mp3"):
+		return "audio/mpeg"
+	case ascii_equal_fold(ext, "wav"):
+		return "audio/x-wav"
+	case ascii_equal_fold(ext, "sh"):
+		return "application/x-shellscript"
 	}
 	return "application/octet-stream"
 }
