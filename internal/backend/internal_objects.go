@@ -34,6 +34,17 @@ func callOwnObject(objPath, method, paramsJSON, sid string) (reply string, statu
 	case "luci-rpc":
 		r, s := callLuciRPC(method, inject())
 		return r, s, true
+	case "luci":
+		// `luci` 是 rpcd-mod-luci 的对象（26 个方法：getVersion / getInitList /
+		// getMountPoints / getCPUInfo …），molly 只实现其中前端**启动必调**的
+		// getFeatures，其余一律 handled=false 交回总线代理——整机抢过来会把没实现的那
+		// 二十来个方法从「rpcd 的真实现」变成「MethodNotFound」，前端大面积失效。
+		// 注意与 `luci-rpc`（上面那个 case）是两个对象，方法表不同，别合并。
+		if method == "getFeatures" {
+			r, s := luciGetFeatures()
+			return r, s, true
+		}
+		return "", 0, false
 	case "molly.probe":
 		switch method {
 		case "notify":

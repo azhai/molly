@@ -148,7 +148,7 @@ body_of() { curl -s "$@"; }
 code_of() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 # ---- 路由顺序 / 边界 ----
-# 根路径是**新手版入口**（302 到 /lite/），不是静态首页了；新手版页面本体在 /lite/。
+# 根路径是**简洁版入口**（302 到 /lite/），不是静态首页了；简洁版页面本体在 /lite/。
 check "根路径是入口 → 302" "302" "$(status GET /)"
 check "/ubus 走 ubus 路由（GET 回 404）" "404" "$(status GET /ubus)"
 check "/ubus/ 也走 ubus 路由（GET 回 404）" "404" "$(status GET /ubus/)"
@@ -173,7 +173,7 @@ check "txt 的 Content-Type" "text/plain" "$(header /ubus-probe.txt Content-Type
 check "不存在的文件 404" "404" "$(status GET /nope.txt)"
 # uhttpd 的 404 是 text/html（正文是 `Not Found` 那条；正文里含路径，不逐字节钉）
 check "404 的 Content-Type" "text/html" "$(header /nope.txt Content-Type)"
-# `/lite` 是**新手版**（编译进二进制的单文件页），`/` 只是跳转入口；两者都不再是
+# `/lite` 是**简洁版**（编译进二进制的单文件页），`/` 只是跳转入口；两者都不再是
 # docroot 的 index.html——目录回落的覆盖改用 /luci-static/sub/（fixture 里有它自己的
 # index.html）。
 check "目录有 index.html 时回落" "200" "$(status GET /luci-static/sub/)"
@@ -181,24 +181,24 @@ check "目录无 index.html 时 404" "404" "$(status GET /luci-static/)"
 # 入口：/ → 302 /lite/（302 而不是 301：前缀以后还可能再挪，301 会被浏览器永久缓存）
 check "/ 是入口 → 302" "302" "$(status GET /)"
 check "/ 跳到 /lite/" "/lite/" "$(header_of Location "$BASE/")"
-# 新手版三件事：就是内联那一页、占位符被替换干净、服务端把 cookie 里的 sid 注进页面。
-check "新手版标题" "yes" \
-  "$(curl -s "$BASE/lite/" | grep -q '<title>路由器 · 新手版</title>' && echo yes || echo no)"
-check "新手版占位符已替换" "0" "$(curl -s "$BASE/lite/" | grep -c '__SID__\|__EXPERT_PREFIX__' || true)"
-check "新手版的 cookie sid 被注入页面" "yes" \
+# 简洁版三件事：就是内联那一页、占位符被替换干净、服务端把 cookie 里的 sid 注进页面。
+check "简洁版标题" "1" \
+  "$(curl -s "$BASE/lite/" | grep -c '<title>简洁版</title>' || true)"
+check "简洁版占位符已替换" "0" "$(curl -s "$BASE/lite/" | grep -c '__CFG__' || true)"
+check "简洁版的 cookie sid 被注入页面" "1" \
   "$(curl -s -H 'Cookie: sysauth_molly=0123456789abcdef0123456789abcdef' "$BASE/lite/" \
-    | grep -q '0123456789abcdef0123456789abcdef' && echo yes || echo no)"
+    | grep -c '0123456789abcdef0123456789abcdef' || true)"
 # cookie 是客户端可控的，而它会被拼进页面的 JS 字符串：非 hex 一律整串丢弃
 check "非法 cookie 不外泄进页面" "0" \
   "$(curl -s -H 'Cookie: sysauth_molly=<script>x</script>' "$BASE/lite/" | grep -c '<script>x' || true)"
-check "/lite（无尾斜杠）也走新手版" "200" "$(status GET /lite)"
-check "/lite/index.html 也走新手版" "text/html; charset=utf-8" \
+check "/lite（无尾斜杠）也走简洁版" "200" "$(status GET /lite)"
+check "/lite/index.html 也走简洁版" "text/html; charset=utf-8" \
   "$(header_of Content-Type "$BASE/lite/index.html")"
 check "静态路径上的 POST 405" "405" "$(status POST /ubus-probe.txt)"
 
-# ---- 会话统一：新手版登录 → 专家版直接可用 ----
+# ---- 会话统一：简洁版登录 → 专家版直接可用 ----
 #
-# 登录/退出由服务端处理（ServeNovice 的 POST 分支），下发的 cookie 用 path=/，于是
+# 登录/退出由服务端处理（/auth/login、/auth/logout），下发的 cookie 用 path=/，于是
 # `/`、`/lite`、专家版前缀都收得到它——两套界面读写的是**同一个 cookie 槽位**，也就是
 # 同一条会话。登录本身调的是与专家版同一个 `session` 对象，所以这里的断言是端到端的
 # 「一处登录、两处可用」。
@@ -213,8 +213,8 @@ check "下发共用会话 cookie（path=/）" "yes" \
   "$(printf '%s' "$SESCOOKIE" | grep -qi 'sysauth_molly=[0-9a-f]\{32\}.*path=/' && echo yes || echo no)"
 NSID=$(printf '%s' "$SESCOOKIE" | sed -n 's/^sysauth_molly=\([^;]*\).*/\1/p')
 check "会话 id 是 32 位" "32" "${#NSID}"
-# 关键断言：拿**新手版登录得到的** cookie 去专家版页面，应当直接可用
-check "新手版会话在专家版直接可用" "200" \
+# 关键断言：拿**简洁版登录得到的** cookie 去专家版页面，应当直接可用
+check "简洁版会话在专家版直接可用" "200" \
   "$(status GET /cgi-bin/luci/admin/status/overview -b "sysauth_molly=$NSID")"
 check "该会话在专家版拿到真页面" "Overview" \
   "$(h1_of -b "sysauth_molly=$NSID" "$BASE/cgi-bin/luci/admin/status/overview")"
@@ -237,7 +237,7 @@ check "密码错 → 带 auth_error 回登录页" "/?auth_error=bad_credentials"
 check "密码错不下发 cookie" "0" \
   "$(curl -s -o /dev/null -D- -X POST "$BASE/auth/login" -d 'username=root' \
      -d 'password=wrong' | grep -ci '^set-cookie' || true)"
-# 认证面搬走后，新手版页面**不再**接 POST（旧接口下线）
+# 认证面搬走后，简洁版页面**不再**接 POST（旧接口下线）
 check "POST /lite/ 已下线 → 405" "405" "$(status POST /lite/)"
 # /auth 的边界：不接受 GET、也不该有别的子路径（不泄露方法存在性）
 check "GET /auth/login → 404" "404" "$(status GET /auth/login)"
@@ -967,13 +967,16 @@ for m in getNetworkDevices getWirelessDevices getHostHints; do
 done
 rm -f /tmp/molly-dhcp.leases /tmp/molly-odhcpd.leases
 
-# ---- 专家版前缀可配（--luci-prefix）+ 两套界面共存 ----
+# ---- 专家版前缀可配（--luci-prefix /admin）+ 简洁版单前缀 ----
 #
-# 再起一份实例，把专家版让到 /plus（本站部署形态）。目的是钉住「前缀是一个同源值」：
-# 它同时是路由判据、CGI 的 SCRIPT_NAME、以及新手版页面上注入的链接——任何一处不同步
-# 都会在这里露馅（比如只改了路由，页面里还链到 /cgi-bin/luci）。
+# 再起一份实例：专家版（Go 复刻的 LuCI）让到 /admin，简洁版只有 /lite 一个前缀。
+# 目的是钉住三件事——
+#   ① 「前缀是一个同源值」：它同时是路由判据、CGI 的 SCRIPT_NAME、PATH_INFO 切分点，
+#      还被注入进简洁版页面（expert 字段 → 「前往专家版」的 href）。任何一处不同步都会在这里露馅。
+#   ② 简洁版只有 /lite：整段前缀都出页面（单页应用深链成立）。
+#   ③ **/plus 已彻底下线**——不能退化成 200 静态页，也不能变成死链。
 PREFIX_PORT="${PREFIX_PORT:-18086}"
-start_server "$PREFIX_PORT" --luci-prefix /plus --luci-strip admin
+start_server "$PREFIX_PORT" --luci-prefix /admin --luci-strip admin
 B2="http://127.0.0.1:$PREFIX_PORT"
 for _ in $(seq 1 30); do
   if curl -s -o /dev/null "$B2/"; then break; fi
@@ -985,62 +988,98 @@ SID3=$(curl -s -X POST "$B2/ubus/call/session" \
   | jget '["result"]["ubus_rpc_session"]')
 check "新前缀实例能拿到会话" "32" "${#SID3}"
 COOKIE3="sysauth_molly=$SID3"
-check "新前缀 /plus/ 有菜单页" "200" \
-  "$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE3" "$B2/plus/")"
-# 自研站点是**单页应用**：根路径与任何子路径都回同一份 HTML，导航在 #/ 片段里。
-# 所以这里断言「根与子路径给的是同一份页面」，而不是内置 dispatcher 那套 firstchild 语义。
-check "自研站点：根与子路径同一份页面" "same" \
-  "$([ "$(curl -s -b "$COOKIE3" "$B2/plus/" | wc -c)" = "$(curl -s -b "$COOKIE3" "$B2/plus/status/overview" | wc -c)" ] && echo same || echo differ)"
+
+# ---- 专家版：原版 LuCI 在 /admin ----
+check "专家版 /admin/ 有菜单页" "200" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE3" "$B2/admin/")"
+check "专家版 root firstchild" "Overview" "$(h1_of -b "$COOKIE3" "$B2/admin/")"
 # --luci-strip admin：URL 里省掉顶层 admin 节点，进树时自动补回
-check "短写法 /plus/status/overview" "200" \
-  "$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE3" "$B2/plus/status/overview")"
-# 长写法（带 admin）同样回页面：单页语义下没有"长短"之分，链接都靠前端片段。
-check "长写法 /plus/admin/status/overview" "200" \
-  "$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE3" "$B2/plus/admin/status/overview")"
-# 未登录：页面照给（里面自己弹登录卡），这不是 403——403 是 LuCI 那套的语义。
-check "未登录也出页面（前端弹登录）" "200" \
-  "$(curl -s -o /dev/null -w '%{http_code}' "$B2/plus/")"
-# 旧前缀不再由 dispatcher 服务，而且**也不会退化成静态下载**：docroot 里的 /cgi-bin/*
-# 一律 403（上游 uhttpd 只执行它、从不吐脚本正文；见 internal/handlers/static.go）。
+check "短写法 /admin/status/overview" "200" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE3" "$B2/admin/status/overview")"
+# 旧前缀不再由 dispatcher 服务，而且**也不会退化成静态下载**：docroot 里的 /cgi-bin/* 一律 403
 check "旧前缀不再由 dispatcher 服务" "403" \
   "$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE3" "$B2/cgi-bin/luci/")"
 check "docroot 的 /cgi-bin/* 不外发" "403" \
   "$(curl -s -o /dev/null -w '%{http_code}' "$B2/cgi-bin/luci")"
 check "docroot 的 /cgi-bin 本身也拒绝" "403" \
   "$(curl -s -o /dev/null -w '%{http_code}' "$B2/cgi-bin")"
-# 前缀是否真的贯穿到页面：新手版页里那句 JS 常量应当就是新前缀
-check "新手版注入的是新前缀" "1" \
-  "$(curl -s "$B2/lite/" | grep -c 'EXPERT_PREFIX = "/plus"' || true)"
-check "新手版仍在 /lite/" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$B2/lite/")"
-# 这份实例是**默认渲染方式**（app = 自研站点），所以专家版前缀下应该是我们的页面：
-check "专家版前缀发的是自研站点" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$B2/plus/")"
-check "自研站点：占位符已替换" "0" "$(curl -s "$B2/plus/" | grep -c '__SID__\|__MENU__' || true)"
-check "自研站点：菜单来自二进制" "1" "$(curl -s "$B2/plus/" | grep -c '"id":"dash","title":"仪表盘"' || true)"
-check "自研站点：无 LuCI/ucode 痕迹" "0" "$(curl -s "$B2/plus/" | grep -ciE 'luci-static|bootstrap|require ucode' || true)"
-check "自研站点：子路径回同一份（单页）" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$B2/plus/status/overview")"
-# 十个页面都注册了、且菜单里没有「建设中」的灰项——菜单与页面脱节是最容易犯的错。
-EXP=$(curl -s "$B2/plus/")
-check "自研站点：注册了 10 个页面" "10" "$(printf '%s' "$EXP" | grep -c 'PAGES\.[a-z]*=')"
-check "自研站点：菜单 10 项全部就绪" "0" "$(printf '%s' "$EXP" | grep -c '"ready":false')"
-# 菜单 id 与页面 key 必须一一对应（否则点菜单会落进「建设中」）
-check "自研站点：菜单与页面一一对应" "same" \
+
+# ---- 简洁版：只有 /lite，一个前缀出全部页面 ----
+check "简洁版 /lite/ 出页面" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$B2/lite/")"
+check "简洁版 /lite（无尾斜杠）也出页面" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$B2/lite")"
+check "简洁版：前缀下任意子路径都出同一份（单页深链）" "same" \
+  "$([ "$(curl -s "$B2/lite/" | wc -c)" = "$(curl -s "$B2/lite/admin/status" | wc -c)" ] && echo same || echo differ)"
+# /plus 已下线：既不是页面，也不该被静态兜底成 200
+check "/plus 已下线（不是简洁版页面）" "404" "$(status GET /plus/)"
+check "/plus 不被静态兜底" "404" "$(status GET /plus)"
+EXP=$(curl -s "$B2/lite/")
+check "占位符已替换（简洁版）" "0" "$(printf '%s' "$EXP" | grep -c '__CFG__')"
+# 「前往专家版」：前缀只能来自注入项 CFG.expert（同源到 --luci-prefix），HTML 里不硬编码。
+check "简洁版注入专家版前缀" "1" "$(printf '%s' "$EXP" | grep -c '"expert":"/admin"')"
+check "简洁版有「前往专家版」锚点" "1" "$(printf '%s' "$EXP" | grep -c 'id="expert"')"
+check "简洁版 HTML 里没硬编码 /admin" "0" "$(printf '%s' "$EXP" | grep -c 'href="/admin' || true)"
+check "菜单 10 项全部就绪" "0" "$(printf '%s' "$EXP" | grep -c '"ready":false')"
+check "十个页面都注册了" "10" "$(printf '%s' "$EXP" | grep -c 'PAGES\.[a-z]*=')"
+# 菜单 id 与页面 key 必须一一对应，否则点菜单会落进「建设中」
+check "菜单与页面一一对应" "same" \
   "$([ "$(printf '%s' "$EXP" | grep -o 'PAGES\.[a-z]*=' | sed 's/PAGES\.//;s/=//' | sort | tr '\n' ' ')" \
        = "$(printf '%s' "$EXP" | grep -o '"id":"[a-z]*","title":"[^"]*","ready":true' | sed 's/"id":"//;s/","title".*//' | sort | tr '\n' ' ')" ] \
      && echo same || echo differ)"
-# 未登录时 sid 必须是**空串**（页面据此跳登录页）。要防的是两件事：占位符没被替换、
-# 或者空值变成了 anon 会话 id —— 后者会让未登录的人以为已登录。
-# 登录遮罩必须能被 hidden 属性藏掉：.lg 用了 display:flex（作者样式），优先级高于
-# hidden 自带的 UA display:none —— 少了 [hidden]{display:none!important} 遮罩会常驻，
-# 表现为「登录成功后仍有一层登录框」。这是纯 CSS，curl 看不见，只能断言规则在。
-check "自研站点：登录遮罩可被 hidden 藏掉（CSS 规则）" "1" \
-  "$(printf '%s' "$EXP" | grep -c '\[hidden\]{display:none!important}')"
+# 仪表盘是该站点的第一屏，且**没有**重启（该功能已去掉）
+check "导航第一项是仪表盘" "1" "$(printf '%s' "$EXP" | grep -c '"id":"dash","title":"仪表盘"' || true)"
+check "简洁版没有重启入口" "0" "$(printf '%s' "$EXP" | grep -ci '重启路由器' || true)"
+# 页面里每个 $("id") 引用的元素都必须真的存在于同一段 HTML 里。少一个的后果很隐蔽：
+# mount 里抛TypeError → 整条数据链静默断掉（catch 只弹提示），页面看着正常却没有数据。
+# 这类错 curl 完全看不出来，所以在这里静态查一遍。
+check "简洁版：JS 引用的元素 id 都存在" "" \
+  "$(printf '%s' "$EXP" | python3 -c '
+import re,sys
+s=sys.stdin.read()
+a=s.index("PAGES.dash={mount:function(el){"); b=s.index("/* ---- ", a+10)
+d=s[a:b]
+ids=set(re.findall(r"id=\"([^\"]+)\"", d))
+miss=sorted(set(r for r in re.findall(r"\$\(\"([^\"]+)\"\)", d) if r not in ids))
+print(",".join(miss))' 2>/dev/null)"
 
-check "自研站点：未登录时注入空 sid" "yes" \
-  "$(curl -s "$B2/plus/" | grep -q 'SID=""' && echo yes || echo no)"
-check "自研站点：未登录时不注入 anon 会话" "yes" \
-  "$(curl -s "$B2/plus/" | grep -q 'SID="0\{32\}"' && echo no || echo yes)"
-# / 是入口：302 到 /lite/（302 而不是 301：前缀以后还可能再挪）
+# 页面里那段 JS 必须**语法正确**：单页应用把十个页面塞进一个 <script>，一处括号/引号错
+# 整段就不执行——表现是 h1 停在「…」、登录遮罩也不弹（没有任何报错可看）。
+# curl 只能看到「有响应」，所以这里真的把脚本抽出来交给 node --check 跑一遍。
+if command -v node >/dev/null 2>&1; then
+  printf '%s' "$EXP" | sed -n '/^<script>$/,/^<\/script>$/p' | sed '1d;$d' > "/tmp/molly-app-$$.js"
+  # 占位符先替成合法字面量再检查
+  sed -i.bak 's/__CFG__/{}/' "/tmp/molly-app-$$.js" 2>/dev/null || true
+  check "简洁版页面 JS 语法正确" "0" "$(node --check "/tmp/molly-app-$$.js" 2>&1 | wc -l | tr -d ' ')"
+  rm -f "/tmp/molly-app-$$.js" "/tmp/molly-app-$$.js.bak"
+else
+  echo "（跳过 JS 语法检查：本机没有 node）"
+fi
+check "简洁版无 LuCI/ucode 痕迹" "0" "$(printf '%s' "$EXP" | grep -ciE 'luci-static|bootstrap|require ucode' || true)"
 check "/ 仍是入口 → 302 /lite/" "/lite/" "$(header_of Location "$B2/")"
+
+# ---- cgi-io 三件套路由（fs.exec_direct / read_direct / uploadFile 的服务端）----
+#
+# 本实例 prefix=/admin + strip admin → SCRIPT_NAME=""→cgi_base=""，三件套落在裸 /cgi-*。
+# 关键回归（真机 2026-10-09 报的 405）：接了 ServeCGIIO 之后 /cgi-exec 不再被 ServeStatic
+# 当静态路径判 405。用一个「查无此人」的会话（非空、非默认，但内部 ACL 里没有）走 fail-closed，
+# 命令/路径一律被拒（403）——这与能不能真执行无关，纯验路由已接通 + ACL 兜底没放开。
+BOGUS_SID="beef000000000000000000000000000f"
+check "cgi-io: GET /cgi-exec → 405（只认 POST，不是静态 404）" "405" \
+  "$(curl -s -o /dev/null -w '%{http_code}' "$B2/cgi-exec")"
+check "cgi-io: POST /cgi-exec 未授权会话 → 403（不再是 405）" "403" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B2/cgi-exec" \
+        --data-urlencode "sessionid=$BOGUS_SID" --data-urlencode 'command=echo hi')"
+check "cgi-io: POST /cgi-exec 空会话 → 403" "403" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B2/cgi-exec" -d 'sessionid=&command=echo+hi')"
+check "cgi-io: POST /cgi-download 未授权 → 403" "403" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B2/cgi-download" \
+        --data-urlencode "sessionid=$BOGUS_SID" --data-urlencode 'path=/etc/hosts')"
+check "cgi-io: POST /cgi-upload → 200（不再是 405）" "200" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B2/cgi-upload" -d 'sessionid=x')"
+check "cgi-io: /cgi-upload 回 JSON 带 failure" "1" \
+  "$(curl -s -X POST "$B2/cgi-upload" -d 'sessionid=x' | grep -c '"failure"' || true)"
+# 边界：非 cgi-io 的确切路径不被误吞（/cgi-exec/x 落静态 → GET 404）
+check "cgi-io: /cgi-exec/x 不误吞" "404" \
+  "$(curl -s -o /dev/null -w '%{http_code}' "$B2/cgi-exec/x")"
 
 echo
 # 全角标点紧跟变量必须用 ${}：bash 会把多字节标点的字节当成变量名的一部分

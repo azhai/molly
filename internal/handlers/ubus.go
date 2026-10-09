@@ -429,7 +429,7 @@ func invoke(path, method string, hasParams bool, params json.RawMessage,
 	// object=对象名、function=方法名；不过 → -32002，fail-closed。
 	// 例外：session 对象对自己的会话是自服务的（get/set/unset/destroy 由对象按 sid
 	// 鉴权）——不放行的话 acl.d 里没人授予 session.get，登录后读不到会话。
-	selfService := path == "session" && backend.SessionSelfService(sid, method)
+	selfService := path == "session" && be.SessionSelfService(sid, method)
 	if !selfService && !be.SessionAccessUbus(sid, path, method) {
 		return rpcErrorJSON(rpcAccess, idJSON)
 	}

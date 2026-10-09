@@ -133,6 +133,47 @@ func TestBuildCGIEnvBarePrefix(t *testing.T) {
 	}
 }
 
+// 专家版前缀 /admin + --luci-strip admin：交给 ucode 的 SCRIPT_NAME 必须去掉那段尾缀，
+// 否则 build_url = SCRIPT_NAME(/admin) + 树首段 admin 会把 URL 拼成 /admin/admin/…（双写）。
+func TestCGIScriptNameWithStrip(t *testing.T) {
+	defer func(p, s string) { LuciPrefix, LuciStripSegment = p, s }(LuciPrefix, LuciStripSegment)
+
+	if err := SetLuciPrefix("/admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetLuciStripSegment("admin"); err != nil {
+		t.Fatal(err)
+	}
+	if got := cgiScriptName(); got != "" {
+		t.Errorf("SCRIPT_NAME = %q，期望空串（/admin 去掉尾段 admin）", got)
+	}
+
+	r := httptest.NewRequest("GET", "/admin/status/overview", nil)
+	env := buildCGIEnv(r, "/admin/status/overview", "127.0.0.1", "/www", "", nil)
+	if got := envValue(env, "SCRIPT_NAME"); got != "" {
+		t.Errorf("env SCRIPT_NAME = %q，期望空串", got)
+	}
+	// PATH_INFO 仍是完整树路径（ucode 靠它找节点）
+	if got := envValue(env, "PATH_INFO"); got != "/admin/status/overview" {
+		t.Errorf("PATH_INFO = %q，期望 /admin/status/overview", got)
+	}
+}
+
+// 上游默认（无前缀改写、strip 为空）：SCRIPT_NAME 逐字节等于 LuciPrefix，行为不变。
+func TestCGIScriptNameNoStrip(t *testing.T) {
+	defer func(p, s string) { LuciPrefix, LuciStripSegment = p, s }(LuciPrefix, LuciStripSegment)
+
+	if err := SetLuciPrefix("/cgi-bin/luci"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetLuciStripSegment(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := cgiScriptName(); got != "/cgi-bin/luci" {
+		t.Errorf("SCRIPT_NAME = %q，期望 /cgi-bin/luci", got)
+	}
+}
+
 func TestSplitCommand(t *testing.T) {
 	got := splitCommand("  /usr/bin/ucode \t /www/cgi-bin/luci ")
 	want := []string{"/usr/bin/ucode", "/www/cgi-bin/luci"}

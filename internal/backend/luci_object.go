@@ -50,6 +50,19 @@ func callLuciRPC(method, paramsJSON string) (string, int) {
 	return "", StatusMethodNotFound
 }
 
+// luciGetFeatures 是 `luci` 对象的 getFeatures（rpcd-mod-luci 的 luci_get_features）。
+//
+// LuCI 前端在渲染导航**之前**调它，拿不到就整站报
+// "RPC call to luci/getFeatures failed"，菜单一个都不出来。所以这一条是 molly
+// 自持的：不依赖 rpcd 在不在。
+//
+// 值按目标设备的事实：ImmortalWrt 25.12 用 uci、不用 sysrepo → luci-sysrepo 为 false。
+// 其余方法（getInitList / getMountPoints / getCPUInfo …）仍归 rpcd，见 internal_objects.go
+// 的 `case "luci"`——只抢这一条，别把整个对象接过来。
+func luciGetFeatures() (string, int) {
+	return `{"features":{"luci-sysrepo":false}}`, StatusOK
+}
+
 // ---------------------------------------------------------------------------
 // 租约模型与解析助手（纯函数，now 由调用方注入便于测试）
 // ---------------------------------------------------------------------------

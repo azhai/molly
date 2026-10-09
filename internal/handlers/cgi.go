@@ -54,7 +54,7 @@ func buildCGIEnv(r *http.Request, treePath, peerHost, docroot, ubusSocket string
 	env = append(env, fmt.Sprintf("SERVER_PROTOCOL=HTTP/1.%d", r.ProtoMinor))
 	env = append(env, "REQUEST_METHOD="+cgiMethodString(r.Method))
 	env = append(env, "REQUEST_URI="+r.RequestURI)
-	env = append(env, "SCRIPT_NAME="+LuciPrefix)
+	env = append(env, "SCRIPT_NAME="+cgiScriptName())
 	env = append(env, "PATH_INFO="+pathInfo)
 	env = append(env, "QUERY_STRING="+query)
 	env = append(env, "DOCUMENT_ROOT="+docroot)
@@ -92,6 +92,26 @@ func buildCGIEnv(r *http.Request, treePath, peerHost, docroot, ubusSocket string
 		env = append(env, "MOLLY_UBUS_SOCKET="+ubusSocket)
 	}
 	return env
+}
+
+// cgiScriptName 给出交给 CGI 子进程（ucode dispatcher）的 SCRIPT_NAME。
+//
+// 它是「专家版前缀」减去 `--luci-strip` 省掉的那一段菜单路径。为什么不是直接用 LuciPrefix：
+//
+// ucode 的 build_url（dispatcher.uc）与前端 luci.js 的 url() 都是 `SCRIPT_NAME + 菜单树路径`
+// 来拼每一条页面链接，而菜单树的顶层恒有一段 `admin`（URL 上被 --luci-strip 省掉的那一段）。
+// 若把 SCRIPT_NAME 直接设成前缀 `/admin`，拼出来就是 `/admin/admin/status/overview`——前缀名
+// 与树首段名撞车，URL 里 `admin` 双写。
+//
+// 把 SCRIPT_NAME 里那段尾缀（= strip 段）去掉，`build_url = SCRIPT_NAME + 树路径` 正好落回
+// 单段 `/admin/status/overview`；而入站侧 LuciTreePath 依旧按前缀折算、把省掉的段补回树里，
+// 两边对得上。strip 为空（上游默认）时本函数即返回 LuciPrefix，与改动前逐字节一致。
+func cgiScriptName() string {
+	if LuciStripSegment == "" {
+		return LuciPrefix
+	}
+	// 只在前缀字面以 strip 段收尾时才去掉它；否则（配置不匹配）原样返回，行为退回旧写法。
+	return strings.TrimSuffix(LuciPrefix, LuciStripSegment)
 }
 
 // cgiResponse 是解析后的 CGI 响应。
@@ -176,7 +196,7 @@ func parseCGIResponse(raw string) (cgiResponse, bool) {
 		case strings.EqualFold(name, "Content-Length"), strings.EqualFold(name, "Connection"):
 			// 由 molly 决定，避免脚本给的长度与真实 body 不一致把 keep-alive 搞坏
 		case strings.EqualFold(name, "Set-Cookie"):
-			// 会话 cookie 的 path 放宽到 `/`：专家版前缀（`/pro/`）与新手版（`/`）必须
+			// 会话 cookie 的 path 放宽到 `/`：专家版前缀（`/admin/`）与简洁版（`/lite/`）必须
 			// 读写同一个 cookie 槽位，否则各有一条会话。见 widenSessionCookiePath。
 			resp.extra = append(resp.extra, ExtraHeader{Name: name, Value: widenSessionCookiePath(value)})
 		default:
@@ -384,8 +404,8 @@ func cgiReason(code int) string {
 // widenSessionCookiePath 把**会话 cookie** 的 path 属性放宽成 `/`，其余 Set-Cookie 原样返回。
 //
 // 为什么：上游 dispatcher 用 `path=${build_url()}` 下发会话 cookie，也就是**专家版前缀**
-// （本站 `/pro/`）。在「LuCI 独占整个站点」时这没问题，但本站 `/` 上还有一套新手版，而
-// cookie 的作用域是**按 path** 判定的——`/pro/` 作用域的 cookie 浏览器根本不会在 `/` 上
+// （本站 `/admin/`）。在「LuCI 独占整个站点」时这没问题，但本站 `/lite` 上还有一套简洁版，而
+// cookie 的作用域是**按 path** 判定的——`/admin/` 作用域的 cookie 浏览器根本不会在 `/lite` 上
 // 发回来。结果是两套界面各自登录、各有一条会话（用户报的「session 不统一」）。
 //
 // 放宽到 `/` 之后，两套界面读写的是**同一个 cookie 槽位**，也就是同一条会话：在哪边登录

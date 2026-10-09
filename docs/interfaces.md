@@ -16,12 +16,12 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 | `--listen` | `0.0.0.0:8080` | **只接受数字地址**（`0.0.0.0:8080`、`[::]:8080`）；不做 DNS 解析，主机名直接报错退出 |
 | `--docroot` | `/www` | 静态文件根目录；启动时去掉尾部 `/` |
 | `--menu-dir` | `/usr/share/luci/menu.d` | LuCI 菜单目录（`*.json`）；同样去尾部 `/` |
-| `--luci-prefix` | `/cgi-bin/luci` | **专家版（LuCI）的 URL 前缀**。本站部署用 `/plus`，把 `/` 留给新手版入口（§3.1）。这一个值同时决定路由判据、CGI 的 `SCRIPT_NAME`、以及 `PATH_INFO` 的切分点——dispatcher 的 `build_url` 就是拿 `SCRIPT_NAME` 拼页面 URL 的，必须同源。形态要求：`/` 开头、不以 `/` 结尾、不含空白与 `?`/`#`，否则启动即报错退出 |
-| `--luci-cgi` | 空 | 把**专家版前缀**交给子进程执行（设备上填 `/www/cgi-bin/luci`，复刻 uhttpd 的 CGI 形态，ADR 0003 的 T1；**不是** `/usr/bin/ucode …/uhttpd.uc`，见 §5.5）。留空 = 用内置的 Odin dispatcher（§5） |
+| `--luci-prefix` | `/cgi-bin/luci` | **专家版（用 Go 重写的 LuCI）的 URL 前缀**。本站部署**只留 `/admin`**（§3.1）。这一个值同时决定路由判据、CGI 的 `SCRIPT_NAME`、以及 `PATH_INFO` 的切分点——dispatcher 的 `build_url` 就是拿 `SCRIPT_NAME` 拼页面 URL 的，必须同源。形态要求：`/` 开头、不以 `/` 结尾、不含空白与 `?`/`#`，否则启动即报错退出 |
+| `--luci-cgi` | 空 | **对照/排查**用的那条路：把**专家版前缀**交给子进程执行（设备上填 `/www/cgi-bin/luci`，复刻 uhttpd 的 CGI 形态，ADR 0003 的 T1；**不是** `/usr/bin/ucode …/uhttpd.uc`，见 §5.5）。留空 = 用内置 Go dispatcher（§5），也就是本仓部署的默认形态 |
 | `--ubus-socket` | 空 | 让 molly 把 ubus 对象注册在另一条独立总线（§7）；留空 = 系统总线，于是与 rpcd 争 `session`/`uci`/`file`/`luci-rpc` |
-| `--luci-render` | `app` | 专家版渲染方式：`app`=自研 Go+HTML 站点（默认）；`builtin`=内置占位 dispatcher；`cgi`=设备 ucode dispatcher（需配 `--luci-cgi`）。**没显式给时按有无 `--luci-cgi` 自动推断**，所以旧部署行为不变 |
+| `--luci-render` | 推断 | 专家版渲染方式：`builtin`=内置 Go dispatcher（**本站的目标形态**，视图尚未全部落地）；`cgi`=设备 ucode dispatcher（对照/排查，需配 `--luci-cgi`）。**没显式给时按有无 `--luci-cgi` 自动推断**，所以旧部署行为不变 |
 | `--luci-strip` | 空 | 从专家版 URL 里省掉的那段菜单路径（本站 `admin`）。URL 侧少它，进菜单树时补回——否则 ucode dispatcher 会从树根找 `status`（它挂在 `admin` 下）导致每页 404。写法容错：`admin` 与 `/admin` 等价 |
-| `--luci-prefix` 的树路径换算 | — | URL `/plus/status/overview` → 树路径 `/admin/status/overview`；`/plus` → `/`（走 root firstchild）。长写法 `/plus/admin/...` 仍可用 |
+| `--luci-prefix` 的树路径换算 | — | URL `/admin/status/overview` → 树路径 `/admin/status/overview`（`--luci-strip admin` 把省掉的那段补回）；`/admin` → `/`（走 root firstchild） |
 | `-h` / `--help` | — | 打印用法并正常退出 |
 
 - **参数错误**（未知参数、缺参数、地址无法解析、监听失败）：stderr 打印原因 + 用法，**退出码 2**。
@@ -78,7 +78,7 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 | 0 | — | `http.normalize_path` | 400 / 403 在这里终结，之后 handler 才能安全拼路径 |
 | 1 | `/ubus` | `handlers.serve_ubus` | 见 §4 |
 | 2 | `--luci-prefix`（默认 `/cgi-bin/luci`） | `handlers.serve_luci` | 见 §5；必须排在静态文件之前，否则真实文件会被抢 |
-| 3 | `/`、`/lite`、`/lite/index.html` | `handlers.ServeNovice` | `/` 是入口（**302** 到 `/lite/`），页面本体在 `/lite`；排在静态文件之前，docroot 里的 `index.html` 顶不掉它们 |
+| 3 | `/`、`/lite` 及其**任意子路径** | `handlers.ServeSimple` | `/` 是入口（**302** 到 `/lite/`）；`/lite` 下任意路径都回同一份 HTML（单页应用，路由在 `#/` 片段，深链/刷新/后退都成立）。排在静态文件之前，docroot 里的 `index.html` 顶不掉它们 |
 | 4 | 其余 | `handlers.serve_static` | docroot + path；目录 → 追加 `/index.html`；非普通文件 → 404 |
 | 4′ | `/cgi-bin`、`/cgi-bin/*` | `handlers.serve_static` | **403，不外发**：上游 uhttpd 把 docroot 的 `/cgi-bin/*` 当 CGI **执行**、从不吐脚本正文；molly 只在 `--luci-cgi` 那条命令（绝对路径）上执行 CGI，所以这里策略性拒绝。换过专家版前缀后尤其重要——那条路径不再被 `serve_luci` 吃掉，脚本文件否则会变成可下载的纯文本 |
 
@@ -86,9 +86,8 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 
 | 界面 | 路径 | 内容 |
 |---|---|---|
-| **专家版** | `--luci-prefix`（本站 `/plus`） | 完整的 LuCI：菜单树、ACL 裁树、全部页面。内容由 `--luci-cgi` 交给设备 ucode dispatcher（§5.5） |
-| **新手版** | `/lite`（`/` 是 302 入口） | 一页只放最常见的六件事：系统状态、实时负载图、重启、内外网设置、无线中继、DHCP 分配与 MAC 绑定 |
-| **专家版（自研）** | `--luci-prefix`（本站 `/plus`） | **默认渲染方式**（`--luci-render app`）：我们自己实现的 Go+HTML 站点，十个页面，数据面只有 `/ubus`。菜单是 `webassets/expert.Menu`（Go 侧数据，**不读 menu.d**），页面是 `webassets/expert/index.html`（`go:embed` 的单文件）。任何子路径都回同一份 HTML（单页，路由在 `#/ 片段`）。需要设备 ucode 渲染的完整 LuCI 时用 `--luci-render cgi` + `--luci-cgi`（逃生口），`builtin` 是内置占位 dispatcher |
+| **专家版** | `--luci-prefix`（本站 `/admin`） | **用 Go 重写的 LuCI**：菜单树、ACL 裁树、路径语义逐条对齐上游 `dispatcher.uc`，界面与操作与原版一致。默认由**内置 Go dispatcher**（`internal/luci`）渲染；`--luci-cgi` 把整段前缀交给设备 ucode（§5.5），那是**对照与排查**用的，不是部署形态。**现状差距**：视图层还没落地——cbi/view/template 类节点回 501 并带 `action.type/view/menu`，见 §5.3 |
+| **简洁版** | `/lite`（`/` 是 302 入口） | 我们自己实现的 Go+HTML **单页应用**，十个页面（仪表盘 / 内外网 / 无线 / DHCP / 系统 / 日志 / 服务 / 存储 / 诊断 / 备份），数据面只有 `/ubus`。菜单是 `webassets/simple.Menu`（Go 侧数据，**不读 menu.d**），页面是 `webassets/simple/index.html`（`go:embed` 的单文件）。仪表盘是首屏（`#/dash`），其余走 `#/片段`。**注意：仪表盘不含「重启」**——该功能只在「系统」页 |
 
 十个页面与各自的数据面：
 
@@ -113,13 +112,14 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 > `file` 对象会回 `Operation not supported`。`log.read` 是 rpcd 自己的方法，也正是
 > LuCI 日志页走的那条路。
 
-- 新手版页面是**编译进二进制的单文件**（Go 版 `webassets/novice/index.html`，`go:embed`；内联 CSS/JS），
-  不依赖 docroot 上的文件、也不碰 ucode。服务端只在响应时替换两个占位符：
-  `__SID__`（会话 id，空串 = 未登录）与 `__EXPERT_PREFIX__`（专家版前缀）。
+- 简洁版页面是**编译进二进制的单文件**（`webassets/simple/index.html`，`go:embed`；内联 CSS/JS），
+  不依赖 docroot 上的文件、也不碰 ucode。服务端只在响应时替换**一个**占位符 `__CFG__`，
+  它是一份 JSON：`{sid, menu, expert}`——会话 id、菜单（`webassets/simple.Menu`）、专家版前缀
+  （`--luci-prefix`，页面据此生成「前往专家版」的链接，所以 HTML 里没有硬编码的路径）。
 - 会话 id 取自 Cookie，会被拼进页面的 JS 字符串，所以按**白名单**收窄到「只可能是 32 位 hex」，
   非法输入直接丢弃（不做转义——两种上下文各转义一遍容易漏）。
 - **两套界面共用同一个会话**（同一个 cookie）与**同一个数据面**（`/ubus` 的 JSON-RPC，
-  前端直接发 `params: [sid, obj, meth, args]`）：服务端不为新手版新增任何 API，也没有第二套鉴权。
+  前端直接发 `params: [sid, obj, meth, args]`）：服务端不为简洁版新增任何 API，也没有第二套鉴权。
   「登录一次、两边都能用」是这么来的，不是额外协调出来的。
 
 ## 4. `/ubus` 契约
@@ -843,7 +843,9 @@ pkttype 10 / halen 11 / addr 12-19（`linux/if_packet.h`），S2d 实现 ifaddrs
 | 任一组有 write | `true` | 正常（`readonly=no`） |
 
 - **会话来源**：LuCI 写的 cookie（`sysauth_http` / `sysauth_https`，上游 `:963-966`），由
-  `src/handlers/cgi_luci.odin` 解析后交给 `luci.dispatch`；没有 cookie 就是「无会话」。
+  `internal/handlers/luci.go` 的 `luciSIDFromCookie` 解析后交给 `luci.Dispatch`；没有 cookie
+  就是「无会话」。它另外还认 `sysauth_molly`（molly 侧专属名），简洁版用同一个函数，于是两套
+  界面共用一条会话。
 - **判权口径**：路径上所有节点的组名取**并集**（上游 `ctx.acls`），其中**任一**有 write 就不算
   只读（上游 `check_acl_depends` 返回的是 `writable`）。
 - **`firstchild` 当选的那条支路**也并进并集（上游 `resolve_firstchild` 里的 `ctx_append`）。

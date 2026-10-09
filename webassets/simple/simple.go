@@ -1,37 +1,38 @@
-package expert
+// Package simple —— 简洁版（`/lite`）的前端资源与导航菜单。
+//
+// 三个刻意为之的取舍：
+//
+//  1. **不读 menu.d**。菜单是下面这份 Go 侧数据（Menu），编译进二进制。代价是设备升级
+//     带来的新页面不会自动出现（要我们自己加），换来的是彻底不依赖 LuCI 的目录结构。
+//  2. **不调 ucode / 不用 LuCI 主题**。页面是单文件（内联 CSS/JS、零 CDN、零构建），
+//     编译期 embed，离线与弱网可用。
+//  3. **服务端不新增业务 API**。数据面就是既有的 `/ubus` JSON-RPC，服务端只负责把页面
+//     发出去、把会话 id、菜单与专家版前缀注入进去。
+//
+// 简洁版只有**一个前缀**（/lite）与**一份页面**：仪表盘是它的第一屏（`dash`），其余页面走
+// `#/片段`。菜单是 Menu ——站点导航的唯一事实来源，页面不自己硬编码。
+package simple
 
 import _ "embed"
 
 import "encoding/json"
 
-// 专家版界面：**我们自己实现的 Go + HTML 站点**，只有动作经 ubus。
-//
-// 三个刻意为之的取舍：
-//
-//  1. **不读 menu.d**。菜单是下面这份 Go 侧数据（Menu），编译进二进制。代价是设备升级
-//     带来的新页面不会自动出现（要我们自己加），换来的是彻底不依赖 LuCI 的目录结构——
-//     这是「只依赖 libubus」最干净的形态。
-//  2. **不调 ucode / 不用 LuCI 主题**。页面是单文件（内联 CSS/JS、零 CDN、零构建），
-//     编译期 embed，离线与弱网可用。
-//  3. **服务端不新增业务 API**。数据面就是既有的 `/ubus` JSON-RPC，服务端只负责把页面
-//     发出去、把会话 id 与下面这份菜单注入进去。
-//
 //go:embed index.html
 var HTML string
 
-// 直接用 HTML：调用方只需 strings.ReplaceAll 注入占位符，不必知道来源。
-
-// MenuItem 是菜单里的一项。页面按这个结构渲染左侧导航，点击切 hash（前端路由）。
+// MenuItem 是菜单里的一项。
 //
-// href 用路由片段（"dash" / "net" …），不是 URL 路径：站点是单页，URL 只带
-// `--luci-prefix` + `#/片段`，专家版前缀一改，所有链接自动跟着变。
+// id 用路由片段（"dash" / "net" …），不是 URL 路径：页面按「<前缀>/#/片段」的约定生成链接，
+// 所以前缀一改，所有链接自动跟着变。
 type MenuItem struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	Ready bool   `json:"ready"` // false = 菜单里可见但页面尚未落地
 }
 
-// Menu 是专家版的菜单。**这是站点导航的唯一事实来源**，页面不自己硬编码。
+// Menu 是简洁版的菜单。**这是站点导航的唯一事实来源**，页面不自己硬编码。
+//
+// 第一项固定是 `dash`（仪表盘），也就是简洁版的首屏。
 var Menu = []MenuItem{
 	{ID: "dash", Title: "仪表盘", Ready: true},
 	{ID: "net", Title: "内外网", Ready: true},
@@ -53,6 +54,29 @@ func MenuJSON() string {
 	b, err := json.Marshal(Menu)
 	if err != nil {
 		return "[]"
+	}
+	return string(b)
+}
+
+// Config 是注入页面的一份配置（占位符 `__CFG__`）。
+//
+// 为什么合成一个 JSON 而不是散着好几个占位符：页面要同时拿到会话、菜单与专家版前缀。散着加
+// 占位符只会越加越散、也多一处漏替换的面。
+//
+// 字段值全部是服务端可控的（会话 id 已被收窄成 hex、菜单是本包常量、前缀来自 CLI 且经过
+// 形态校验），拼进 `<script>` 里的 JSON 不会出现 `</script>` 之类的破环序列。
+type Config struct {
+	SID    string     `json:"sid"`
+	Menu   []MenuItem `json:"menu"`
+	Expert string     `json:"expert"` // 专家版（Go 复刻的 LuCI）的 URL 前缀，页面据此出「前往专家版」链接
+}
+
+// ConfigJSON 序列化配置。失败时退化成一份「未登录、空菜单」的配置而不是 panic——
+// 页面会显示登录卡，行为可预期。
+func ConfigJSON(c Config) string {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return `{"sid":"","menu":[],"expert":""}`
 	}
 	return string(b)
 }

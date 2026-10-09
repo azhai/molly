@@ -2,7 +2,7 @@
 //
 // 两类资源，都在本包（项目根目录下的 webassets/）：
 //
-//   - `NoviceHTML`（novice.go）：新手版（挂在 `/`）那一整页，**恒编入**；
+//   - `simple/`（simple.go）：简洁版（挂在 `/lite`）那一整页 + 菜单，**恒编入**；
 //   - `luci-static/`（assets_embed.go）：设备 LuCI 静态资源的**兜底副本**，可选——
 //     `-tags embed_assets` 编译时才带，docroot 里找不到的文件再由它送出去，于是
 //     「只丢一个二进制上去」也能把界面跑起来。

@@ -3,6 +3,7 @@
 package backend
 
 import (
+	"encoding/json"
 	"os"
 	"sync"
 	"syscall"
@@ -39,7 +40,29 @@ var (
 	ubusSocket string // 私有总线路径；空 = 系统总线
 	ownCtx     *cbind.Ctx
 	sysCtx     *cbind.Ctx
+
+	// sessionOnBus：桥接态标志——系统总线且设备 rpcd 占住 session 时置真。此时
+	// molly 原生界面（/lite、/auth、/ubus）把 session 对象与前置 ACL 交给总线上的
+	// rpcd，使 sysauth_molly 里的 sid 全端通用（cookie 不分端口，两套存储会互盖）。
+	// 非桥接态（内置接管 / darwin）恒为 false，行为与以前完全一致。见 SetSessionOnBus。
+	sessionOnBus bool
 )
+
+// SetSessionOnBus 记下是否处于「session 由总线上的 rpcd 权威」的桥接态。
+// main 在起任何线程 / HTTP 服务之前调用一次（darwin.go 有同名空实现）。
+func SetSessionOnBus(on bool) {
+	sessionOnBus = on
+	// 桥接态顺带接管「自有对象实现内部那道 ACL」：进程内 uci/file 对象调的 sessionAccess
+	// 也转问 rpcd。否则桥接态下真会话在 rpcd、molly 私有存储查不到那条 sid，会被一律
+	// 误判成 Permission denied（uci.get / file.exec 等带内部鉴权的方法在 :8080 频繁被拒）。
+	if on {
+		SetSessionAccessBridge(func(sid, scope, object, function string) (bool, bool) {
+			return rpcdSessionAccess(sid, scope, object, function), true
+		})
+	} else {
+		SetSessionAccessBridge(nil)
+	}
+}
 
 // SetUbusSocket 记下私有总线路径（由 main 在起任何线程之前调用一次）。
 func SetUbusSocket(path string) { ubusSocket = path }
@@ -102,11 +125,15 @@ func listOn(ctx *cbind.Ctx, path string) (string, int, bool) {
 
 func (linuxBackend) CallObject(objPath, method, paramsJSON, sid string) CallResult {
 	// 自有对象（session/uci/file/luci-rpc/molly.probe）走进程内真实现，与 darwin 完全同构。
-	if reply, status, handled := callOwnObject(objPath, method, paramsJSON, sid); handled {
-		if status != 0 {
-			return CallResult{Outcome: OutcomeOk, Ret: status}
+	// 例外：桥接态下的 session——让登录与会话读写都落到总线上的 rpcd，molly 不再用自己的
+	// 进程内存储 mint sid。其余对象仍由 molly 服务（它们的 ACL 判定已在 SessionAccessUbus 里交给 rpcd）。
+	if !(sessionOnBus && objPath == "session") {
+		if reply, status, handled := callOwnObject(objPath, method, paramsJSON, sid); handled {
+			if status != 0 {
+				return CallResult{Outcome: OutcomeOk, Ret: status}
+			}
+			return CallResult{Outcome: OutcomeOk, Ret: 0, Reply: reply}
 		}
-		return CallResult{Outcome: OutcomeOk, Ret: 0, Reply: reply}
 	}
 
 	ubusMu.Lock()
@@ -208,8 +235,45 @@ func (linuxBackend) UciConfigSections(config string) ([]UciSection, bool) {
 	return uciConfigSections(config)
 }
 
+// rpcdSessionAccess 把一道 ACL 判断交给总线上的 rpcd：session.access(scope/object/function)。
+// 传输失败或 rpcd 报错一律按拒绝（fail-closed）。桥接态下 HTTP 前置 ACL 与自有对象内部
+// ACL 都收敛到这里，保证 :8080 与 :80 判定同源一致。复用 CallObject（session 在桥接态已
+// 转发到总线），不另立 plumbing。
+func rpcdSessionAccess(sid, scope, object, function string) bool {
+	params := `{"scope":` + quoteJSON(scope) +
+		`,"object":` + quoteJSON(object) +
+		`,"function":` + quoteJSON(function) + `}`
+	res := linuxBackend{}.CallObject("session", "access", params, sid)
+	if res.Outcome != OutcomeOk || res.Ret != 0 {
+		return false
+	}
+	var out struct {
+		Access bool `json:"access"`
+	}
+	if err := json.Unmarshal([]byte(res.Reply), &out); err != nil {
+		return false
+	}
+	return out.Access
+}
+
 func (linuxBackend) SessionAccessUbus(sid, object, function string) bool {
+	if sessionOnBus {
+		return rpcdSessionAccess(sid, "ubus", object, function)
+	}
 	return SessionAccessUbus(sid, object, function)
+}
+
+func (linuxBackend) SessionSelfService(sid, method string) bool {
+	if sessionOnBus {
+		// 会话归 rpcd：对 get/set/unset/destroy 这几个「读改自己会话」的方法，按 sid
+		// 形态放行，真正的有效性交给被转发的 rpcd session 对象兜底（rpcd 不认的 sid 自会报错）。
+		switch method {
+		case "get", "set", "unset", "destroy":
+			return sid != "" && sid != SessionDefaultID
+		}
+		return false
+	}
+	return SessionSelfService(sid, method)
 }
 
 func (linuxBackend) SessionACLLevel(sid string, groups []string) ACLLevel {

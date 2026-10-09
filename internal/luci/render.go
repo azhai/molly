@@ -8,7 +8,8 @@ import (
 )
 
 // 「渲染」：不做模板、不读 view 文件，只把路由解析的结果显示出来（生产走 ADR 0003 的
-// `--luci-cgi` → 设备 ucode；这份内置 dispatcher 是对照实现与回归基准）。
+// `--luci-cgi` → 设备 ucode（对照与排查）。这份内置 dispatcher 是**专家版的目标形态**：
+// 菜单树/ACL/路径语义按上游复刻，视图层尚未落地。
 // 它的价值是让解析结果可被 curl 断言：命中的节点、action、request_args、以及
 // **本会话是否只读**（depends.acl 真的参与裁树）。
 //
@@ -91,9 +92,12 @@ func renderPlaceholder(node *Node, action Action, args []string, readonly bool) 
 //
 // 上游在这一步是：先拿表单里的 luci_username / luci_password 试登录，拿不到会话就
 // **403 Forbidden + `X-LuCI-Login-Required: yes` + 主题的 sysauth 登录表单**。
-// molly 的内置 dispatcher 不渲染模板（ADR 0003：登录页由 `--luci-cgi` 的 ucode 提供），
-// 所以状态码与响应头照上游对齐、正文换成这段可 curl 断言的提示——至少让人看出
-// 「不是 404，是要登录，而且落在哪条路径上」。
+// molly 的内置 dispatcher 还没做模板层，所以状态码与响应头照上游对齐、正文换成这段可
+// curl 断言的提示——至少让人看出「不是 404，是要登录，而且落在哪条路径上」。
+//
+// **这是待补项**：专家版是「用 Go 重写的 LuCI」，它必须有自己的登录页（表单 POST 到
+// 共用的 `/auth/login`，见 handlers/auth.go），而不是只有提示；补的时候保持 403 +
+// `X-LuCI-Login-Required: yes` 这两个可断言的量不变。
 func renderLoginRequired(path string) string {
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n")

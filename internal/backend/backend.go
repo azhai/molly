@@ -155,4 +155,9 @@ type Backend interface {
 	// SessionAccessUbus 是 HTTP 侧的前置 ACL 校验（uhttpd 的 uh_ubus_allowed）：
 	// sid 对 scope="ubus"、object=对象名、function=方法名 是否有权限。fail-closed。
 	SessionAccessUbus(sid, object, function string) bool
+	// SessionSelfService 报告 sid 能否对**自己**的会话直接调 session 的
+	// get/set/unset/destroy（uhttpd 那道自服务例外，不走 ubus scope 的 ACL）。
+	// 桥接态（会话归总线上的 rpcd）下实现按 sid 形态放行，真正的有效性交给
+	// 被转发的 rpcd session 对象兜底。
+	SessionSelfService(sid, method string) bool
 }

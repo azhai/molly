@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -12,9 +14,9 @@ import (
 
 // /auth —— 两套界面**共用**的认证面：登录、退出、改密码。
 //
-// 为什么收在一处：此前登录/退出散在「新手版页面自己的 URL」（`POST /lite/`，带
-// action=login|logout）和「专家版前缀」（`POST <luci-prefix>`，由设备 ucode dispatcher
-// 的主题表单提供）两处，字段名与跳转行为各是一套。现在统一成三个端点，谁的表单都往这里打：
+// 为什么收在一处：此前登录/退出散在「简洁版页面自己的 URL」（`POST /lite/`，带
+// action=login|logout）和「专家版前缀」（`POST <luci-prefix>`，由 dispatcher 的主题表单
+// 提供）两处，字段名与跳转行为各是一套。现在统一成三个端点，谁的表单都往这里打：
 //
 //	POST /auth/login     用户名 + 密码       → 302 + 会话 cookie（path=/）
 //	POST /auth/logout    销毁会话 + 清 cookie → 302
@@ -31,6 +33,12 @@ import (
 // `username`/`password`，两组都收——把任一侧的表单切到 /auth/login 都不必改 HTML。
 const (
 	authPrefix = "/auth"
+
+	// sessionCookie 是**简洁版与专家版共用**的会话 cookie 名。
+	sessionCookie = "sysauth_molly"
+
+	// anonSID 是 ubus 的匿名会话哨兵：只有 session.login / access 这类少数方法对它放行。
+	anonSID = "00000000000000000000000000000000"
 
 	// shadowFile 是口令 hash 所在处。LuCI 改密码也是写这个文件（file.write /etc/shadow），
 	// 我们走同一条路，不引入第二套口令存储。
@@ -82,13 +90,33 @@ func authLogin(w http.ResponseWriter, r *http.Request, deps backend.Backend) {
 		return
 	}
 	params, _ := json.Marshal(map[string]string{"username": username, "password": password})
-	sid := novicelogin(deps, string(params))
+	sid := sessionLogin(deps, string(params))
 	if sid == "" {
 		authRedirect(w, r, authErrorRedirect(r, "bad_credentials"))
 		return
 	}
+	ensureSessionToken(deps, sid)
 	setSessionCookie(w, sid)
 	authRedirect(w, r, authNext(r))
+}
+
+// ensureSessionToken 给登录会话补一个 token —— 这是「一处登录、原版 :80 LuCI 也认」的关键。
+//
+// 桥接态（方案 1）下 /auth/login 的会话经总线落在设备 rpcd：裸 session.login 只写 username，
+// 而设备上 ucode dispatcher 判「已登录」要求会话里有一个字符串 token（它自己在 login 之后
+// 额外 session.set 一个）。molly 转发登录后必须补上同样的 token，否则 :80 的原版 LuCI 会把
+// 这条 rpcd 会话判为未认证（403）。内置态下 molly 自己的 login 已写 token，这里再覆盖一次无害。
+func ensureSessionToken(deps backend.Backend, sid string) {
+	if deps == nil || sid == "" {
+		return
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return
+	}
+	token := hex.EncodeToString(buf)
+	params, _ := json.Marshal(map[string]any{"values": map[string]string{"token": token}})
+	deps.CallObject("session", "set", string(params), sid)
 }
 
 // authLogout 销毁当前会话并清掉共用 cookie。销毁失败也照清——留一个已经不认的 cookie
@@ -125,7 +153,7 @@ func authPassword(w http.ResponseWriter, r *http.Request, deps backend.Backend) 
 	}
 	// 旧口令校验：登录成功即证明它对得上这个账号
 	probe, _ := json.Marshal(map[string]string{"username": username, "password": oldPassword})
-	if novicelogin(deps, string(probe)) == "" {
+	if sessionLogin(deps, string(probe)) == "" {
 		authRedirect(w, r, authErrorRedirect(r, "bad_credentials"))
 		return
 	}
@@ -220,6 +248,78 @@ func hashErrCode(err error) string {
 		return e.code
 	}
 	return "write_failed"
+}
+
+// sessionLogin 调 `session login` 并取出 sid；任何失败都回空串（调用方按登录失败处理）。
+// 走 deps.CallObject 而不是自己实现鉴权：这就是专家版用的那一个对象。
+func sessionLogin(deps backend.Backend, paramsJSON string) string {
+	if deps == nil {
+		return ""
+	}
+	res := deps.CallObject("session", "login", paramsJSON, anonSID)
+	if res.Outcome != backend.OutcomeOk || res.Ret != 0 {
+		return ""
+	}
+	var reply struct {
+		SID string `json:"ubus_rpc_session"`
+	}
+	if err := json.Unmarshal([]byte(res.Reply), &reply); err != nil {
+		return ""
+	}
+	// 只接受合法形态的 sid（32 位 hex）：它随后要进 cookie 与页面，收窄一次比到处转义省心。
+	return sanitizeSID(reply.SID)
+}
+
+// setSessionCookie 下发**两套界面共用**的会话 cookie。
+//
+// path=/ 是关键：专家版前缀（`/admin/`）与简洁版（`/lite/`）都要能读到它，否则就是对不上号的
+// 两条会话。HttpOnly 让页面脚本拿不到它（页面用的是服务端注入的 sid，不需要自己读）；
+// SameSite=strict 与上游 dispatcher 一致，顺带挡掉跨站提交。
+func setSessionCookie(w http.ResponseWriter, sid string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    sid,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+}
+
+// sanitizeSID 只保留十六进制字符（会话 id 就是 32 位 hex）。
+//
+// 为什么不是「转义」而是「白名单过滤」：这个值来自客户端的 Cookie，而它要被拼进
+// **HTML 里的 JavaScript 字符串**。任何引号/尖括号/反斜杠都可能变成脚本注入——
+// 与其在两种上下文（HTML 与 JS）里各转义一遍，不如按已知形态收窄到「只可能是它」。
+// 非法输入退化成空串，页面就显示登录卡，行为可预期。
+// 按字节判即可：非 ASCII 字节必然不是 hex，直接整串丢弃。
+func sanitizeSID(sid string) string {
+	if sid == "" {
+		return ""
+	}
+	buf := make([]byte, 0, 32)
+	for i := 0; i < len(sid); i++ {
+		c := sid[i]
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return "" // 出现非 hex 字符：整个丢弃，别做「截断到第一个非法字符」这种猜测
+		}
+		buf = append(buf, c)
+		if len(buf) == 32 {
+			break
+		}
+	}
+	return string(buf)
 }
 
 // authNext 取跳转目标：表单可带 next=，缺省回 `/`（`/` 会再 302 到 /lite/，正好当落点）。

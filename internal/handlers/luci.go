@@ -8,16 +8,19 @@ import (
 	"github.com/azhai/molly/internal/luci"
 )
 
-// /cgi-bin/luci —— ucode dispatcher 的 HTTP 入口。
+// 专家版前缀（默认 /cgi-bin/luci，本站 /admin）—— **Go 复刻的 LuCI** 的 HTTP 入口。
 //
-// PATH_INFO 是前缀**之后**的路径（上游 LuCI 的约定）：/cgi-bin/luci 本身与
-// /cgi-bin/luci/ 都是空路径，走菜单树的 root firstchild；/cgi-bin/luci/admin/...
-// 才逐段下降。path 已经过 httpx.NormalizePath，尾部 '/' 已被压掉。
+// PATH_INFO 是前缀**之后**的路径（上游 LuCI 的约定）：前缀本身与「前缀/」都是空路径，
+// 走菜单树的 root firstchild；`<prefix>/admin/...` 才逐段下降。
+// path 已经过 httpx.NormalizePath，尾部 '/' 已被压掉。
 //
 // 两种模式（ADR 0003）：
-//   - LuciCGI 非空 → 整个 /cgi-bin/luci 前缀交给子进程（设备上的 ucode dispatcher，
-//     复刻 uhttpd 的 ucode_prefix 接线）。方法不限，由脚本自己判定。
-//   - 否则       → 内置 dispatcher（internal/luci），只接 GET/HEAD。
+//   - 默认（LuciCGI 空）→ **内置 Go dispatcher**（internal/luci）：本站的目标形态。
+//     建树、depends、firstchild、通配、ACL 裁树都按上游 dispatcher.uc 逐条复刻；
+//     只接 GET/HEAD。**视图还没落地**——cbi/view/template 那类节点回 501 并带上
+//     `action.type / view / menu`，用来逐项认领还差哪些页面。
+//   - LuciCGI 非空 → 整个前缀交给子进程（设备上的 ucode dispatcher）。这条是**对照与
+//     排查**用的：与 Go 实现行为不一致时拿它当基准，不是部署形态。方法不限，由脚本自己判定。
 //
 // 会话 id 从 LuCI 写的 cookie 里取（`sysauth_http` / `sysauth_https`），没有 cookie
 // 就是「无会话」——带 depends.acl 的节点一律不可见（路径解析不到 → 404），路径上有
@@ -75,13 +78,13 @@ func ServeLuci(w http.ResponseWriter, r *http.Request, path string, cfg LuciConf
 }
 
 // luciSIDFromCookie 从 `Cookie` 头里取会话 id。三种名字都收：
-//   - `sysauth_molly`：molly 侧 dispatcher 补丁下发的专属名（与 :80 的
+//   - `sysauth_molly`：molly 自己下发的专属名（与 :80 的
 //     `sysauth_http` 并列共存，避免同主机同路径的 cookie 互相覆盖）；
 //   - `sysauth_https` / `sysauth_http`：上游按 `HTTPS` 二选一
 //     （dispatcher.uc:963-966），以及未打补丁的形态。
 //
 // 谁在就用谁，省掉对代理链与补丁状态的猜测。cookie 之间用 ';' 分隔，取不到回空串
-// （调用方按「无会话」处理）。新手版也用这个函数，于是两套界面共用同一个登录。
+// （调用方按「无会话」处理）。简洁版也用这个函数，于是两套界面共用同一个登录。
 func luciSIDFromCookie(r *http.Request) string {
 	header := r.Header.Get("Cookie")
 	if header == "" {

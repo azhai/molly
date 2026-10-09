@@ -325,6 +325,10 @@ func (darwinBackend) SessionAccessUbus(sid, object, function string) bool {
 	return SessionAccessUbus(sid, object, function)
 }
 
+func (darwinBackend) SessionSelfService(sid, method string) bool {
+	return SessionSelfService(sid, method)
+}
+
 // sseWatchStart / sseWatchStop：darwin 没有 ubusd，事件由 `molly.probe` 的 `notify`
 // 直接 Publish，所以平台侧无事可做（对应 Odin darwin.odin 的空实现）。
 func sseWatchStart(string) bool { return true }
@@ -339,3 +343,6 @@ func (darwinBackend) SessionACLLevel(sid string, groups []string) ACLLevel {
 func SetUbusSocket(string) {}
 
 func StartServer(string) int { return 0 }
+
+// SetSessionOnBus：macOS 上没有总线可接，桥接态恒不成立（空操作）。
+func SetSessionOnBus(bool) {}

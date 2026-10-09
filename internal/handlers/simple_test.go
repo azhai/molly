@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/azhai/molly/internal/backend"
+	"github.com/azhai/molly/webassets/simple"
 )
 
 func TestSanitizeSID(t *testing.T) {
@@ -30,19 +31,27 @@ func TestSanitizeSID(t *testing.T) {
 	}
 }
 
-func TestBuildNovicePage(t *testing.T) {
-	page := buildNovicePage("0123456789abcdef0123456789abcdef")
-	if strings.Contains(page, "__SID__") || strings.Contains(page, "__EXPERT_PREFIX__") {
+func TestBuildSimplePage(t *testing.T) {
+	page := buildSimplePage("0123456789abcdef0123456789abcdef")
+	if strings.Contains(page, "__CFG__") {
 		t.Fatal("占位符没有被替换干净")
 	}
-	if !strings.Contains(page, `SID_INJECTED = "0123456789abcdef0123456789abcdef"`) {
-		t.Error("会话 id 没有被注入")
+	// 注入的是**一份**配置：sid + 菜单 + 专家版前缀
+	for _, want := range []string{
+		`"sid":"0123456789abcdef0123456789abcdef"`,
+		`"menu":[`,
+		`"expert":"` + LuciPrefix + `"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("页面里缺少注入项 %s", want)
+		}
 	}
-	if !strings.Contains(page, `EXPERT_PREFIX = "`+LuciPrefix+`"`) {
-		t.Errorf("专家版前缀没有被注入（期望 %q）", LuciPrefix)
+	// 「前往专家版」的链接必须由页面从 CFG.expert 生成，不能把前缀写死在 HTML 里
+	if strings.Contains(simple.HTML, `href="`+LuciPrefix+`"`) {
+		t.Error("页面里不该硬编码专家版前缀，它只能来自 CFG.expert")
 	}
 	// 非法 sid 进不去页面
-	if bad := buildNovicePage("<script>x</script>"); strings.Contains(bad, "<script>x") {
+	if bad := buildSimplePage("<script>x</script>"); strings.Contains(bad, "<script>x") {
 		t.Error("非法 sid 泄漏进了页面")
 	}
 }
@@ -67,11 +76,11 @@ func TestWidenSessionCookiePath(t *testing.T) {
 	}
 }
 
-// 会话统一的核心断言（单元级）：新手版登录下发的 cookie，专家版（内置 dispatcher）直接认。
+// 会话统一的核心断言（单元级）：简洁版登录下发的 cookie，专家版（内置 dispatcher）直接认。
 //
 // 端到端那一份在 tests/smoke.sh，这里盯的是「不靠 HTTP 也会断」的那部分：cookie 的属性
 // （path=/、HttpOnly）、以及登录走的就是 session 对象。
-func TestNoviceLoginSharesSessionWithExpert(t *testing.T) {
+func TestSimpleLoginSharesSessionWithExpert(t *testing.T) {
 	be := backend.New()
 
 	// 登录走共用的 /auth/login（页面与专家版表单都往这里打）
@@ -116,7 +125,7 @@ func TestNoviceLoginSharesSessionWithExpert(t *testing.T) {
 		Deps:    be,
 	})
 	if ew.Code != http.StatusOK {
-		t.Fatalf("专家版页面应接受新手版登录得到的会话（期望 200），实际 %d（正文 %q）",
+		t.Fatalf("专家版页面应接受简洁版登录得到的会话（期望 200），实际 %d（正文 %q）",
 			ew.Code, ew.Body.String())
 	}
 	if !strings.Contains(ew.Body.String(), "<h1>Overview</h1>") {
@@ -138,7 +147,7 @@ func TestNoviceLoginSharesSessionWithExpert(t *testing.T) {
 	}
 }
 
-func TestNoviceLoginWrongPassword(t *testing.T) {
+func TestSimpleLoginWrongPassword(t *testing.T) {
 	form := url.Values{"username": {"root"}, "password": {"wrong"}}
 	r := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -157,16 +166,16 @@ func TestNoviceLoginWrongPassword(t *testing.T) {
 }
 
 // 入口 `/` 只跳转，不出页面。用 302 而不是 301/308：前缀以后还可能再挪。
-func TestNoviceEntryRedirect(t *testing.T) {
+func TestSimpleEntryRedirect(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
 		r := httptest.NewRequest(method, "/", nil)
 		w := httptest.NewRecorder()
-		ServeNovice(w, r, "/", backend.New())
+		ServeSimple(w, r, "/", backend.New())
 		if w.Code != http.StatusFound {
 			t.Errorf("%s / 应回 302，实际 %d", method, w.Code)
 		}
-		if loc := w.Header().Get("Location"); loc != NovicePrefix+"/" {
-			t.Errorf("%s / 的 Location 应为 %s/，实际 %q", method, NovicePrefix, loc)
+		if loc := w.Header().Get("Location"); loc != SimplePrefix+"/" {
+			t.Errorf("%s / 的 Location 应为 %s/，实际 %q", method, SimplePrefix, loc)
 		}
 		if body := w.Body.String(); body != "" {
 			t.Errorf("%s / 不该带正文，实际 %q", method, body)
@@ -175,36 +184,39 @@ func TestNoviceEntryRedirect(t *testing.T) {
 }
 
 // 非 GET/HEAD/POST 一律 405（与专家版一致）。
-func TestNoviceMethodNotAllowed(t *testing.T) {
+func TestSimpleMethodNotAllowed(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPut, "/lite", nil)
 	w := httptest.NewRecorder()
-	ServeNovice(w, r, "/lite", backend.New())
+	ServeSimple(w, r, "/lite", backend.New())
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("PUT /lite 应回 405，实际 %d", w.Code)
 	}
-	// 路径判定范围：/lite 系列算新手版，/ 是入口（不是页面），别的都不算
-	if !IsNovicePath("/lite") || !IsNovicePath("/lite/") || !IsNovicePath("/lite/index.html") {
-		t.Error("IsNovicePath 应认 /lite、/lite/、/lite/index.html")
+	// 路径判定范围：**整个前缀**都算简洁版（单页应用的深链/刷新都要成立），/ 是入口
+	if !IsSimplePath("/lite") || !IsSimplePath("/lite/") || !IsSimplePath("/lite/index.html") {
+		t.Error("IsSimplePath 应认 /lite、/lite/、/lite/index.html")
 	}
-	if IsNovicePath("/") {
-		t.Error("/ 是入口（IsNoviceEntry），不是页面路径")
+	if !IsSimplePath("/lite/admin/status") {
+		t.Error("IsSimplePath 应认前缀下的任意子路径（单页应用深链）")
 	}
-	if IsNovicePath("/lite/admin") || IsNovicePath("/other") {
-		t.Error("IsNovicePath 不该认别的路径")
+	if IsSimplePath("/") {
+		t.Error("/ 是入口（IsSimpleEntry），不是页面路径")
 	}
-	if !IsNoviceEntry("/") || IsNoviceEntry("/lite") {
-		t.Error("IsNoviceEntry 只该认 /")
+	if IsSimplePath("/lite2") || IsSimplePath("/other") {
+		t.Error("IsSimplePath 必须带前缀边界，不能认 /lite2 这类路径")
+	}
+	if !IsSimpleEntry("/") || IsSimpleEntry("/lite") {
+		t.Error("IsSimpleEntry 只该认 /")
 	}
 }
 
-// 认证端点搬走之后，新手版页面**不再**接 POST：登录/退出只在 /auth 下。
-func TestNoviceNoLongerHandlesPost(t *testing.T) {
+// 认证端点搬走之后，简洁版页面**不再**接 POST：登录/退出只在 /auth 下。
+func TestSimpleNoLongerHandlesPost(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/lite/", strings.NewReader(url.Values{
 		"action": {"login"}, "username": {"root"}, "password": {"test1234"},
 	}.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
-	ServeNovice(w, r, "/lite/", backend.New())
+	ServeSimple(w, r, "/lite/", backend.New())
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST /lite/ 应回 405（认证已搬到 /auth），实际 %d", w.Code)
 	}

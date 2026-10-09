@@ -39,10 +39,10 @@ func run(args []string) error {
 	listen := fs.String("listen", defaultListen, "监听地址，如 0.0.0.0:8080")
 	docroot := fs.String("docroot", defaultDocroot, "静态文件根目录")
 	menuDir := fs.String("menu-dir", defaultMenuDir, "LuCI 菜单目录（menu.d）")
-	luciCGI := fs.String("luci-cgi", "", "把专家版前缀交给子进程执行；留空用内置 dispatcher")
-	luciPrefix := fs.String("luci-prefix", "", "专家版（LuCI）的 URL 前缀，默认 /cgi-bin/luci；本站用 /plus")
-	luciStrip := fs.String("luci-strip", "", "从专家版 URL 里省掉的那段菜单路径（本站 /admin）；进树时自动补回")
-	luciRender := fs.String("luci-render", "app", "专家版渲染方式：app=我们自带的 Go+HTML 站点（默认，不读 menu.d、不依赖 ucode）；builtin=内置占位 dispatcher；cgi=设备 ucode dispatcher（需 --luci-cgi）")
+	luciCGI := fs.String("luci-cgi", "", "对照/逃生口：把专家版前缀交给设备 ucode 渲染；留空=用内置 Go dispatcher（默认形态）")
+	luciPrefix := fs.String("luci-prefix", "", "专家版（Go 复刻的 LuCI）的 URL 前缀，默认 /cgi-bin/luci；本站只留 /admin")
+	luciStrip := fs.String("luci-strip", "", "从专家版 URL 里省掉的那段菜单路径（本站 admin）；进树时自动补回")
+	luciRender := fs.String("luci-render", "", "专家版的渲染方式：builtin=内置 Go dispatcher（本站的目标形态，视图尚未全部落地）；cgi=设备 ucode dispatcher（对照/排查用，需 --luci-cgi）。留空=按有没有 --luci-cgi 推断")
 	ubusSocket := fs.String("ubus-socket", "", "让 ubus 对象注册在另一条独立总线上")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `molly —— ImmortalWrt LuCI 的服务端替换层（Go）
@@ -51,11 +51,11 @@ func run(args []string) error {
   molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
           [--luci-prefix PREFIX] [--luci-strip SEG] [--luci-cgi CMD] [--ubus-socket PATH]
 
-三个界面：
-  --luci-prefix 给的路径（默认 /cgi-bin/luci）= 专家版，完整 LuCI；
-  /lite                                        = 新手版，一页六件事（内置单文件页），/ 是 302 入口；
-  /auth/{login,logout,password}                = 两套界面共用的认证面。
-  专家版与新手版共用同一个会话 cookie，登录一次两边都能用。
+两套界面（共用同一个会话 cookie，登录一次两边都能用）：
+  简洁版  /lite = 全部页面（内置单文件单页应用；仪表盘是首屏，其余走 #/片段）；
+  专家版  --luci-prefix 给的路径（本站 /admin）= **用 Go 重写的 LuCI**，菜单树/ACL 裁树/
+          路径语义逐条对齐上游，由内置 Go dispatcher 渲染（--luci-cgi 可改交设备 ucode 对照）；
+  认证面  /auth/{login,logout,password} = 两边共用，登录/退出一次生效。
 
 `)
 		fs.PrintDefaults()
@@ -65,19 +65,22 @@ func run(args []string) error {
 	}
 
 	// 渲染方式：显式给了就用给的；没给就按「有没有 --luci-cgi」推断——
-	// 这样旧部署（带 --luci-cgi 的那些）行为不变，而新部署默认就是自研站点。
+	// 这样旧部署（带 --luci-cgi 的那些）行为不变，摘掉这个开关就是内置 Go dispatcher。
+	// 简洁版那套站点已固定在 /lite（见 handlers/simple.go），不挂在 --luci-prefix 上；
+	// 这里只决定**专家版（Go 复刻的 LuCI）**怎么渲染：默认走 internal/luci 的 Go 实现，
+	// 设备 ucode 那条留作对照与排查。
 	render := *luciRender
 	if !flagWasSet(fs, "luci-render") {
 		if *luciCGI != "" {
 			render = "cgi"
 		} else {
-			render = "app"
+			render = "builtin"
 		}
 	}
 	switch render {
-	case "app", "builtin", "cgi":
+	case "builtin", "cgi":
 	default:
-		return fmt.Errorf("--luci-render 只能是 app / builtin / cgi，收到 %q", render)
+		return fmt.Errorf("--luci-render 只能是 builtin / cgi，收到 %q", render)
 	}
 
 	// 前缀：路由、CGI 的 SCRIPT_NAME、PATH_INFO 切分点三处同源，所以只在这里设一次。
@@ -105,17 +108,22 @@ func run(args []string) error {
 	fmt.Println("[molly] 监听", *listen)
 	fmt.Println("[molly] docroot:", docrootTrimmed)
 	fmt.Println("[molly] menu.d:", menuDirTrimmed)
-	if *luciCGI != "" {
-		fmt.Println("[molly] 专家版 LuCI", handlers.LuciPrefix, "→", *luciCGI)
+	if render == "cgi" {
+		fmt.Println("[molly] 专家版（Go 复刻的 LuCI）", handlers.LuciPrefix, "→ 交设备 ucode 渲染（对照）:", *luciCGI)
 	} else {
-		fmt.Println("[molly] 专家版 LuCI", handlers.LuciPrefix, "→ 内置 dispatcher")
+		fmt.Println("[molly] 专家版（Go 复刻的 LuCI）", handlers.LuciPrefix, "→ 内置 Go dispatcher")
 	}
-	fmt.Println("[molly] 新手版 → /（内置单文件页，与专家版共用会话）")
+	fmt.Println("[molly] 简洁版 →", handlers.SimplePrefix, "（单页应用：仪表盘 + 其余页面），与专家版共用会话")
 	if *ubusSocket != "" {
 		fmt.Println("[molly] ubus 私有总线:", *ubusSocket)
 	} else {
 		fmt.Println("[molly] ubus 总线: 系统总线")
 	}
+
+	// 会话统一（方案 1）：专家版交给设备 ucode 渲染（--luci-cgi）且 molly 走系统总线时，
+	// 设备 rpcd 占住 session——molly 原生界面（/lite、/auth、/ubus）的会话与前置 ACL 交给
+	// rpcd，让 sysauth_molly 里的 sid 全端通用。内置接管形态（无 rpcd）不置位，行为不变。
+	backend.SetSessionOnBus(*luciCGI != "" && *ubusSocket == "")
 
 	rt := &router{
 		docroot:    docrootTrimmed,
@@ -144,8 +152,9 @@ type router struct {
 	ubus       backend.Backend
 }
 
-// ServeHTTP 的路由顺序与 Odin 版一致（计划「关键设计决策 5」）：
-// 路径规范化 → 前缀 /ubus → 专家版前缀 → 新手版 / → 其余按 docroot 静态文件。
+// ServeHTTP 的路由顺序：
+// 路径规范化 → /ubus → /auth → 简洁版（/lite 全部页面 + / 入口）→ 专家版（Go 复刻的 LuCI）
+// → 其余按 docroot 静态文件。
 func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 用 RequestURI（原始 origin-form 目标）而不是 r.URL.Path：后者已被 Go 解码，
 	// 会丢掉「%2f 与 / 的区别」，而规范化必须看到原始字节才能正确判 400/403。
@@ -174,17 +183,16 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 专家版（--luci-prefix，默认 /cgi-bin/luci）：**我们自己实现的 Go+HTML 站点**。
-	// 菜单内置在二进制里（不读 menu.d），页面是静态文件，具体动作全走 /ubus。
-	// 只有显式给了 --luci-cgi 时才退回设备 ucode dispatcher 渲染的完整 LuCI（逃生口）。
+	// 简洁版：`/lite` 一个前缀出全部页面（单页应用，路由在 #/ 片段），`/` 是跳转入口。
+	// 排在静态文件之前，于是 docroot 里的 index.html 顶不掉它们。
+	if handlers.IsSimplePath(path) || handlers.IsSimpleEntry(path) {
+		handlers.ServeSimple(w, r, path, rt.ubus)
+		return
+	}
+	// 专家版：**用 Go 重写的 LuCI**，挂在 --luci-prefix 给的路径上（本站只留 /admin）。
+	// builtin = 内置 Go dispatcher（目标形态）；cgi = 交给设备上的 ucode dispatcher，
+	// 用来对照与排查「页面不出来」，也保证那条路径的回归网还在。
 	if matchesPrefix(path, handlers.LuciPrefix) {
-		// app（默认）：自研站点。cgi：设备 ucode dispatcher（逃生口）。
-		// builtin：内置占位 dispatcher——留着是为了能回归那条路径（测试在用），
-		// 也是设备上排查「页面不出来」时的一个对照。
-		if rt.luciRender == "app" || (rt.luciRender == "cgi" && rt.luciCGI == "") {
-			handlers.ServeExpert(w, r)
-			return
-		}
 		handlers.ServeLuci(w, r, path, handlers.LuciConfig{
 			MenuDir:    rt.menuDir,
 			LuciCGI:    rt.luciCGI,
@@ -194,10 +202,12 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// 新手版：`/lite` 出页面、`/` 是跳转入口（都排在静态文件之前，于是 docroot 里的
-	// index.html 顶不掉它们）。
-	if handlers.IsNovicePath(path) || handlers.IsNoviceEntry(path) {
-		handlers.ServeNovice(w, r, path, rt.ubus)
+	// cgi-io 三件套（fs.exec_direct / read_direct / ui.uploadFile）：挂在 cgi_base 上
+	// （本部署 cgi_base="" → 裸 /cgi-exec、/cgi-download、/cgi-upload；上游默认在 /cgi-bin/cgi-*）。
+	// 必须排在 ServeStatic 之前：默认部署下它们落在 /cgi-bin/ 里，而 ServeStatic 对 /cgi-bin/*
+	// 一律 403（把 CGI 当脚本、不外发正文）；本部署下裸 /cgi-exec 若不管也会被 ServeStatic 判 405。
+	if handlers.IsCGIIOPath(path) {
+		handlers.ServeCGIIO(w, r, path)
 		return
 	}
 	handlers.ServeStatic(w, r, rt.docroot, path)

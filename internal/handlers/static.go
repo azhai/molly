@@ -26,7 +26,7 @@ func ServeStatic(w http.ResponseWriter, r *http.Request, docroot, path string) {
 	// 脚本正文当静态文件送出去；molly 只在 `--luci-cgi` 给的那条命令上执行 CGI
 	// （且那条命令是绝对路径），所以这里必须**拒绝**而不是照发。
 	//
-	// 为什么现在要专门堵：换过前缀之后（专家版让到 `/pro`），`/cgi-bin/luci` 不再被
+	// 为什么现在要专门堵：换过前缀之后（专家版让到 `/admin`），`/cgi-bin/luci` 不再被
 	// LuCI 路由接管，文档根里那个 CGI 兜底脚本就会退化成「可下载的纯文本」——Odin 版
 	// 2026-10-07 真机验证时正是这么暴露的（改前缀前该路径被 serve_luci 吃掉了）。
 	// 用 403 而不是 404：这是策略性拒绝，不是「文件不存在」。

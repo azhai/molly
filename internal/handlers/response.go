@@ -18,13 +18,15 @@ import (
 // 否则 /ubus.html 这类真实文件会被 ubus 路由抢走。
 const UBUSPrefix = "/ubus"
 
-// LuciPrefix 是**专家版（LuCI）的 URL 前缀**，默认是上游形态 "/cgi-bin/luci"；
-// `--luci-prefix` 可改（本仓部署把它放到 "/pro"，把 "/" 留给新手版，见 novice.go）。
+// LuciPrefix 是**专家版（用 Go 重写的 LuCI）的 URL 前缀**，默认是上游形态
+// "/cgi-bin/luci"；`--luci-prefix` 可改——本仓部署只留 "/admin"（"/" 与 "/lite" 都归简洁版，
+// 见 simple.go）。
 //
 // 为什么是变量而不是常量：这**一个值同时决定三件事**——路由判据、CGI 的
 // SCRIPT_NAME、PATH_INFO 的切分点（见 cgi.go）。三者必须同源，散着写就会出现
 // 「路由换了、SCRIPT_NAME 没换」这种 ucode 侧全错的组合（dispatcher 的 build_url
-// 就是拿 SCRIPT_NAME 拼所有页面 URL 的）。
+// 就是拿 SCRIPT_NAME 拼所有页面 URL 的）。第四处是简洁版页面里的「前往专家版」链接
+// （见 simple.go 的 buildSimplePage），同源到这一个值上。
 //
 // 与 Odin 版 src/handlers/cgi_luci.odin 的 LUCI_PREFIX / luci_set_prefix 同名同义。
 var LuciPrefix = "/cgi-bin/luci"
@@ -45,7 +47,8 @@ func SetLuciPrefix(p string) error {
 // LuciStripSegment 是从专家版 URL 里**省掉**的那一段菜单路径（`--luci-strip`）。
 //
 // 为什么要这个：LuCI 的页面在 URL 上是 `/cgi-bin/luci/admin/status/overview`——顶层那个
-// `admin` 是菜单树里的一个节点。本站部署嫌它多一层，想让 URL 变成 `/plus/status/overview`。
+// `admin` 是菜单树里的一个节点。本站部署想让前缀本身就是 `/admin`，于是 URL 变成
+// `/admin/status/overview`，URL 上不再有重复的两段。
 //
 // 但菜单树本身没变：`status/overview` 仍然挂在 `admin` 下面。所以进树时要把这一段**补回
 // 回去**（见 LuciTreePath），而 URL 侧少了它——两边不是一回事，这也是最容易搞混的地方。
@@ -80,8 +83,9 @@ func SetLuciStripSegment(seg string) error {
 //
 // 已经是长写法（`/<段>/…`）照旧接受，旧的链接不会因为这次改动就失效。
 //
-// 例（prefix=/plus、strip=admin）：`/plus/status/overview` → `/admin/status/overview`；
-// `/plus/admin/status/overview` → 原样；`/plus` → `/`（root，走 firstchild）。
+// 例（prefix=/admin、strip=admin）：`/admin/status/overview` → `/admin/status/overview`
+// （URL 少的那一段和树里多的那一段正好抵消）；长写法 `/cgi-bin/luci/admin/status/overview`
+// 在默认前缀下同样成立；`<prefix>` 本身 → `/`（root，走 firstchild）。
 func LuciTreePath(urlPath string) string {
 	rest := strings.TrimPrefix(urlPath, LuciPrefix)
 	if LuciStripSegment == "" {

@@ -86,6 +86,102 @@ CGO_CFLAGS="--sysroot=$SYSROOT -I$SYSROOT/usr/include" CGO_LDFLAGS="--sysroot=$S
 
 ## 进度与会话记录（新在前）
 
+### 2026-10-09 — 修设备侧 index.uc 被改坏导致 :80 只剩状态页（菜单 500）
+
+- **症状**：用户报 :80 只剩一个状态页、其他菜单没了。
+- **排除 molly**：:80 原生登录与「molly cookie 打 :80」行为**完全一致**（同一页、同一菜单状态），
+  且 molly 在 :8080、不碰 menu.d；菜单是前端 JS 去 `GET /admin/menu` 现建的（服务端 HTML 里
+  `#topmenu` 本就 `display:none` 空）。故与 :8080/方案1 会话无关。
+- **真因**：`/cgi-bin/luci/admin/menu` 返回 **error500 HTML**（非 JSON）——页内报
+  `Unable to compile source file '/usr/share/ucode/luci/controller/admin/index.uc': Syntax error`。
+  定位到 **154 行**：早先给 :80 打「认 sysauth_molly」补丁时，`'`（ASCII 0x27）被误当成字面量
+  `x27` 写进了 dispatcher.is_authenticated 的 methods 数组→该 controller 编译不过→`action_menu` 抛 500→
+  前端建不起菜单。menu.d 本身没被裁（`luci-base.json` 与 `.molly-bak` 顶层 admin 节点一致）。
+- **修复**：把 154 行还原为正确单引号、**保留 `'cookie:sysauth_molly'`**（:80 靠它读共享 cookie 认证）：
+  `methods: [ 'cookie:sysauth_https', 'cookie:sysauth_http', 'cookie:sysauth_molly' ]`。
+  做法：取回文件→工作区 `build/` 里 SearchReplace→scp 推回（改前先备份坏版 `index.uc.broken-bak`）。
+  与出厂 bak 相比**仅差这一处预期改动**。
+- **验证**：ucode `loadfile` 编译 OK；`/admin/menu` 回 19 KB JSON，admin 一级 = system/network/services/
+  status/nas/vpn 均 `satisfied=true`；一级落地页 network/system/services/status/nas → 200（vpn 404 是
+  空节、无关）。扫全部 controller：除我新建的 `.broken-bak` 外无残留 x27、均编译通过。
+- **未改 molly 代码**：纯设备侧文件修复，不动 Go 产物/门禁。教训见记忆「改设备 .uc 后必做 ucode 编译校验」。
+
+### 2026-10-09 — 方案 1 收尾：桥接态自有对象的内部 ACL 也要转问 rpcd（:8080 频繁 Permission denied）
+
+- **症状**：方案 1 后两边能一起登录/退出，但 :8080 频繁「Permission denied」。
+- **定位**：用 `/auth/login` 真实 sid 逐条打 SPA 会发的 RPC——`uci.get`、`file.exec` 回
+  **code 6「Permission denied」**，而外部对象（`system.board`）与不查 session 的自有对象
+  （`luci-rpc.getDHCPLeases`）正常。根因：molly 进程内自有的 `uci`/`file` 对象实现**内部**还调
+  `sessionAccess(sid, scope, …)`（`uci_object.go:351/360/552/1101`、`file_object.go:188`）做第二道
+  ACL，读的是 molly 私有 `sessionStore`；桥接态真会话在 rpcd、私有存储空 → 判否 → code 6。
+  `device_luci` §5 只测转发式/`params` 里不带 `ubus_rpc_session` 的路径（`if len(sid)==0 return true`
+  跳过内部鉴权），所以没覆盖到，才漏过。
+- **修复**：桥接态把这道**内部 ACL 也交给 rpcd**，与 HTTP 前置 ACL 同源。加 `sessionAccessBridge`
+  钩子（`session.go`，`sessionAccess` 于取 `sessionMu` 前先问钩子；darwin/非桥接恒 nil → 原行为不变）；
+  `linux.go` 抽出 `rpcdSessionAccess(sid,scope,object,function)`（转 rpcd `session.access`、fail-closed），
+  `SetSessionOnBus(true)` 装配桥接、`SessionAccessUbus` 复用它。`CallObject` 在 line 119 跑
+  `callOwnObject` 时**尚未持 `ubusMu`**（锁在 127），故内部再转 rpcd 不自锁。
+- **门禁**：宿主 vet/test 全绿、smoke **334/0**、`make target` arm64/musl 通过。
+- **真机复验（pid 32443）**：`uci.get`(system/network)、`file.exec /bin/df` 均从 code 6 恢复为 **ret 0**；
+  `device_luci.sh(/admin)` 仍 **通过 47 失败 0**；molly/rpcd/uhttpd/ubusd 齐、:80 与 :8080 并存。
+- **部署**：`make deploy` 上传步在 macOS 撞 sshpass+管道抖动，仍用 `sshpass scp -O` 绕开；zsh 多词
+  选项要么内联要么 `${=OPTS}`，且内联 ssh 命令用 `-T` 关 pty 更稳。
+
+### 2026-10-09 — 方案 1：桥接态会话统一到 rpcd（原版 :80 LuCI 与 molly 共用一条 cookie）
+
+- **起因**：用户报「原版 :80 的 LuCI 登不进去」。四发探针定位根因——桥接态（init.d：系统总线
+  + 未停 rpcd）下 `sysauth_molly` 背后有**两套会话存储**：:80 与 :8080 `/admin`（经 ucode→rpcd）
+  用 **rpcd 的 session**；:8080 `/lite`、`/auth`、molly 自身 `/ubus` 用 **molly 进程内私有存储**。
+  cookie 只认「主机+路径」、**不分端口**，两边登录态互相覆盖、彼此判为无效（molly-native sid
+  打 :80 = 403；rpcd sid 打 molly `/ubus` = -32002）。
+- **方案 1（用户选定）**：桥接态让 molly 原生侧（`/lite`+`/auth`+`/ubus`）的**会话与前置 ACL 交给
+  总线上的 rpcd**，其余自有对象（uci/file/luci-rpc）仍由 molly 进程内服务。一个 `sessionOnBus`
+  标志门控（= `--luci-cgi` 且走系统总线），非桥接态/darwin 行为完全不变。
+- **改动面**：
+  - `backend.Backend` 接口加 `SessionSelfService(sid, method)`（原 `ubus.go` 直接调包函数，改走接口）。
+  - `linux.go`：`SetSessionOnBus(on)` + `sessionOnBus` 变量；`CallObject` 在桥接态把 **session 对象转发
+    总线**（登录产出 rpcd sid）；`SessionAccessUbus` 桥接态改问 rpcd `session.access`；`SessionSelfService`
+    桥接态按 sid 形态放行、有效性交给被转发的 rpcd 兜底。uci/file/luci-rpc/molly.probe 数据面不动。
+  - `darwin.go`：补 `SessionSelfService` 接口实现 + `SetSessionOnBus` 空操作。
+  - `main.go`：`backend.SetSessionOnBus(*luciCGI != "" && *ubusSocket == "")`。
+- **关键坑（第一版没打通、复测发现）**：转发后 molly 登录产出的确实是 rpcd sid（`session.get` 只回
+  `{username}`、rpcd 认），但**原版 :80 仍 403**——因为裸 `session.login` 只写 username，而设备 ucode
+  dispatcher 判「已登录」要求会话里有一个**字符串 token**（dispatcher 在 login 后额外 `session.set`）。
+  → 在 `auth.go` 加 `ensureSessionToken`：molly 转发 login 拿到 sid 后补 `session.set {values:{token}}`。
+  内置态 `sessionDoLogin` 本就写 token，覆盖一次无害。
+- **门禁**：宿主 `go vet`/`go test`/`./tests/smoke.sh` **334/0** 全绿；`make target` arm64/musl 通过。
+- **真机复验（pid 28430，rss ~14 MB）**：`device_luci.sh(/admin)` **通过 47 失败 0**（回归不破）；
+  molly `/auth/login` sid → `session.get` 回 `{token,username}` → **★ 同一条 cookie 打原版 :80 = 200**
+  （原 bug 修复；无 cookie 对照仍 403）、打 :8080 `/admin` = 200；`/auth/logout` 后 :80 回到 403
+  （`session.destroy` 转发 rpcd 生效）。rpcd/uhttpd/ubusd 照常，:80 与 :8080 并存。
+- **部署插曲（非代码）**：`make deploy` 的 `cat target | ssh 'cat>dest'` 这步在 macOS 上撞上
+  `sshpass`+管道 stdin 抖动（ssh 退回 `ssh_askpass` 交互提示 → Permission denied）。改用
+  `sshpass scp -O` 上传（不走管道）等价完成；另 zsh 不对无引号变量分词，多词 `$OPTS` 要 `${=OPTS}`。
+
+### 2026-10-09 — 真机复验（deploy + device_luci.sh）：修一处测试脚本的写死前缀
+
+- **动作**：`make target`（arm64/musl，`-s -w` → 7.27 MB）→ `make deploy`（init.d 的 T1 形态：
+  `--docroot /www-molly --luci-prefix /admin --luci-strip admin --luci-cgi "/usr/bin/ucode
+  /www-molly/cgi-bin/luci"`，:8080，系统总线）→ `MOLLY_DEVICE_PASS=*** ./tests/device_luci.sh`。
+  宿主门禁先行全绿：`go test` ok、`./tests/smoke.sh` **334/0**。
+- **首轮 25/22**：§0 未登录 403 判定 ok，但**登录/页面/并发全 FAIL，返回 403 + 10 字节正文且无
+  `x-luci-login-required`**——那是 `internal/handlers/static.go` 的 `/cgi-bin/*` 守卫回 `forbidden\n`，
+  请求根本没进 dispatcher/CGI 桥。而 §4/5（molly 自身 `/ubus`）与静态资源**全过**。
+- **根因（非 molly 缺陷）**：`tests/device_luci.sh` 把专家版前缀**写死成 `/cgi-bin/luci`**，而本机部署
+  经 `--luci-prefix /admin --luci-strip admin` 把它挂在 **`/admin`**。脚本自己的注释早就写着
+  「前缀由部署给（本站 /admin），别写死」——是脚本没跟上部署形态。手工实证 `/admin` 一切正常：
+  未登录 403+`x-luci-login-required: yes`+登录页；表单登录 302+`set-cookie: sysauth_molly=…; path=/`；
+  9 页面全 200 非空；40 并发全 200 无 503。
+- **修复**：脚本改用 `MOLLY_LUCI_PREFIX`（挂载前缀，默认 `/cgi-bin/luci`）+ `MOLLY_LUCI_SUB`
+  （前缀之后 URL 里那段，默认 `/admin`；配 `--luci-strip admin` 的站给**空串**，用 `${VAR-}` 而非
+  `${VAR:-}` 才允许显式空）。§0/§1 打 `$LUCI/`，§2/§6 打 `$LUCI$SUB/<rel>`。默认分支保持旧契约不变。
+- **复验**：`MOLLY_LUCI_PREFIX=/admin MOLLY_LUCI_SUB= ./tests/device_luci.sh` → **通过 47 失败 0**
+  （对齐 M5「通过 47」基准）。进程 pid 不变、VmRSS 15.9 MB；rpcd/uhttpd(:80 原版 LuCI) 不受影响。
+- **观察（非本轮修）**：init.d 走**系统总线**且未停 rpcd → molly 注册 session/uci/file/luci-rpc 全报
+  error code 2（名字被 rpcd 占）。T1 桥接形态下无碍：ucode 经系统总线用的是 **rpcd** 的真对象（正是
+  对照基准），molly 自身 `/ubus` 走进程内 backend 应答——所以 §4/5 照过。日志里那几条注册失败属
+  「非致命诊断」，设计如此。
+
 ### 2026-10-06 — M1 完成（HTTP 服务 + 路由 + 静态文件）
 
 落点 `gomolly/`：`go.mod`、`cmd/gomolly/main.go`、`internal/httpx/{uri,mime}.go`、
@@ -667,6 +763,43 @@ unit/test 全绿、`build.sh --target` 511,880 B 能交叉编译。
   **符号链接**，而 **`go:embed` 不跟随符号链接** → 第一版只 embed 到 134 个文件，表现为
   「`resources/luci.js` 能取到、主题 `cascade.css` 404」的半残状态。`tar -chf -` 解引用后
   142 个文件、0 链接；脚本现在抄完会**断言无符号链接**，有就报错退出。
+
+## 2026-10-09 会话：给简洁版 /lite 加设备黑盒测试（tests/device_simple.sh）
+
+- 诉求：验证 molly 单独提供「简洁版 + 专家版」时 /lite 各操作是否正常。设备现况：uhttpd(:80)+rpcd+ucode 与 molly(:8080) 并存；molly 的 /admin 走自 fork ucode（不依赖 uhttpd），故「停 :80 让 molly 单独扛两个界面」可行，但**专家版仍需 rpcd+ucode**（内置 Go dispatcher 的 view 尚未落地，会 501）。用户选择：molly 保持 :8080、uhttpd 停用并禁自启（本轮只确认结论，未执行部署改动）。
+- 新增 `tests/device_simple.sh`（黑盒、只走 HTTP、浏览器形态旧式 `params:[SID,obj,m,p]`）：
+  - A 路由与 SPA 外壳：`/`→302 /lite/；/lite 前缀任意子路径 200（深链）；`__CFG__` 已替换、注入 sid/menu/expert；POST /lite/→405。
+  - B /auth：GET→404（只接 POST）；错口令 302+auth_error 且不发会话；正确口令 302+sysauth_molly=<32hex>。
+  - C 各页读操作全 ret=0 且形状对得上：system.info/board、uci.get network/dhcp/wireless、luci-rpc.getWirelessDevices/getDHCPLeases、log.read、file.read /proc/mounts、file.exec /bin/df、file.list /etc/rc.d & /etc/config、file.exec /bin/ping(环回)、file.read /etc/config/network。
+  - D ACL 兜底：匿名 uci.get 被拒；root 读 /etc/shadow 被拒；root 写 /tmp 被拒（acl.d/molly.json 的 write 只放行 /etc/config/*、/etc/init.d/*、/sbin/reload_config）。
+  - E 并发：GET /lite/ 与并发 uci.get，不得 503。
+  - F 登出：302 清 cookie；旧 SID 再读被拒（会话 destroy 落 rpcd）。
+  真机：**39/0**，连跑两遍稳定。
+- **活设备刻意不做**（破坏性；写逻辑由宿主 smoke.sh 覆盖）：真 uci set/commit/apply、network.reload、服务 start/stop/restart、system.reboot、/auth/password。
+- Makefile：加 `device-simple` / `device-luci` 目标（缺 MOLLY_DEVICE_PASS 直接报错），经 make 这条路同样 39/0。
+- 踩坑（已修）：初版用 `printf 大字符串 | grep -q` 判 SPA 外壳内容，在 `set -o pipefail` 下 `grep -q` 命中即关管道 → printf 收 SIGPIPE 退 141 → 整条 `&&` 判失败，表现为**偶发**误报（菜单那条抢跑失败、小响应头那几条没触发）。改纯 bash `[[ body == *needle* ]]` 后消除。
+- **已执行部署改动**（用户选项：molly 保持 :8080 + uhttpd 停用并禁自启）：`/etc/init.d/uhttpd stop && disable` 已跑，:80 释放、/etc/rc.d 无 uhttpd 启动链接；molly(:8080)/rpcd/ucode 均在。uhttpd 关掉后重跑两套黑盒：**/lite 39/0、/admin 47/0** → molly 单独同时扛简洁版+专家版（专家版仍走 molly 自 fork ucode→rpcd，不需 uhttpd）。回滚：`/etc/init.d/uhttpd enable && start`。注：:80 现为空，访问入口是 http://192.168.1.1:8080。
+
+## 2026-10-09 会话：专家版 URL 前缀 /admin/admin → /admin（消双写）
+
+- **症状**：专家版 cgi 模式（`--luci-prefix /admin --luci-strip admin --luci-cgi …`）下，页面里每条链接、地址栏都是 `/admin/admin/…` 双写。
+- **根因（实测坐实，非猜）**：双写来自**出站链接**，不在入站。ucode `build_url`（`dispatcher.uc:730` `let url=[http.getenv('SCRIPT_NAME')??'']` + 逐段拼）与前端 `luci.js` 的 `url(){return this.path(env.scriptname,…)}`（`header.ut:15` 把 `env.scriptname=http.getenv("SCRIPT_NAME")` 注入页面），都是 `SCRIPT_NAME + 菜单树路径`。菜单树顶层恒有 `admin` 段，而 molly 把 SCRIPT_NAME 直接设成前缀 `/admin` → 两个 admin 撞名 → `/admin/admin/…`。`--luci-strip` 只折算**入站**（`LuciTreePath`），管不到 ucode 出站拼接。
+- **修法**（`internal/handlers/cgi.go`）：新增 `cgiScriptName()`，交给 ucode 的 SCRIPT_NAME = `TrimSuffix(LuciPrefix, LuciStripSegment)`。prefix=/admin、strip=/admin → SCRIPT_NAME=`""` → `build_url = "" + /admin/… = /admin/…`（单段）。strip 为空（上游默认）时返回 LuciPrefix，逐字节不变；PATH_INFO 仍给完整树路径（ucode 靠它找节点），入站照旧由 `LuciTreePath` 折算，两侧对齐。
+- **门禁**：gofmt/vet 干净；新增两测 `TestCGIScriptNameWithStrip`（strip 时 SCRIPT_NAME 空、PATH_INFO 全树）与 `TestCGIScriptNameNoStrip`（默认不变）；`go test ./...` 全绿；宿主 `tests/smoke.sh` **334/0**。
+- **真机**（make deploy 交叉编译上机、restart）：以浏览器表单 `/auth/login` 拿 cookie 后 `/admin/`、`/admin/status/overview`、`/admin/network/network`、`/admin/system/system` 全 200 且标题对（概览/接口/系统）；页面内 `/admin/admin` 计数 **0**；注入的 `env.scriptname` 变空；server 渲染的 translations href 从 `/admin/admin/translations/zh-cn` 收成 `/admin/translations/zh-cn`。回归：`device-luci` **47/0**、`device-simple` **39/0**。
+- **未受影响**：`cgi_base = scriptname.replace(/\/?[^/]+$/,'')` 改前（/admin）改后（""）都算得 `""`，故 package-manager 那类 `POST /cgi-exec` 的 405（cgi-io 缺口，用户已定「只记录为已知限制」）与此改动正交，未因此变化。
+
+## 2026-10-09 会话：cgi-io 三件套原生实现（推翻上次「只记录」的决定）
+
+- **触发**：用户重贴浏览器 console —— `/admin/system/package-manager` 已 200（URL 前缀修好），但 `POST /cgi-exec` 仍 405，`fs.exec_direct → handleCgiIoReply Error: Method Not Allowed`，软件包列表出不来。AskUserQuestion → 用户选「**现在就实现（原生 Go）**」。
+- **契约（实测 fs.js/ui.js/luci.js，不猜）**：`exec_direct`→POST `cgi_base/cgi-exec` body urlencoded `sessionid&command&stderr(0|1)`；`read_direct`→`cgi-download` body `sessionid&path`；`ui.uploadFile`→`cgi-upload` multipart `sessionid&filename(目标)&filedata`。`cgi_base = scriptname.replace(/\/[^/]+$/,'')`（本部署 scriptname=""→cgi_base=""→裸 `/cgi-*`；上游默认 →`/cgi-bin`）。`handleCgiIoReply` 只认 status==200 取 text/blob，非 200 映射 400 InvalidArgument/403 Permission/404 NotFound。request 对任何完成的 XHR 都 resolve Response（仅网络错才 reject），故 upload 里 `res.json()` 总会跑。
+- **安全模型**：不 fork `/usr/libexec/cgi-io`（依赖 uhttpd 塞的环境，实测手动 fork 返 exit255）；不复刻 `cgi-io:[exec]` 那道闸（rpcd `session.access` 不暴露 cgi-io scope，实测恒 false）。改为**复用 ubus file.exec 那道 ACL**（`fileExecLookup`+`fileCanonicalizePath`+`fileExecCheckACL`，桥接态经 `sessionAccess→rpcdSessionAccess`，与原厂 file-exec 同源同判）→ `/cgi-exec` 能跑的命令 ⊆ `ubus file.exec`，**无新执行面**。差别只在回包：file.exec 是 JSON+64KB cap，cgi-io 流式吐原始 stdout。三件套都先要**已认证**会话（`cgiioRequireSession`：非空且≠SessionDefaultID），命令/路径本身再靠 ACL fail-closed 兜底。download 走 file `read`，upload 走 file `write`。
+- **落地**：
+  - `internal/backend/cgi_io.go`（新）：`cgiioTokenize`（反斜杠转义下一字符、未转义空格分隔、空 token 丢弃——还原 exec_direct 的 `\`→`\\`、空白→`\<空白>` 编码）、`CGIExec`（ACL→`exec.CommandContext` 流式 c.Stdout=out，wantStderr 并入；超时→7，其余退出码照旧 200 吐已产出内容）、`CGIDownload`（fileCheckPath read→io.Copy）、`CGIUpload`（fileCheckPath write→O_WRONLY|CREATE|TRUNC）。返 ubus 码。
+  - `internal/handlers/cgi_io.go`（新）：`cgiBasePrefix()`（=SCRIPT_NAME 去末段，逐字节复刻 JS）、`cgiIOEndpointOf`/`IsCGIIOPath`（精确匹配 base+/cgi-{exec,download,upload}）、`ServeCGIIO`（非 POST→405；ParseForm 取 sessionid/command/stderr、ParseMultipartForm 取 filedata）。`streamWriter` 首次 Write 才发 200+octet-stream，令 handler 能在「还没发头」时把 ACL/校验失败映射 400/403/404/504。upload **恒 200+JSON**：成功 `{name,size,checksum(md5),sha256sum}`（TeeReader 边写边算），失败 `{failure:true,message}`。
+  - `main.go`：在 `ServeStatic` **之前**接入 `IsCGIIOPath`→`ServeCGIIO`（默认部署 cgi-io 落 /cgi-bin/ 会被 ServeStatic 判 403，本部署裸 /cgi-exec 会被判 405，必须在静态兜底前拦）。
+- **门禁（全绿）**：gofmt/vet 干净；新增 backend `cgi_io_test.go`（tokenize、需会话、ACL 兜底/NotFound/空命令 2、授权流式跑通、命令行 ACL 精确匹配、download read、upload write）+ handlers `cgi_io_test.go`（bare/default 两种 base 的路由判定、405/403/404/400 映射、upload JSON 契约）；`go test ./...` 全绿；`tests/smoke.sh` 加 7 条 cgi-io 断言（$B2=prefix/admin+strip 实例，用查无此人的会话走 fail-closed 验路由不再 405 + ACL 没放开 + /cgi-exec/x 不误吞）→ **341/0**（原 334+7）。
+- **⚠ 真机部署被挡（非代码）**：交叉编译 `make target` 出 `build/molly-arm64` 成功；但**设备拒绝 root 的 SSH 口令登录**——`ssh -v`、`sshpass -e`/`-p` + `PubkeyAuthentication=no`/`PreferredAuthentications=password`、`scp -O` 一律 `Permission denied (publickey,password)`。同一口令 `yu678910` 走 **HTTP `/auth/login` 却成功**（302+sysauth_molly cookie）→ 是设备侧 dropbear 关了 root 口令登录（或 SSH 口令与控制台/HTTP 不同），不是 molly 代码问题。当前设备仍是**旧二进制**：`POST /cgi-exec` 实测仍 **405**。b5（真机验证 package-manager 出列表 / ACL 兜底 / 回归 device-luci47·simple39）**待 SSH 恢复**。molly 禁改 /etc/config，无法自行放开 dropbear。已就此询问用户。后续复核：`ssh -o BatchMode=yes`（纯 key）同样 `Permission denied (publickey,password)`——本机 `id_rsa` 也不在设备授权里，SSH 口令+key 双双被拒确认。也无 HTTP 路径能替换**运行中**的二进制（旧实例 `file.write` ACL 不覆盖 /usr/sbin；对运行中程序 O_TRUNC 触发 ETXTBSY）。故交付 `tests/deploy_cgi_io.sh`：一条命令做 scp→停→覆盖 /usr/sbin/molly→起→**只用 HTTP 自验**（POST /cgi-exec 断言不再 405 + 越权命令应 403）。已用当前旧设备跑其验证段，正确报 405（canary 有效，登录 sid 长度 32 正常）。用户跑该脚本即完成 b5。
 
 ## 风险与不确定性
 

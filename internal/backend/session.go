@@ -613,9 +613,28 @@ func SessionAccessUbus(sid, object, function string) bool {
 	return sessionACLAllowed(ses, "ubus", object, function)
 }
 
+// sessionAccessBridge 由桥接层（会话交给 rpcd 的形态）注入：进程内自有对象
+// （uci/file/…）实现内部那道 ACL 也得问 rpcd —— 桥接态下真会话在 rpcd，molly 私有
+// sessionStore 里查不到，不转问就会一律误判成 Permission denied。
+// 返回 (允许, 已处理)；handled=false 时退回进程内存储判定。
+// darwin / 非桥接态恒为 nil → 完全走原来的私有存储，行为不变。见 linux.go SetSessionOnBus。
+var sessionAccessBridge func(sid, scope, object, function string) (bool, bool)
+
+// SetSessionAccessBridge 装配/卸载桥接函数（由 SetSessionOnBus 在起服务前调用一次）。
+func SetSessionAccessBridge(fn func(sid, scope, object, function string) (bool, bool)) {
+	sessionAccessBridge = fn
+}
+
 // sessionAccess 是 ubus 对象内部方法用的 ACL 查询入口（scope 由调用方给：file/uci/…），
 // 对应 Odin 版各对象里的 `session_acl_allowed(ses, scope, …)`。fail-closed。
 func sessionAccess(sid, scope, object, function string) bool {
+	// 桥接态：会话在 rpcd，私有存储没有它 → 这道内部 ACL 转问 rpcd（与 :80 同源同判）。
+	// 在拿 sessionMu 之前先短路，避免与 rpcd 往返（走 ubusMu）嵌套。
+	if bridge := sessionAccessBridge; bridge != nil {
+		if ok, handled := bridge(sid, scope, object, function); handled {
+			return ok
+		}
+	}
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
 	sessionEnsureDefault()

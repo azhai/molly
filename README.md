@@ -1,6 +1,8 @@
 # molly
 
-用 [Odin](https://odin-lang.org/) 复刻 ImmortalWrt LuCI 的服务端三层：**uhttpd**（HTTP + `/ubus` JSON-RPC + CGI）、**rpcd**（ubus 上的 `session`/`uci`/`file`/`luci` 对象）、**ucode dispatcher**（菜单树 → 路径解析 → 渲染）。
+用 **Go** 复刻 ImmortalWrt LuCI 的服务端三层：**uhttpd**（HTTP + `/ubus` JSON-RPC + CGI）、**rpcd**（ubus 上的 `session`/`uci`/`file`/`luci` 对象）、**dispatcher**（菜单树 → 路径解析 → 渲染）。
+
+两套界面里，**简洁版**（`/lite`）是自研单页应用；**专家版**（本站 `/admin`）是**用 Go 重写的 LuCI**——菜单树、ACL 裁树、路径语义逐条对齐上游，界面与操作跟原版一致。
 
 **不动**的是：`/etc/config`（uci）、ubusd 消息总线、`/www` 静态文件。
 
@@ -37,9 +39,11 @@
 > （非致命，**逐对象**打一行诊断）——要接管就先 `/etc/init.d/rpcd stop`，再重启 molly。
 > 接管后跑 `./tests/device_smoke.sh` 一把验收（含真实 crypt 登录、uci 写路径、SSE）。
 > 启动时不再有「transitional mode」这回事（P3-9 删掉了那条 WARN）。
-> 生产渲染走 ADR 0003 的 `--luci-cgi`（设备 ucode，**登录表单也由它渲染**）；
-> 内置 dispatcher 是对照实现：没有模板，但无会话访问带 `depends.acl` 的路径按上游回
-> **403 + `X-LuCI-Login-Required: yes` + 登录提示页**（P3-6 收尾起，不再是整站裸 404）。
+> 专家版的默认渲染是**内置 Go dispatcher**（`internal/luci`，目标形态）；`--luci-cgi` 把整段前缀
+> 交给设备 ucode 渲染，那是**对照与排查**用的基准（ADR 0003 的 T1），不是部署形态。
+> 内置那份还没有模板层：无会话访问带 `depends.acl` 的路径按上游回 **403 +
+> `X-LuCI-Login-Required: yes` + 登录提示页**（P3-6 收尾起，不再是整站裸 404），而 cbi/view/template
+> 类节点回 **501** 并带上 `action.type / view / menu`——那就是「还差哪些页面」的清单。
 
 ## 快速开始
 
@@ -70,15 +74,10 @@ curl -s               http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview  
 配置要点：
 
 - **两套界面**（`docs/interfaces.md` §3.1）：
-  - **专家版** = **我们自己实现的 Go+HTML 站点**（十个页面：仪表盘/内外网/无线/DHCP/系统/日志/服务/存储/诊断/备份），
-    挂在 `--luci-prefix` 给的路径上（默认 `/cgi-bin/luci`；本站部署用 `/plus`）。页面是编译进二进制的单文件，
-    **菜单内置在 Go 代码里（不读 menu.d）**，不依赖 ucode / LuCI 主题 / uhttpd——具体动作全部经 `/ubus`；
-    设备额外需要的命令授权集中在 `tools/molly-acl.json`；给 `--luci-cgi` 则退回设备 ucode 渲染的完整 LuCI；
-  - **新手版** = `/lite`，一页只放最常见的六件事（系统状态、实时负载图、重启、内外网设置、无线中继、
-    DHCP 分配与 MAC 绑定）。页面是**编译进二进制的单文件**（`webassets/novice/index.html`），
-    数据面全走既有 `/ubus`——没有新手版专属 API，也没有第二套鉴权；
-  - `/` 是入口，**302** 跳到 `/lite/`；
-  - 两者**共用同一个会话 cookie**（`sysauth_molly`，`path=/`），所以任一边登录过，另一边直接可用。
+  - **简洁版** = 我们自己实现的 Go+HTML **单页应用**（`/lite`，`/` 是 302 入口），十个页面：仪表盘 / 内外网 / 无线 / DHCP / 系统 / 日志 / 服务 / 存储 / 诊断 / 备份。页面是编译进二进制的单文件（`webassets/simple/index.html`），**菜单内置在 Go 代码里（不读 menu.d）**，不依赖 ucode / LuCI 主题 / uhttpd，具体动作全部经 `/ubus`。仪表盘是首屏（`/lite/#/dash`），**不含「重启」**——该功能只在「系统」页。设备额外需要的命令授权集中在 `tools/molly-acl.json`；
+  - **专家版** = **用 Go 重写的 LuCI**（`--luci-prefix` 给的路径，本站 `/admin`）：菜单树、ACL 裁树、路径语义按上游 `dispatcher.uc` 逐条复刻，由内置 Go dispatcher 渲染（`internal/luci`）；`--luci-cgi` 才改交设备 ucode，用于对照与排查。**差距**：视图层尚未落地，cbi/view/template 类页面现在回 501（带 `action.type/view/menu`），页面要一个个补；
+  - 两套界面各自都有登录页与退出入口，但都落在**同一组 `/auth/{login,logout,password}` 端点**上（cookie `path=/`、会话是同一个 `session` 对象），于是登录一次两边都在、退出一次两边都没。**差距**：专家版（内置 Go dispatcher）现在只出「需要登录」的提示页，还没有可用的登录表单（`internal/luci/render.go` 的 `renderLoginRequired`），要按上游补；
+  - 两者**共用同一个会话 cookie**（`sysauth_molly`，`path=/`），任一边登录过，另一边直接可用；登录/退出都走 `/auth/{login,logout,password}`。
 - `--menu-dir` 默认 `/usr/share/luci/menu.d`；macOS 上要显式指向 `tests/fixtures/menu.d`。
 - `--luci-cgi` 非空时，**专家版前缀**整体交给该子进程执行；设备上填
   `"/www/cgi-bin/luci"`（LuCI 装的 CGI 兜底脚本，`#!/usr/bin/env ucode`，复刻 uhttpd 的 CGI 形态，

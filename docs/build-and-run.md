@@ -142,14 +142,18 @@ curl -sD- -o/dev/null http://127.0.0.1:8080/cgi-bin/luci/admin/status/routes  # 
 ## 7. 真机部署（第 7 步，待设备）
 
 ```bash
-GOSYMS=1 ./build.sh --target          # 第一次上机保留符号，便于抓崩溃栈
-scp build/molly root@<设备>:/tmp/
-ssh root@<设备> '/tmp/molly --listen 0.0.0.0:8081 --docroot /www --luci-prefix /plus'
+make target LDFLAGS='-s -w'            # 交叉编译设备产物 build/molly-arm64
+scp build/molly-arm64 root@<设备>:/tmp/molly
+ssh root@<设备> '/tmp/molly --listen 0.0.0.0:8081 --docroot /www --menu-dir /usr/share/luci/menu.d \
+  --luci-prefix /admin --luci-strip admin'
+# 不带 --luci-cgi = 专家版走内置 Go dispatcher（本站的目标形态）。
+# 加上 --luci-cgi "/www/cgi-bin/luci" 才改交设备 ucode 渲染，用来对照与排查。
 ```
 
-自研站点（`--luci-render app`，默认）**不读 menu.d**——菜单是 `webassets/expert.Menu` 里内置的数据，
-所以设备部署**不要**传 `--menu-dir`：留着既没用，又会让人误以为页面来自那批 json。
-只有退回内置/ucode dispatcher（`--luci-render builtin|cgi`）时才需要它。
+**简洁版**（`/lite`，编译进二进制的单页站点）**不读 menu.d**——菜单是 `webassets/simple.Menu` 里内置的数据，
+所以它那份页面**不需要** `--menu-dir`。
+**专家版**（用 Go 重写的 LuCI，本站 `/admin`）要按 menu.d 建菜单树，所以**它才需要** `--menu-dir`；
+部署时别把它当「只给 ucode 用的参数」——内置 Go dispatcher 读的是同一个目录。
 
 规则：
 

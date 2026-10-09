@@ -13,6 +13,8 @@
 #   make test       go test ./...
 #   make smoke      起本机实例跑 tests/smoke.sh（300+ 条 HTTP 层断言）
 #   make lint       gofmt 检查 + go vet（CI 用的那步）
+#   make device-simple 真机验收简洁版 /lite（黑盒，需 MOLLY_DEVICE_PASS=xxx）
+#   make device-luci    真机验收专家版（对照基准，需 MOLLY_DEVICE_PASS=xxx）
 #   make help       列出所有目标
 #
 # 交叉编译需要 zig 与 ImmortalWrt 的 aarch64 sysroot，两者都能用变量覆盖：
@@ -54,7 +56,7 @@ SSH ?= ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$(HO
 
 .DEFAULT_GOAL := all
 
-.PHONY: all build target target-embed test smoke fmt fmt-check vet lint deploy clean help check-toolchain
+.PHONY: all build target target-embed test smoke device-luci device-simple fmt fmt-check vet lint deploy clean help check-toolchain
 
 all: clean build target
 
@@ -97,6 +99,17 @@ test:
 ## 集成验收：起 7 个本机实例跑 HTTP 层断言
 smoke:
 	./tests/smoke.sh
+
+## 真机验收（黑盒，只走 HTTP）：简洁版 /lite。需活设备与 root 密码；不做破坏性写操作。
+device-simple:
+	@: "${MOLLY_DEVICE_PASS:?先 export MOLLY_DEVICE_PASS=<root 密码>，例：make device-simple MOLLY_DEVICE_PASS=xxx}"
+	MOLLY_DEVICE_PASS='$(MOLLY_DEVICE_PASS)' ./tests/device_simple.sh $(if $(BASE),$(BASE),http://$(HOST):8080)
+
+## 真机验收（对照基准）：专家版前缀交设备 ucode 渲染那一路（T1 桥接形态）。
+device-luci:
+	@: "${MOLLY_DEVICE_PASS:?先 export MOLLY_DEVICE_PASS=<root 密码>，例：make device-luci MOLLY_DEVICE_PASS=xxx}"
+	MOLLY_DEVICE_PASS='$(MOLLY_DEVICE_PASS)' MOLLY_LUCI_PREFIX=$${MOLLY_LUCI_PREFIX:-/admin} MOLLY_LUCI_SUB=$${MOLLY_LUCI_SUB-} \
+	  ./tests/device_luci.sh $(if $(BASE),$(BASE),http://$(HOST):8080)
 
 fmt:
 	gofmt -l -w .

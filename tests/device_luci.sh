@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# 设备验收：molly 以 **T1 桥接** 承接原版 LuCI（ADR 0003
-# `.ai-agents/adr/0003-keep-ucode-faithful-luci2.md`）。
+# 设备验收（**对照基准**）：molly 以 T1 桥接把专家版前缀交给设备 ucode 渲染（ADR 0003）。
 #
 # 只走 HTTP，**与实现无关**：Odin 版与 Go 版（molly）用同一份脚本验收——
 # 前提是目标以「T1 形态」起：`--luci-cgi "<ucode> <CGI 兜底脚本>"`（可选 `--ubus-socket`）。
@@ -8,9 +7,18 @@
 #   MOLLY_DEVICE_PASS=xxx ./molly/tests/device_luci.sh            # 默认 http://192.168.1.1:8080
 #   MOLLY_DEVICE_PASS=xxx ./molly/tests/device_luci.sh http://192.168.1.1:8080
 #
+#   专家版前缀由部署给（别写死）：MOLLY_LUCI_PREFIX=挂载前缀（默认 /cgi-bin/luci，
+#   本站 /admin）；MOLLY_LUCI_SUB=前缀之后 URL 里那段（默认 /admin，配 --luci-strip admin
+#   的站给空串）。本机部署（/admin + strip admin）：
+#     MOLLY_DEVICE_PASS=xxx MOLLY_LUCI_PREFIX=/admin MOLLY_LUCI_SUB= \
+#       ./molly/tests/device_luci.sh
+#
 # 覆盖（对应 2026-10-07 的真机验收记录，见 .ai-memory/go-port-plan.md）：
-#   0) 未登录：/cgi-bin/luci/ 必须 403 + `x-luci-login-required: yes`
+#   0) 未登录：$LUCI/ 必须 403 + `x-luci-login-required: yes`
 #   1) 表单登录：302 + Set-Cookie（sysauth_*）
+#
+# 注：专家版的目标形态是内置 Go dispatcher（用 Go 重写的 LuCI），不是这条 ucode 桥接；
+# 本脚本留着是为了拿原版行为当基准。前缀由部署给（本站 /admin），别写死。
 #   2) 9 个页面全 200 且不再要求登录
 #   3) 5 个静态资源全 200
 #   4) 6 条首屏 RPC 全 ret=0
@@ -24,6 +32,9 @@ BASE="${1:-${MOLLY_BASE:-http://192.168.1.1:8080}}"
 USER_NAME="${MOLLY_DEVICE_USER:-root}"
 : "${MOLLY_DEVICE_PASS:?需要 MOLLY_DEVICE_PASS=<root 密码>（脚本要真的走一遍表单登录）}"
 CONC="${MOLLY_LUCI_CONC:-40}"
+# 专家版前缀由部署给（见文件头）：LUCI=挂载前缀，SUB=前缀之后 URL 里那段（strip 站给空串）。
+LUCI="${MOLLY_LUCI_PREFIX:-/cgi-bin/luci}"
+SUB="${MOLLY_LUCI_SUB-/admin}"   # 用 `-` 而非 `:-`：显式空串表示 strip 已把那段折叠进前缀
 
 PASS=0
 FAIL=0
@@ -38,13 +49,13 @@ check() { # $1=名字 $2=期望 $3=实际
 }
 
 echo "== 0. 未登录：登录判定 =="
-hdr="$(curl -s -i -m 20 "$BASE/cgi-bin/luci/" 2>&1)"
-check "GET /cgi-bin/luci/ 状态码" "403" "$(printf '%s' "$hdr" | awk 'NR==1{print $2}')"
+hdr="$(curl -s -i -m 20 "$BASE$LUCI/" 2>&1)"
+check "GET $LUCI/ 状态码" "403" "$(printf '%s' "$hdr" | awk 'NR==1{print $2}')"
 check "登录提示头 x-luci-login-required" "yes" \
   "$(printf '%s' "$hdr" | awk -F': ' 'tolower($1)=="x-luci-login-required"{print $2}' | tr -d '\r' | head -1)"
 
 echo "== 1. 表单登录 =="
-login="$(curl -s -i -m 25 -X POST "$BASE/cgi-bin/luci/" \
+login="$(curl -s -i -m 25 -X POST "$BASE$LUCI/" \
   --data-urlencode "luci_username=$USER_NAME" --data-urlencode "luci_password=$MOLLY_DEVICE_PASS" 2>&1)"
 check "登录状态码" "302" "$(printf '%s' "$login" | awk 'NR==1{print $2}')"
 cookie="$(printf '%s' "$login" | awk -F': ' 'tolower($1)=="set-cookie"{print $2}' | tr -d '\r' | head -1)"
@@ -56,7 +67,7 @@ check "Set-Cookie 是 sysauth_*" "yes" \
   "$([[ "$cookie" =~ sysauth_ ]] && echo yes || echo no)"
 
 # 后面几节的断言全交给 python：JSON 与并发在 shell 里写不可靠。
-results="$(BASE="$BASE" COOKIE="$COOKIE_PAIR" CONC="$CONC" RPC_PASS="$MOLLY_DEVICE_PASS" python3 - <<'PY'
+results="$(BASE="$BASE" COOKIE="$COOKIE_PAIR" CONC="$CONC" RPC_PASS="$MOLLY_DEVICE_PASS" LUCI="$LUCI" SUB="$SUB" python3 - <<'PY'
 import json, os, subprocess, concurrent.futures
 from collections import Counter
 
@@ -64,6 +75,8 @@ BASE = os.environ["BASE"]
 COOKIE = os.environ["COOKIE"]
 CONC = int(os.environ["CONC"])
 RPC_PASS = os.environ["RPC_PASS"]
+LUCI = os.environ["LUCI"]
+SUB = os.environ["SUB"]
 rows = []
 
 def curl(args, timeout="30"):
@@ -74,11 +87,14 @@ def row(name, expect, actual):
     rows.append("%s\t%s\t%s" % (name, expect, str(actual).replace("\t", " ")))
 
 # --- 2. 页面 ---
-pages = ["/cgi-bin/luci/", "/cgi-bin/luci/admin/status/overview",
-         "/cgi-bin/luci/admin/network/network", "/cgi-bin/luci/admin/network/wireless",
-         "/cgi-bin/luci/admin/system/system", "/cgi-bin/luci/admin/status/routes",
-         "/cgi-bin/luci/admin/status/logs", "/cgi-bin/luci/admin/system/admin",
-         "/cgi-bin/luci/admin/network/dhcp"]
+# 前缀 + strip 折算出的实际 URL：根 = <LUCI>/，子页 = <LUCI><SUB>/<rel>
+root = LUCI.rstrip("/") + "/"
+sub = LUCI.rstrip("/") + SUB
+pages = [root,
+         sub + "/status/overview", sub + "/network/network", sub + "/network/wireless",
+         sub + "/system/system", sub + "/status/routes",
+         sub + "/status/logs", sub + "/system/admin",
+         sub + "/network/dhcp"]
 for p in pages:
     curl(["-o", "/tmp/dluci.html", "-D", "/tmp/dluci.h", "-H", "Cookie: " + COOKIE, BASE + p])
     code = curl(["-o", "/dev/null", "-w", "%{http_code}", "-H", "Cookie: " + COOKIE, BASE + p]).strip()
@@ -153,7 +169,7 @@ except Exception:
 # --- 6. 并发（不得出现 503） ---
 def one(_):
     return curl(["-o", "/dev/null", "-w", "%{http_code}", "-H", "Cookie: " + COOKIE,
-                 BASE + "/cgi-bin/luci/admin/status/overview"]).strip()
+                 BASE + sub + "/status/overview"]).strip()
 with concurrent.futures.ThreadPoolExecutor(max_workers=CONC) as ex:
     codes = list(ex.map(one, range(CONC)))
 c = Counter(codes)

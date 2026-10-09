@@ -19,12 +19,12 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 | 层 | 目录 | 职责（一句话） | 允许依赖 |
 |---|---|---|---|
 | **接口层** | `main.go`、`internal/handlers/` | 把 HTTP 请求映射成业务调用：进程装配、CLI、路由分派、handler | `httpx`、`luci`、`backend` |
-| **业务层** | `internal/httpx/`、`internal/luci/`、`webassets/` | `httpx`：HTTP/1.1 传输与安全边界；`luci`：菜单树与 depends 语义；`webassets`：编译进二进制的静态资源（新手版单页 + 自研站点） | `httpx` 谁都不依赖；`luci` → `backend` |
+| **业务层** | `internal/httpx/`、`internal/luci/`、`webassets/` | `httpx`：HTTP/1.1 传输与安全边界；`luci`：菜单树与 depends 语义；`webassets`：编译进二进制的静态资源（简洁版单页 + 自研站点） | `httpx` 谁都不依赖；`luci` → `backend` |
 | **数据层** | `internal/backend/` | 平台相关的 uci / ubus 访问，各 provider 同名同签名 | 不依赖任何上层 |
 
 ```
                  main.odin
-                    │  handle(): 规范化 → /ubus → 专家版前缀 → 新手版 / → 静态
+                    │  handle(): 规范化 → /ubus → 专家版前缀 → 简洁版 / → 静态
         ┌───────────┴────────────┐
         ▼                        ▼
    handlers/                 http/            ← 传输层：谁都不依赖（叶子）
@@ -86,9 +86,8 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 | `main.go` | CLI 解析、`--listen/--docroot/--menu-dir/--luci-prefix/--luci-render/--luci-strip`、SIGPIPE 忽略、`http.Server` 装配、`handle` 路由分派、路径边界匹配。 |
 | `handlers/static.odin` | `/www` 下的静态文件（目录 → `index.html`，非 GET/HEAD → 405）。`/cgi-bin/*` 一律 403——上游 uhttpd 只执行它、从不吐脚本正文，见 `interfaces.md` §3。 |
 | `handlers/ubus_http.odin` | `/ubus` 的三种形态与 JSON-RPC 信封（详见 `interfaces.md` §4）。 |
-| `handlers/cgi_luci.odin` | **专家版前缀**的两种模式：`--luci-cgi` 非空 → 交给子进程（ADR 0003 的 T1）；否则 → `luci.dispatch` → 200/404/501/**403 登录提示**（带 `X-LuCI-Login-Required: yes`），只接 GET/HEAD。前缀是变量（`--luci-prefix`），因为同一值还要当 CGI 的 `SCRIPT_NAME` 用。 |
-| `handlers/novice.go` | **新手版**（`/`）：把编译进来的单文件页（`webassets/novice/index.html`，`go:embed`）发出去，并把会话 cookie 里的 sid 与专家版前缀替换进占位符。数据面完全走既有 `/ubus`，没有新手版专属 API。 |
-| `handlers/expert.go` | **专家版（自研站点）**（`--luci-prefix`，本站 `/plus`）：把 `webassets/expert` 的单页发出去（任何子路径都回同一份 HTML，路由在 `#/` 片段）。菜单来自 Go 侧的 `webassets/expert.Menu`，**不读 menu.d**，渲染不经过 ucode。 |
+| `handlers/luci.go` + `handlers/cgi.go` | **专家版前缀**（用 Go 重写的 LuCI）的两种渲染模式：默认 → `luci.dispatch`（内置 Go dispatcher）→ 200/404/501/**403 登录提示**（带 `X-LuCI-Login-Required: yes`），只接 GET/HEAD；`--luci-cgi` 非空 → 整段前缀交给设备 ucode 子进程（ADR 0003 的 T1），只作**对照与排查**。前缀是变量（`--luci-prefix`），因为同一值还要当 CGI 的 `SCRIPT_NAME` 用。 |
+| `handlers/simple.go` | **简洁版**（`/lite`，`/` 是 302 入口）：把 `webassets/simple` 的单页发出去（**整个前缀下任意路径**都回同一份 HTML，路由在 `#/` 片段）。菜单来自 Go 侧的 `webassets/simple.Menu`，**不读 menu.d**，渲染不经过 ucode。注入项（`__CFG__`）是 sid + 菜单 + 专家版前缀（页面据此出「前往专家版」链接）。 |
 | `handlers/auth.go` | 会话与口令：登录、`/auth/logout`、改密码（`POST /auth/password`）。 |
 | `handlers/static.go` | docroot 下的静态文件；`/cgi-bin/*` 一律 403（上游 uhttpd 只执行它、从不吐脚本正文）。 |
 | `handlers/cgi_exec.odin` | CGI 桥接：环境构造（纯函数）→ `fork`/`execve` → 响应解析（纯函数）→ 透传状态与额外头。两个纯函数有单元测试，桩脚本有 `tests/cgi_smoke.sh`。 |
@@ -205,7 +204,8 @@ molly 用「段名字典序」替代——语义等价性以可复现为先（`m
 - **请求体超 64KB**：molly 回 413，上游 ubus 插件回 200 + `-32700` 并关连接——这是 HTTP 层的既有决策。
 - **linux 侧只做到编译校验**：`uci_config_sections` 的遍历与 `#assert` 的布局断言都不等于运行期正确性，
   真机行为属第 7 步。
-- **`/cgi-bin/luci` 有两种模式**（ADR 0003）：默认是**内置的 Odin dispatcher**（`src/luci`，P2 形态，
-  `tests/http_smoke.sh` 覆盖）；给了 `--luci-cgi` 则整个前缀交给设备上的 ucode dispatcher
-  （复刻 uhttpd 的 `ucode_prefix` 接线，`tests/cgi_smoke.sh` 用桩脚本覆盖桥接本身）。
-  生产设备上按 ADR 0003 走后者；前者保留为「将来去 ucode」的对照实现与回归基准。
+- **专家版前缀有两种模式**（ADR 0003）：默认是**内置 Go dispatcher**（`internal/luci`）——本站的
+  **目标形态**，`tests/smoke.sh` 覆盖它的建树/depends/firstchild/通配/ACL 裁树/登录判定；
+  视图层尚未落地，cbi/view/template 类节点回 501 并带 `action.type/view/menu`，那是待补的页面清单。
+  给了 `--luci-cgi` 则整段前缀交给设备上的 ucode dispatcher（复刻 uhttpd 的 `ucode_prefix` 接线，
+  `tests/cgi_smoke.sh` 用桩脚本覆盖桥接本身）——那条现在是**对照与排查**用的基准，不是部署形态。
