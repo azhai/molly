@@ -139,6 +139,9 @@ func run(args []string) error {
 	if rc := backend.StartServer(*ubusSocket); rc != 0 {
 		fmt.Fprintln(os.Stderr, "[molly] ubus 服务启动失败：ucode 侧将无法经 ubus 调用 molly 对象")
 	}
+	// 依赖就绪：桥接态（--luci-cgi + 系统总线）登录与会话 ACL 依赖总线上的 rpcd，ubusd 是
+	// 所有 ubus 调用底座。起 HTTP 前先确保它们在线（只拉起缺失、绝不停服务；探不到只告警）。
+	backend.EnsureDeps()
 	srv := &http.Server{Handler: rt}
 	return srv.Serve(ln)
 }

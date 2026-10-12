@@ -346,3 +346,6 @@ func StartServer(string) int { return 0 }
 
 // SetSessionOnBus：macOS 上没有总线可接，桥接态恒不成立（空操作）。
 func SetSessionOnBus(bool) {}
+
+// EnsureDeps：macOS 没有 ubusd / rpcd，也没有总线可探，空操作（linux.go 有另一份）。
+func EnsureDeps() {}
