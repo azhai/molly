@@ -1,0 +1,46 @@
+#!/bin/sh /etc/rc.common
+# molly —— ImmortalWrt LuCI 服务端替换层（Go）。挂在 :8080，与 stock uhttpd(:80) 并存。
+#
+# 关键参数（对照部署同源，只把 docroot/cgi 换成本机的 /www）：
+#   --docroot /www                     读设备原生静态资源与 luci-static（只读，不改 /www）
+#   --menu-dir /usr/share/luci/menu.d  原生菜单树
+#   --luci-prefix /admin --luci-strip admin   专家版前缀；cgi_base 因此为空 → 裸 /cgi-*
+#   --luci-cgi /www/cgi-bin/luci       专家版页面交设备 ucode dispatcher 渲染（对照/排查形态）；
+#                                      该脚本 shebang 为 #!/usr/bin/env ucode，故单 token 直 exec。
+#
+# cgi-io（/cgi-exec、/cgi-download、/cgi-upload、/cgi-backup）由 molly 原生实现，
+# 复用 ubus file.exec 的 ACL 引擎，无需 fork /usr/libexec/cgi-io。
+#
+# 依赖：桥接态（--luci-cgi + 系统总线）的登录与会话 ACL 交给总线上的 rpcd，故 rpcd 必须在
+# 线；ubusd 是所有 ubus 调用的底座。两者由下面的 start_service 前置与 molly 进程内就绪探测
+# 共同保证（见 internal/backend/deps_linux.go）。
+
+START=95
+STOP=10
+USE_PROCD=1
+
+NAME=molly
+PROG=/usr/sbin/molly
+
+start_service() {
+	# 依赖前置（只拉起未运行的，绝不 stop/kill 任何服务）：
+	#  - 开机顺序已由 START=95 晚于 rpcd 的 S12 保证；这里再兜一次运行期缺口
+	#    （rpcd 崩溃后被 molly 先重启、或运维手动 start molly）。
+	#  - ubusd 无 init 脚本（procd 早期自管），其就绪交给 molly 进程内探测。
+	[ -x /etc/init.d/rpcd ] && {
+		/etc/init.d/rpcd status >/dev/null 2>&1 || /etc/init.d/rpcd start
+	}
+
+	procd_open_instance "$NAME"
+	procd_set_param command "$PROG" \
+		--listen 0.0.0.0:8080 \
+		--docroot /www \
+		--menu-dir /usr/share/luci/menu.d \
+		--luci-prefix /admin \
+		--luci-strip admin \
+		--luci-cgi /www/cgi-bin/luci
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}

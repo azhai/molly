@@ -3,1016 +3,1134 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#006a6a">
 <title>简洁版</title>
 <style>
-:root{--bg:#f4f6f8;--card:#fff;--line:#e3e8ee;--fg:#17212b;--dim:#66788a;--accent:#1f8f4e;--ok:#e7f5ec;--warn:#c0392b;--warnbg:#fdecea;--soon:#9aa7b4}
-@media (prefers-color-scheme:dark){:root{--bg:#10151b;--card:#18202a;--line:#263241;--fg:#e8eef5;--dim:#93a4b6;--accent:#3ecf7a;--ok:#16301f;--warn:#ff7b6b;--warnbg:#331a18;--soon:#5b6a7a}}
+/* ================= Material 3 · Teal 设计令牌 =================
+   从 Teal 种子生成的 M3 色料角色（light/dark 两套），外加 shape / elevation /
+   state layer / typography。全部用 CSS 自定义属性，组件只认角色名不认具体色值。 */
+:root{
+  /* =====================================================================
+     Material 3 · Teal —— 令牌层遵循 m3.material.io/develop/web 的三层结构：
+       1) --md-ref-palette-*  参考调色板（种子生成的 0→100 色调，主题无关）
+       2) --md-sys-*          系统角色：color / typescale / shape / elevation /
+                              state / motion 六族；浅色在此定义，[data-theme=dark] 覆盖
+       3) 组件只读系统角色；文件尾再放一组简写别名（--primary 等）指回 --md-sys-*，
+          让既有组件 CSS 与 JS 无需改写即可跟随主题（深色翻牌只改角色，别名不动）。
+     ===================================================================== */
+
+  /* —— 1. 参考调色板：Teal 主色 + 低饱和辅色 + 蓝灰第三色 + 中性 / 中性变体 + 错误 —— */
+  --md-ref-palette-primary0:#000000;   --md-ref-palette-primary10:#002020;
+  --md-ref-palette-primary20:#003737;  --md-ref-palette-primary30:#004f4f;
+  --md-ref-palette-primary40:#006a6a;  --md-ref-palette-primary50:#008786;
+  --md-ref-palette-primary60:#14a3a0;  --md-ref-palette-primary70:#33bfbb;
+  --md-ref-palette-primary80:#4cd9d5;  --md-ref-palette-primary90:#6ff7f3;
+  --md-ref-palette-primary95:#a9fdfa;  --md-ref-palette-primary99:#e6fffe; --md-ref-palette-primary100:#ffffff;
+  --md-ref-palette-secondary10:#192020; --md-ref-palette-secondary20:#2e3535;
+  --md-ref-palette-secondary30:#3f4948; --md-ref-palette-secondary40:#4a6363;
+  --md-ref-palette-secondary80:#b1cccb; --md-ref-palette-secondary90:#cde8e7; --md-ref-palette-secondary100:#ffffff;
+  --md-ref-palette-tertiary10:#141e2b;  --md-ref-palette-tertiary20:#20304a;
+  --md-ref-palette-tertiary30:#354661;  --md-ref-palette-tertiary40:#4d5d7c;
+  --md-ref-palette-tertiary80:#b6c6ea;  --md-ref-palette-tertiary90:#d3e2ff; --md-ref-palette-tertiary100:#ffffff;
+  --md-ref-palette-neutral4:#131516;  --md-ref-palette-neutral6:#17191b;
+  --md-ref-palette-neutral10:#1b1d1f; --md-ref-palette-neutral12:#222427;
+  --md-ref-palette-neutral17:#2b2e31; --md-ref-palette-neutral20:#33363a;
+  --md-ref-palette-neutral22:#3a3e42; --md-ref-palette-neutral90:#e1e3e6;
+  --md-ref-palette-neutral92:#e8eaed; --md-ref-palette-neutral94:#eef0f2;
+  --md-ref-palette-neutral95:#f2f4f6; --md-ref-palette-neutral96:#f6f7f9;
+  --md-ref-palette-neutral98:#fafbfc; --md-ref-palette-neutral100:#ffffff;
+  --md-ref-palette-neutral-variant20:#33363a; --md-ref-palette-neutral-variant25:#3d4145;
+  --md-ref-palette-neutral-variant30:#484c50; --md-ref-palette-neutral-variant50:#6d7277;
+  --md-ref-palette-neutral-variant60:#878c91; --md-ref-palette-neutral-variant80:#c3c7cb;
+  --md-ref-palette-neutral-variant90:#dfe2e5; --md-ref-palette-neutral-variant95:#eef0f2;
+  --md-ref-palette-error10:#410e0b;  --md-ref-palette-error20:#691d16;
+  --md-ref-palette-error30:#93000a;  --md-ref-palette-error40:#b3261e;
+  --md-ref-palette-error80:#ffb4ab;  --md-ref-palette-error90:#ffdad6; --md-ref-palette-error100:#ffffff;
+
+  /* —— 2a. 系统 · 颜色角色（浅色）—— */
+  --md-sys-color-primary:var(--md-ref-palette-primary40);
+  --md-sys-color-on-primary:var(--md-ref-palette-primary100);
+  --md-sys-color-primary-container:var(--md-ref-palette-primary90);
+  --md-sys-color-on-primary-container:var(--md-ref-palette-primary10);
+  --md-sys-color-secondary:var(--md-ref-palette-secondary40);
+  --md-sys-color-on-secondary:var(--md-ref-palette-secondary100);
+  --md-sys-color-secondary-container:var(--md-ref-palette-secondary90);
+  --md-sys-color-on-secondary-container:#051f1f;
+  --md-sys-color-tertiary:var(--md-ref-palette-tertiary40);
+  --md-sys-color-on-tertiary:var(--md-ref-palette-tertiary100);
+  --md-sys-color-tertiary-container:var(--md-ref-palette-tertiary90);
+  --md-sys-color-on-tertiary-container:var(--md-ref-palette-tertiary10);
+  --md-sys-color-error:var(--md-ref-palette-error40);
+  --md-sys-color-on-error:var(--md-ref-palette-error100);
+  --md-sys-color-error-container:var(--md-ref-palette-error90);
+  --md-sys-color-on-error-container:var(--md-ref-palette-error10);
+  --md-sys-color-surface:var(--md-ref-palette-neutral98);
+  --md-sys-color-on-surface:var(--md-ref-palette-neutral10);
+  --md-sys-color-background:var(--md-ref-palette-neutral95);
+  --md-sys-color-surface-variant:var(--md-ref-palette-neutral-variant90);
+  --md-sys-color-on-surface-variant:var(--md-ref-palette-neutral-variant25);
+  --md-sys-color-surface-container-lowest:var(--md-ref-palette-neutral100);
+  --md-sys-color-surface-container-low:var(--md-ref-palette-neutral96);
+  --md-sys-color-surface-container:var(--md-ref-palette-neutral94);
+  --md-sys-color-surface-container-high:var(--md-ref-palette-neutral92);
+  --md-sys-color-surface-container-highest:var(--md-ref-palette-neutral90);
+  --md-sys-color-outline:var(--md-ref-palette-neutral-variant50);
+  --md-sys-color-outline-variant:var(--md-ref-palette-neutral-variant80);
+  --md-sys-color-scrim:rgba(0,0,0,.42);
+
+  /* —— 2b. 系统 · 排版 typescale —— */
+  --md-sys-typescale-font:Roboto,"Segoe UI Variable","Segoe UI",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  --md-sys-typescale-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --md-sys-typescale-body-small-size:12px;   --md-sys-typescale-body-small-line:16px;
+  --md-sys-typescale-body-medium-size:14px;  --md-sys-typescale-body-medium-line:20px;
+  --md-sys-typescale-body-large-size:16px;   --md-sys-typescale-body-large-line:24px;
+  --md-sys-typescale-label-small-size:11px;  --md-sys-typescale-label-medium-size:12px; --md-sys-typescale-label-large-size:14px;
+  --md-sys-typescale-title-small-size:14px;  --md-sys-typescale-title-medium-size:16px; --md-sys-typescale-title-large-size:22px;
+  --md-sys-typescale-headline-small-size:24px; --md-sys-typescale-display-small-size:36px;
+
+  /* —— 2c. 系统 · 形状 shape（桌面 Web 风：圆角收紧、更方正；pill 仅留给开关、进度条、状态标签等）—— */
+  --md-sys-shape-corner-extra-small:4px; --md-sys-shape-corner-small:8px;
+  --md-sys-shape-corner-medium:10px;     --md-sys-shape-corner-large:12px;
+  --md-sys-shape-corner-extra-large:16px; --md-sys-shape-corner-full:999px;
+
+  /* —— 2d. 系统 · 高度 elevation（中性灰阴影、更轻，贴近 Web）—— */
+  --md-sys-elevation-level0:none;
+  --md-sys-elevation-level1:0 1px 2px rgba(33,37,41,.14),0 1px 3px 1px rgba(33,37,41,.06);
+  --md-sys-elevation-level2:0 1px 3px rgba(33,37,41,.12),0 2px 6px 2px rgba(33,37,41,.07);
+  --md-sys-elevation-level3:0 4px 10px 3px rgba(33,37,41,.10),0 2px 4px rgba(33,37,41,.08);
+  --md-sys-elevation-level4:0 6px 14px 4px rgba(33,37,41,.10),0 3px 6px rgba(33,37,41,.08);
+  --md-sys-elevation-level5:0 10px 20px 6px rgba(33,37,41,.12),0 4px 8px rgba(33,37,41,.10);
+
+  /* —— 2e. 系统 · 状态层 state —— */
+  --md-sys-state-hover-opacity:.08; --md-sys-state-focus-opacity:.10;
+  --md-sys-state-pressed-opacity:.12; --md-sys-state-drag-opacity:.16;
+
+  /* —— 2f. 系统 · 动效 motion（标准 / 强调缓动 + 时长刻度）—— */
+  --md-sys-motion-easing-standard:cubic-bezier(.2,0,0,1);
+  --md-sys-motion-easing-standard-decelerate:cubic-bezier(0,0,0,1);
+  --md-sys-motion-easing-standard-accelerate:cubic-bezier(.3,0,1,1);
+  --md-sys-motion-easing-emphasized:cubic-bezier(.05,.7,.1,1);
+  --md-sys-motion-easing-emphasized-accelerate:cubic-bezier(.3,0,.8,.15);
+  --md-sys-motion-easing-legacy:cubic-bezier(.4,0,.2,1);
+  --md-sys-motion-duration-short2:100ms; --md-sys-motion-duration-short3:150ms; --md-sys-motion-duration-short4:200ms;
+  --md-sys-motion-duration-medium1:250ms; --md-sys-motion-duration-medium2:300ms; --md-sys-motion-duration-medium4:400ms;
+  --md-sys-motion-duration-long2:450ms;
+
+  /* —— 3. 简写别名：组件 / JS 用短名，全部指回系统角色 → 深色自动跟随 —— */
+  --primary:var(--md-sys-color-primary); --on-primary:var(--md-sys-color-on-primary);
+  --primary-container:var(--md-sys-color-primary-container); --on-primary-container:var(--md-sys-color-on-primary-container);
+  --secondary:var(--md-sys-color-secondary); --on-secondary:var(--md-sys-color-on-secondary);
+  --secondary-container:var(--md-sys-color-secondary-container); --on-secondary-container:var(--md-sys-color-on-secondary-container);
+  --tertiary:var(--md-sys-color-tertiary); --on-tertiary:var(--md-sys-color-on-tertiary); --tertiary-container:var(--md-sys-color-tertiary-container);
+  --error:var(--md-sys-color-error); --on-error:var(--md-sys-color-on-error);
+  --error-container:var(--md-sys-color-error-container); --on-error-container:var(--md-sys-color-on-error-container);
+  --surface:var(--md-sys-color-surface); --on-surface:var(--md-sys-color-on-surface);
+  --surface-variant:var(--md-sys-color-surface-variant); --on-surface-variant:var(--md-sys-color-on-surface-variant);
+  --surface-1:var(--md-sys-color-surface-container-low); --surface-2:var(--md-sys-color-surface-container);
+  --surface-3:var(--md-sys-color-surface-container-high); --surface-4:var(--md-sys-color-surface-container-highest); --surface-5:var(--md-sys-color-surface-container-highest);
+  --surface-container:var(--md-sys-color-surface-container); --surface-container-high:var(--md-sys-color-surface-container-high);
+  --surface-container-highest:var(--md-sys-color-surface-container-highest); --surface-container-low:var(--md-sys-color-surface-container-low);
+  --outline:var(--md-sys-color-outline); --outline-variant:var(--md-sys-color-outline-variant); --scrim:var(--md-sys-color-scrim);
+  --bg:var(--md-sys-color-background);
+  --r-xs:var(--md-sys-shape-corner-extra-small); --r-s:var(--md-sys-shape-corner-small); --r-m:var(--md-sys-shape-corner-medium);
+  --r-l:var(--md-sys-shape-corner-large); --r-xl:var(--md-sys-shape-corner-extra-large); --r-full:var(--md-sys-shape-corner-full);
+  --sl-hover:var(--md-sys-state-hover-opacity); --sl-focus:var(--md-sys-state-focus-opacity); --sl-press:var(--md-sys-state-pressed-opacity);
+  --e1:var(--md-sys-elevation-level1); --e2:var(--md-sys-elevation-level2); --e3:var(--md-sys-elevation-level3);
+  --font:var(--md-sys-typescale-font); --mono:var(--md-sys-typescale-mono);
+  /* —— 3b. 压缩字号刻度：7 级，12→20px（最大跨度仅 1.67x），收敛原先 11/12.5/22/26 等零散值 —— */
+  --fs-1:12px; --fs-2:13px; --fs-3:14px; --fs-4:15px; --fs-5:16px; --fs-6:18px; --fs-7:20px;
+  /* —— 3c. 语义“成功/在线”胶囊（与主题无关的固定 teal，不随翻牌变暗）—— */
+  --ok-bg:var(--md-ref-palette-primary30); --ok-fg:var(--md-ref-palette-primary90);
+  /* —— 3d. 负载曲线三色（主题感知：深色下换更亮色调，保证与深底 ≥ 3:1）—— */
+  --chart-1:var(--md-ref-palette-primary40); --chart-2:var(--md-ref-palette-primary60); --chart-3:var(--md-ref-palette-tertiary40);
+}
+[data-theme="dark"]{
+  /* 只翻系统颜色角色与高度；上面的简写别名保持不动 → 全站随主题一起翻转 */
+  --md-sys-color-primary:var(--md-ref-palette-primary80);
+  --md-sys-color-on-primary:var(--md-ref-palette-primary20);
+  --md-sys-color-primary-container:var(--md-ref-palette-primary30);
+  --md-sys-color-on-primary-container:var(--md-ref-palette-primary90);
+  --md-sys-color-secondary:var(--md-ref-palette-secondary80);
+  --md-sys-color-on-secondary:var(--md-ref-palette-secondary20);
+  --md-sys-color-secondary-container:var(--md-ref-palette-secondary30);
+  --md-sys-color-on-secondary-container:var(--md-ref-palette-secondary90);
+  --md-sys-color-tertiary:var(--md-ref-palette-tertiary80);
+  --md-sys-color-on-tertiary:var(--md-ref-palette-tertiary20);
+  --md-sys-color-tertiary-container:var(--md-ref-palette-tertiary30);
+  --md-sys-color-on-tertiary-container:var(--md-ref-palette-tertiary90);
+  --md-sys-color-error:var(--md-ref-palette-error80);
+  --md-sys-color-on-error:var(--md-ref-palette-error20);
+  --md-sys-color-error-container:var(--md-ref-palette-error30);
+  --md-sys-color-on-error-container:var(--md-ref-palette-error90);
+  --md-sys-color-surface:var(--md-ref-palette-neutral6);
+  --md-sys-color-on-surface:var(--md-ref-palette-neutral90);
+  --md-sys-color-background:#101214;
+  --md-sys-color-surface-variant:var(--md-ref-palette-neutral-variant30);
+  --md-sys-color-on-surface-variant:var(--md-ref-palette-neutral-variant80);
+  --md-sys-color-surface-container-lowest:var(--md-ref-palette-neutral4);
+  --md-sys-color-surface-container-low:var(--md-ref-palette-neutral10);
+  --md-sys-color-surface-container:var(--md-ref-palette-neutral12);
+  --md-sys-color-surface-container-high:var(--md-ref-palette-neutral17);
+  --md-sys-color-surface-container-highest:var(--md-ref-palette-neutral22);
+  --md-sys-color-outline:var(--md-ref-palette-neutral-variant60);
+  --md-sys-color-outline-variant:var(--md-ref-palette-neutral-variant25);
+  --md-sys-elevation-level1:0 1px 2px rgba(0,0,0,.4),0 1px 3px 1px rgba(0,0,0,.3);
+  --md-sys-elevation-level2:0 1px 3px rgba(0,0,0,.45),0 2px 8px 2px rgba(0,0,0,.32);
+  --md-sys-elevation-level3:0 5px 12px 3px rgba(0,0,0,.36),0 2px 5px rgba(0,0,0,.45);
+  --md-sys-elevation-level4:0 8px 16px 4px rgba(0,0,0,.36),0 3px 6px rgba(0,0,0,.45);
+  --md-sys-elevation-level5:0 12px 22px 8px rgba(0,0,0,.4),0 4px 8px rgba(0,0,0,.45);
+  /* 深色下曲线取更亮色调（primary60/80、tertiary80），避免 2.8:1 偏暗 */
+  --chart-1:var(--md-ref-palette-primary60); --chart-2:var(--md-ref-palette-primary80); --chart-3:var(--md-ref-palette-tertiary80);
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-.wrap{display:flex;max-width:1180px;margin:0 auto;min-height:100vh}
-nav{width:190px;flex:none;padding:14px 8px;border-right:1px solid var(--line)}
-nav .brand{font-weight:700;padding:4px 10px 12px}
-nav a{display:block;padding:8px 10px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:14px;cursor:pointer}
-nav a:hover{background:var(--card)}nav a.on{background:var(--accent);color:#fff;font-weight:600}
-nav a.soon{color:var(--soon)}nav a.soon:hover{color:var(--warn)}
-nav a.leave{margin-top:10px;border-top:1px solid var(--line);padding-top:12px;color:var(--dim)}
-main{flex:1;min-width:0;padding:16px 16px 48px}
-header{display:flex;align-items:center;gap:10px;margin-bottom:14px}
-header h1{font-size:18px;margin:0;flex:1}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
-.card h2{margin:0 0 12px;font-size:15px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.kv{background:var(--bg);border-radius:10px;padding:10px 12px}
-.kv .k{color:var(--dim);font-size:12px}.kv .v{font-size:16px;font-weight:600;word-break:break-all}
-label.f{display:block;margin:10px 0 0}label.f>span{display:block;color:var(--dim);font-size:13px;margin-bottom:4px}
-input,select{width:100%;padding:9px 11px;font-size:15px;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:9px}
-button{font:inherit;padding:9px 14px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
-button.p{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-button.d{background:var(--warnbg);border-color:var(--warn);color:var(--warn);font-weight:600}
-button:disabled{opacity:.55;cursor:progress}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
-.msg{margin-top:10px;font-size:13px;padding:8px 10px;border-radius:8px;display:none}
-.msg.ok{display:block;background:var(--ok);color:var(--accent)}.msg.err{display:block;background:var(--warnbg);color:var(--warn)}
-canvas{width:100%;height:165px;display:block}
-table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)}th{color:var(--dim);font-weight:500;font-size:12px}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
-.bar{height:8px;border-radius:6px;background:var(--bg);overflow:hidden;margin-top:6px}
-.bar>i{display:block;height:100%;background:var(--accent)}
-.legend{display:flex;gap:14px;color:var(--dim);font-size:12px;margin-top:6px}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
-.hint{font-weight:400;color:var(--dim);font-size:13px}
-#toast{position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:60;background:var(--warnbg);color:var(--warn);border:1px solid var(--warn);border-radius:10px;padding:10px 14px;font-size:14px;max-width:min(92vw,640px);display:none;box-shadow:0 6px 20px rgba(0,0,0,.18)}
-#toast.on{display:block}
-/* 登录遮罩。**必须带 [hidden]{display:none}**：.lg 的 display:flex 是作者样式，
-   优先级高于 hidden 属性自带的 UA display:none —— 少了这一行，遮罩会无视 hidden
-   永远盖在页面上（登录成功后也是）。 */
-.lg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--on-surface);font:400 15px/1.6 var(--font);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+h1,h2,h3{margin:0;font-weight:500}
+a{color:inherit}
+/* ================= 布局：导航抽屉 + 应用栏 + 内容 ================= */
+.layout{display:flex;min-height:100vh;max-width:1240px;margin:0 auto}
+.nav{width:264px;flex:none;background:var(--surface);border-right:1px solid var(--outline-variant);
+  padding:16px 12px;display:flex;flex-direction:column;gap:2px}
+.nav .brand{display:flex;align-items:center;gap:12px;padding:8px 12px 18px}
+.nav .logo{width:40px;height:40px;border-radius:var(--r-m);background:var(--primary);color:var(--on-primary);
+  display:grid;place-items:center;font-weight:700;font-size:var(--fs-6);box-shadow:var(--e1)}
+.nav .brand .t{font-size:var(--fs-4);font-weight:600;line-height:1.2}
+.nav .brand .s{font-size:var(--fs-1);color:var(--on-surface-variant)}
+.nav .sec{font-size:var(--fs-1);letter-spacing:.04em;text-transform:uppercase;color:var(--on-surface-variant);padding:14px 16px 6px}
+.nav a.item{position:relative;display:flex;align-items:center;gap:14px;padding:0 16px;height:44px;
+  border-radius:var(--r-s);color:var(--on-surface-variant);text-decoration:none;font-size:var(--fs-3);
+  cursor:pointer;overflow:hidden;transition:background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard)}
+.nav a.item .ic{width:22px;text-align:center;font-size:var(--fs-6)}
+.nav a.item:hover{background:color-mix(in srgb,var(--on-surface-variant) calc(var(--sl-hover)*100%),transparent)}
+.nav a.item.on{background:var(--secondary-container);color:var(--on-secondary-container);font-weight:600}
+.nav a.item .chev{margin-left:auto;display:inline-flex;align-self:center;color:var(--primary);opacity:0;transform:translateX(-4px);transition:opacity var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized),transform var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized)}
+.nav a.item.on .chev{opacity:1;transform:none}
+.nav a.item.soon{color:var(--on-surface-variant);opacity:.6}
+.nav .foot{margin-top:auto;padding-top:12px;border-top:1px solid var(--outline-variant)}
+.content{flex:1;min-width:0;display:flex;flex-direction:column}
+.appbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;height:64px;padding:0 20px;
+  background:var(--surface);color:var(--on-surface);transition:box-shadow var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard),background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard)}
+.appbar.elev{box-shadow:var(--e2);background:var(--surface-container)}
+.appbar .menu-btn{display:none}
+.appbar h1{font-size:var(--fs-6);flex:1;font-weight:400;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.appbar .actions{display:flex;align-items:center;gap:4px}
+main{padding:22px 20px 72px;flex:1}
+/* ================= 卡片 ================= */
+.card{background:var(--surface-container-low,--surface-1);background:var(--surface);border-radius:var(--r-l);
+  padding:18px;margin-bottom:14px;box-shadow:var(--e1);border:1px solid var(--outline-variant)}
+.card.filled{background:var(--surface-container);border-color:transparent;box-shadow:none}
+.card > h2{font-size:var(--fs-5);font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:10px}
+.card > .sub{font-size:var(--fs-2);color:var(--on-surface-variant);margin:-2px 0 16px}
+.card h3{font-size:var(--fs-3);font-weight:600;color:var(--on-surface-variant);margin:18px 0 8px;letter-spacing:.02em}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+.kv{background:var(--surface-1);border:1px solid var(--outline-variant);border-radius:var(--r-m);padding:12px 14px}
+.kv .k{font-size:var(--fs-1);color:var(--on-surface-variant);letter-spacing:.02em}
+.kv .v{font-size:var(--fs-6);font-weight:600;margin-top:3px;word-break:break-all}
+.kv .v.sm{font-size:var(--fs-4)}
+/* ================= 表单：M3 描边输入（浮动标签 + 帮助/错误） ================= */
+.field{position:relative;margin:14px 0 0}
+.field .control{display:flex;align-items:center;gap:8px}
+.field input,.field select,.field textarea{width:100%;font:inherit;color:var(--on-surface);background:transparent;
+  border:1px solid var(--outline);border-radius:var(--r-s);padding:18px 14px 8px;outline:0;transition:border-color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),box-shadow var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard)}
+.field select{cursor:pointer;appearance:none;padding-right:34px}
+.field textarea{padding-top:16px;resize:vertical;min-height:96px;font-family:var(--mono);font-size:var(--fs-2)}
+.field .control::after{content:"▾";position:absolute;right:14px;top:14px;color:var(--on-surface-variant);
+  pointer-events:none;font-size:var(--fs-1)}
+.field.nochev .control::after{content:""}
+.field input:hover,.field select:hover,.field textarea:hover{border-color:var(--on-surface)}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}
+.field label{position:absolute;left:10px;top:15px;padding:0 5px;margin:0;color:var(--on-surface-variant);
+  font-size:var(--fs-4);pointer-events:none;background:var(--surface);transition:top var(--md-sys-motion-duration-short2) var(--md-sys-motion-easing-standard),font-size var(--md-sys-motion-duration-short2) var(--md-sys-motion-easing-standard),color var(--md-sys-motion-duration-short2) var(--md-sys-motion-easing-standard);transform-origin:left}
+.field input:focus + label,.field select:focus + label,.field textarea:focus + label,
+.field input:not(:placeholder-shown) + label,.field textarea:not(:placeholder-shown) + label,
+.field.sel label{top:-9px;font-size:var(--fs-1)}
+.field input:focus + label,.field select:focus + label,.field textarea:focus + label{color:var(--primary)}
+.field .help{font-size:var(--fs-1);color:var(--on-surface-variant);padding:5px 14px 0;min-height:18px}
+.field.err input,.field.err select,.field.err textarea{border-color:var(--error)}
+.field.err input:focus,.field.err select:focus{box-shadow:0 0 0 1px var(--error)}
+.field.err label,.field.err .help{color:var(--error)}
+.field .pwd-eye{position:absolute;right:8px;top:12px;z-index:2}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:16px}
+.row.tight{margin-top:0}
+.spacer{flex:1}
+/* ================= 按钮：filled / tonal / outlined / text / danger ================= */
+.btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  height:40px;padding:0 22px;border-radius:var(--r-m);border:0;font:600 14px/1 var(--font);cursor:pointer;
+  overflow:hidden;background:var(--primary);color:var(--on-primary);transition:box-shadow var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),filter var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);user-select:none}
+.btn:hover{box-shadow:var(--e1);filter:brightness(1.03)}
+.btn:active{filter:brightness(.94)}
+.btn:disabled{background:color-mix(in srgb,var(--on-surface) 12%,transparent);color:color-mix(in srgb,var(--on-surface) 38%,transparent);
+  cursor:default;box-shadow:none;filter:none}
+.btn.tonal{background:var(--secondary-container);color:var(--on-secondary-container)}
+.btn.out{background:transparent;color:var(--primary);border:1px solid var(--outline)}
+.btn.out:hover{background:color-mix(in srgb,var(--primary) 8%,transparent)}
+.btn.text{background:transparent;color:var(--primary);padding:0 14px;height:36px}
+.btn.text:hover{background:color-mix(in srgb,var(--primary) 8%,transparent)}
+.btn.danger{background:var(--error);color:var(--on-error)}
+.btn.danger.out{background:transparent;color:var(--error);border:1px solid var(--error)}
+.btn.icon{width:40px;padding:0;border-radius:var(--r-full);background:transparent;color:var(--on-surface-variant);font-size:var(--fs-6)}
+.btn.icon:hover{background:color-mix(in srgb,var(--on-surface) 8%,transparent);box-shadow:none}
+.btn.sm{height:32px;padding:0 14px;font-size:var(--fs-2)}
+.btn.busy{color:transparent;pointer-events:none}
+.btn .spin{position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;
+  border:2px solid color-mix(in srgb,currentColor 30%,transparent);border-top-color:var(--on-primary);animation:spin .7s linear infinite}
+.btn.tonal .spin,.btn.out .spin,.btn.text .spin{border-top-color:currentColor}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* ================= 开关（M3 switch） ================= */
+.switch{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+.switch input{position:absolute;opacity:0;width:0;height:0}
+.switch .tr{width:52px;height:32px;border-radius:var(--r-full);background:var(--surface-container-highest);
+  border:2px solid var(--outline);position:relative;transition:background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized),border-color var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized)}
+.switch .th{position:absolute;left:3px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:50%;
+  background:var(--outline);transition:left var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized),width var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized),height var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized),background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized)}
+.switch input:checked + .tr{background:var(--primary);border-color:var(--primary)}
+.switch input:checked + .tr .th{left:25px;width:24px;height:24px;background:var(--on-primary)}
+.switch .lb{font-size:var(--fs-3)}
+/* ================= 徽章 / 芯片 ================= */
+.chip{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 14px;border-radius:var(--r-s);
+  border:1px solid var(--outline-variant);background:transparent;color:var(--on-surface-variant);font-size:var(--fs-2);cursor:pointer}
+.chip.on{background:var(--secondary-container);color:var(--on-secondary-container);border-color:transparent}
+.chip:hover{background:color-mix(in srgb,var(--on-surface) 6%,transparent)}
+.tag{display:inline-block;font-size:var(--fs-1);font-weight:600;padding:2px 9px;border-radius:var(--r-full);
+  background:var(--secondary-container);color:var(--on-secondary-container);letter-spacing:.02em}
+.tag.ok{background:var(--ok-bg);color:var(--ok-fg)}
+.tag.bad{background:var(--error-container);color:var(--on-error-container)}
+.mono{font-family:var(--mono);font-size:var(--fs-2)}
+/* ================= 表格 / 列表 ================= */
+table{width:100%;border-collapse:collapse;font-size:var(--fs-3)}
+th{text-align:left;font-size:var(--fs-1);font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--on-surface-variant);
+  padding:10px 12px;border-bottom:1px solid var(--outline-variant)}
+td{padding:12px;border-bottom:1px solid var(--outline-variant);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tbody tr{transition:background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard)}
+tbody tr:hover{background:color-mix(in srgb,var(--on-surface) 4%,transparent)}
+.empty{padding:26px 12px;text-align:center;color:var(--on-surface-variant);font-size:var(--fs-3)}
+/* ================= 进度条 / 图例 ================= */
+.bar{height:8px;border-radius:var(--r-full);background:var(--surface-container-highest);overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;border-radius:var(--r-full);background:var(--primary);transition:width var(--md-sys-motion-duration-medium4) var(--md-sys-motion-easing-emphasized)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--on-surface-variant);font-size:var(--fs-1);margin-top:8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:middle}
+canvas{width:100%;height:170px;display:block}
+pre{margin:0;font-family:var(--mono);font-size:var(--fs-2);line-height:1.5;background:var(--surface-1);
+  border:1px solid var(--outline-variant);border-radius:var(--r-m);padding:12px 14px;overflow:auto;max-height:440px;white-space:pre-wrap;word-break:break-word}
+.hint{font-size:var(--fs-2);color:var(--on-surface-variant)}
+/* ================= 条件字段展开动画 ================= */
+.reveal{overflow:hidden;max-height:0;opacity:0;transition:max-height var(--md-sys-motion-duration-medium2) var(--md-sys-motion-easing-emphasized),opacity var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard)}
+.reveal.open{max-height:640px;opacity:1}
+/* ================= Snackbar（M3）：替代内联 .msg 做瞬时反馈 ================= */
+#snackbar-host{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:80;display:flex;
+  flex-direction:column;gap:8px;align-items:center;pointer-events:none;width:min(92vw,560px)}
+.snackbar{pointer-events:auto;display:flex;align-items:center;gap:16px;background:var(--on-surface);color:var(--surface);
+  padding:12px 16px;border-radius:var(--r-s);box-shadow:var(--e3);font-size:var(--fs-3);max-width:100%;
+  animation:sb-in var(--md-sys-motion-duration-medium2) var(--md-sys-motion-easing-emphasized)}
+.snackbar.err{background:var(--error);color:var(--on-error)}
+.snackbar .act{color:var(--primary-container);font-weight:600;cursor:pointer;background:none;border:0;font:inherit}
+[data-theme="dark"] .snackbar .act{color:var(--primary-container)}
+@keyframes sb-in{from{transform:translateY(16px);opacity:0}to{transform:none;opacity:1}}
+/* ================= 对话框（M3）：替代 confirm() ================= */
+.scrim{position:fixed;inset:0;background:var(--scrim);z-index:90;display:grid;place-items:center;padding:20px;
+  animation:fade var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard)}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.dialog{background:var(--surface-container-high);border-radius:var(--r-xl);padding:24px;width:min(92vw,440px);
+  box-shadow:var(--e3);animation:dlg var(--md-sys-motion-duration-medium1) var(--md-sys-motion-easing-emphasized)}
+@keyframes dlg{from{transform:scale(.94);opacity:0}to{transform:none;opacity:1}}
+.dialog .ic{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:var(--fs-7);margin-bottom:14px;
+  background:var(--secondary-container);color:var(--on-secondary-container)}
+.dialog.danger .ic{background:var(--error-container);color:var(--on-error-container)}
+.dialog h2{font-size:var(--fs-7);font-weight:500;margin-bottom:8px}
+.dialog p{margin:0;color:var(--on-surface-variant);font-size:var(--fs-3);line-height:1.6}
+.dialog .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:24px}
+/* ================= 登录 ================= */
+.auth{position:fixed;inset:0;background:var(--scrim);z-index:100;display:grid;place-items:center;padding:20px}
+.auth .box{width:min(92vw,400px);background:var(--surface-container-low,--surface);border-radius:var(--r-xl);
+  padding:28px 26px;box-shadow:var(--e3)}
+/* 登录框浮动标签的缺口底色需与盒子一致，否则标签上浮后 notch 颜色突兀（看似“提示盖住字符”） */
+.auth .box .field label{background:var(--surface-container-low,--surface)}
+.auth .logo{width:56px;height:56px;border-radius:var(--r-l);background:var(--primary);color:var(--on-primary);
+  display:grid;place-items:center;font-size:var(--fs-7);font-weight:700;margin-bottom:14px;box-shadow:var(--e2)}
+.auth h2{font-size:var(--fs-6);font-weight:500}
+.auth .lead{color:var(--on-surface-variant);font-size:var(--fs-3);margin:2px 0 8px}
+.msg-inline{font-size:var(--fs-2);margin-top:12px;color:var(--error);display:flex;align-items:center;gap:8px}
+/* ================= 骨架屏 ================= */
+.skel{background:linear-gradient(90deg,var(--surface-1) 25%,var(--surface-2) 37%,var(--surface-1) 63%);
+  background-size:400% 100%;animation:sk 1.3s ease infinite;border-radius:var(--r-s);color:transparent}
+@keyframes sk{0%{background-position:100% 0}100%{background-position:0 0}}
+/* ================= 响应式：窄屏变顶部栏 + 抽屉 ================= */
+@media (max-width:900px){
+  .nav{position:fixed;left:0;top:0;bottom:0;z-index:70;transform:translateX(-100%);transition:transform .25s;box-shadow:var(--e3);width:280px}
+  .nav.open{transform:none}
+  .nav-scrim{position:fixed;inset:0;background:var(--scrim);z-index:60}
+  .appbar .menu-btn{display:inline-flex}
+  main{padding:16px 14px 72px}
+}
+@media (max-width:520px){
+  .appbar h1{font-size:var(--fs-5)}
+  .grid{grid-template-columns:1fr 1fr}
+  .card{padding:16px}
+}
+/* ================= 图标 / 新组件（小米风：状态概览、选项瓦片、列表行、步骤条、信号格） ================= */
+.ico{display:block;flex:0 0 auto}
+.nav a.item .ic{display:inline-flex;justify-content:center;width:22px}
+.card > h2 .ico{color:var(--primary)}
+/* 状态概览条 */
+.stat{display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:var(--r-l);margin:4px 0 14px;
+  background:var(--surface-1);border:1px solid var(--outline-variant)}
+.stat .sico{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;flex:0 0 auto;
+  background:color-mix(in srgb,var(--primary) 14%,transparent);color:var(--primary)}
+.stat .sbody{min-width:0}
+.stat .st1{font-size:var(--fs-5);font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.stat .st2{font-size:var(--fs-2);color:var(--on-surface-variant);margin-top:3px;word-break:break-all}
+.stat.off .sico{background:var(--surface-container-highest);color:var(--on-surface-variant)}
+.stat.bad .sico{background:var(--error-container);color:var(--on-error-container)}
+/* 选项瓦片（如 WAN 连接方式） */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:6px 0 4px}
+.tile{position:relative;text-align:left;display:flex;flex-direction:column;gap:6px;padding:14px 14px 14px 14px;cursor:pointer;
+  border:1px solid var(--outline-variant);border-radius:var(--r-m);background:var(--surface);color:var(--on-surface);font:inherit;
+  transition:border-color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),box-shadow var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard)}
+.tile:hover{border-color:var(--on-surface-variant);background:var(--surface-1)}
+.tile.on{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary);background:color-mix(in srgb,var(--primary) 7%,var(--surface))}
+.tile .ti{display:flex;align-items:center;gap:8px;font-size:var(--fs-4);font-weight:600}
+.tile .ti .ico{color:var(--primary)}
+.tile .td{font-size:var(--fs-1);color:var(--on-surface-variant);line-height:1.5}
+.tile .tick{position:absolute;right:12px;top:12px;color:var(--primary);opacity:0;transition:opacity var(--md-sys-motion-duration-short2) var(--md-sys-motion-easing-standard)}
+.tile.on .tick{opacity:1}
+/* 列表行（扫描结果 / 租约 / 服务） */
+.rows{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.lrow{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--outline-variant);border-radius:var(--r-m);
+  background:var(--surface);transition:border-color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard)}
+.lrow:hover{border-color:var(--on-surface-variant);background:var(--surface-1)}
+.lrow.click{cursor:pointer}
+.lrow.sel{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary);background:color-mix(in srgb,var(--primary) 6%,var(--surface))}
+.lrow .lico{color:var(--on-surface-variant);display:inline-flex}
+.lrow.sel .lico,.lrow .lico.on{color:var(--primary)}
+.lrow .lmain{flex:1;min-width:0}
+.lrow .lt{font-size:var(--fs-4);font-weight:600;display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lrow .lm{font-size:var(--fs-1);color:var(--on-surface-variant);font-family:var(--mono);margin-top:3px;word-break:break-all}
+.lrow .lact{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+/* 步骤条（中继/绑定引导） */
+.steps{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:2px 0 16px;color:var(--on-surface-variant);font-size:var(--fs-2)}
+.step{display:inline-flex;align-items:center;gap:7px}
+.step b{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--secondary-container);color:var(--on-secondary-container);font-size:var(--fs-1);font-weight:700}
+.step .ar{color:var(--outline)}
+/* 信号格 */
+.sig{display:inline-flex;align-items:flex-end;gap:2px;height:16px}
+.sig i{width:3px;background:var(--outline);border-radius:1px}
+.sig i:nth-child(1){height:5px}.sig i:nth-child(2){height:8px}.sig i:nth-child(3){height:12px}.sig i:nth-child(4){height:16px}
+.sig.l1 i:nth-child(1),.sig.l2 i:nth-child(-n+2),.sig.l3 i:nth-child(-n+3),.sig.l4 i:nth-child(-n+4){background:var(--primary)}
+/* 搜索框 */
+.searchbox{display:flex;align-items:center;gap:10px;height:40px;padding:0 14px;border:1px solid var(--outline);border-radius:var(--r-m);color:var(--on-surface-variant)}
+.searchbox:focus-within{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}
+.searchbox input{flex:1;min-width:0;height:100%;border:0;outline:0;background:transparent;font:inherit;font-size:var(--fs-3);color:var(--on-surface)}
+/* 开关行 */
+.srow{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--outline-variant)}
+.srow .ico{color:var(--on-surface-variant)}
+.srow .sr-main{flex:1;min-width:0}.srow .sr-t{font-size:var(--fs-3);font-weight:600}.srow .sr-d{font-size:var(--fs-1);color:var(--on-surface-variant);margin-top:2px}
+/* 范围预览 */
+.rng{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;padding:10px 14px;border-radius:var(--r-m);font-size:var(--fs-2);
+  background:var(--surface-1);border:1px dashed var(--outline-variant);color:var(--on-surface-variant)}
+.rng b{color:var(--on-surface);font-family:var(--mono)}
 [hidden]{display:none!important}
-.lg .card{width:100%;max-width:350px;margin:0}
-@media (max-width:760px){.wrap{flex-direction:column}nav{width:auto;border-right:0;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:2px}nav .brand{width:100%}}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <nav><div class="brand">简洁版</div><div id="menu"></div><a class="leave" id="expert" href="#" hidden>前往专家版</a></nav>
-  <main><header><h1 id="h1">…</h1><button id="logout">退出登录</button></header><div id="view"></div></main>
-</div>
-<div class="lg" id="login" hidden><div class="card"><h2>登录</h2>
-  <label class="f"><span>用户名</span><input id="lu" value="root" autocomplete="username"></label>
-  <label class="f"><span>密码</span><input id="lp" type="password" autocomplete="current-password"></label>
-  <div class="row"><button class="p" id="lg">登录</button></div><div class="msg" id="lm"></div>
-</div></div>
+<div id="app"><div style="padding:24px;color:var(--on-surface-variant)">正在启动…</div></div>
+<div id="snackbar-host"></div>
+<div id="dialog-host"></div>
+<div id="auth-host"></div>
+<noscript><p style="padding:24px">简洁版是一个单页应用，需要启用 JavaScript。</p></noscript>
 <script>
-(function(){
+__MITHRIL__
+;(function(){
 "use strict";
-/* 占位符由服务端注入：会话 id（空=未登录）、专家版前缀、以及**菜单**（Go 侧数据，不读 menu.d）。 */
-var CFG=__CFG__, SID=CFG.sid||"", MENU=CFG.menu||[], ANON="00000000000000000000000000000000";
-var $=function(i){return document.getElementById(i);};
-
-/* 会话失效时弹登录卡。
-   为什么必须有：sid 是服务端**从 cookie 读出来注入**的，页面不校验它还有效。于是会话一旦
-   过期（服务端重启、点了退出、cookie 被清），页面仍显示成"已登录"而所有操作都失败——
-   用户只看到一片坏掉的页面。放在这里是因为这是**所有页面唯一的出口**：谁的数据请求被拒
-   都经过它，不必逐页处理。登录卡由 loginView() 渲染，它定义在文件后面（函数声明会提升）。 */
-function authFail(e){
-  var authish = e.code === -32002 || e.code === -32000 ||
-                /access denied|not found|session|unauthor|not logged/i.test(e.message || "");
-  if(!authish) return;
-  var box = document.getElementById("login");
-  if(box && box.hidden) loginView();
+/* 占位符由服务端注入：会话 id（空=未登录）、专家版前缀、菜单（Go 侧数据，不读 menu.d）。 */
+var CFG=__CFG__, SID=CFG.sid||"", MENU=CFG.menu||[];
+/* ============ 主题（light/dark/auto）============ */
+var THEME_KEY="molly-lite-theme";
+function readTheme(){try{return localStorage.getItem(THEME_KEY)||"auto";}catch(e){return "auto";}}
+var theme={mode:readTheme()};
+function applyTheme(){
+  var m=theme.mode, eff=m;
+  if(m==="auto"){eff=(window.matchMedia&&matchMedia("(prefers-color-scheme:dark)").matches)?"dark":"light";}
+  document.documentElement.setAttribute("data-theme",eff);
+  var tc=document.querySelector('meta[name="theme-color"]');if(tc)tc.setAttribute("content",eff==="dark"?"#101214":"#006a6a");
 }
+function cycleTheme(){theme.mode=theme.mode==="light"?"dark":theme.mode==="dark"?"auto":"light";
+  try{localStorage.setItem(THEME_KEY,theme.mode);}catch(e){}applyTheme();}
+applyTheme();
+if(window.matchMedia)matchMedia("(prefers-color-scheme:dark)").addEventListener("change",function(){if(theme.mode==="auto")applyTheme();});
 
-/* 数据面只有 /ubus：具体动作全是 ubus 方法，服务端不为界面加业务 API。 */
-function rpc(o,m,p){
+/* ============ 数据面：只有 /ubus ============ */
+var auth={sid:SID,login:false,loginErr:""};
+function authFail(e){
+  var authish=e.code===-32002||e.code===-32000||/access denied|permission denied|session|unauthor|not logged/i.test(e.message||"");
+  if(authish&&!auth.login){auth.login=true;if(window.m)m.redraw();}
+}
+function rpc(o,meth,p){
   return fetch("/ubus/",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({jsonrpc:"2.0",id:1,method:"call",params:[SID,o,m,p||{}]})})
+    body:JSON.stringify({jsonrpc:"2.0",id:1,method:"call",params:[auth.sid,o,meth,p||{}]})})
    .then(function(r){return r.json();}).then(function(d){
      var e1=Array.isArray(d)?d[0]:d;
      if(!e1||e1.error){var e=new Error((e1&&e1.error&&e1.error.message)||"请求失败");e.code=e1&&e1.error&&e1.error.code;authFail(e);throw e;}
-     if(e1.result[0]!==0){var e2=new Error("ubus 错误码 "+e1.result[0]);e2.code=e1.result[0];throw e2;}
+     if(e1.result[0]!==0){var e2=new Error("ubus 错误码 "+e1.result[0]);e2.code=e1.result[0];
+       if(e2.code===5||e2.code===6)authFail(e2);throw e2;}
      return e1.result.length>1?e1.result[1]:null;});
 }
-/* uci 写操作统一流程：set → commit → apply。rollback=true 时留 60 秒回滚窗口
-   （与 LuCI「保存并应用」同一条路），undo=true 则 apply 后立刻 confirm 固化。 */
+/* uci 写：set/add/delete… → commit → apply（带 60 秒回滚窗口）。undo=true 则立刻 confirm 固化。 */
 function uciSave(steps,undo){
   return steps.reduce(function(p,s){return p.then(function(){return rpc("uci",s[0],s[1]);});},Promise.resolve())
    .then(function(){return rpc("uci","commit",{config:steps[0][1].config});})
    .then(function(){return rpc("uci","apply",{rollback:!undo,timeout:60});})
    .then(function(){return undo?rpc("uci","confirm",{rollback:false}):null;});
 }
-function say(el,t,ok){el.textContent=t;el.className="msg "+(ok?"ok":"err");if(ok)setTimeout(function(){el.className="msg";},4000);}
-function busy(b,on){b.disabled=!!on;}
-function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
-/* toast：往页面顶部插一条提示条。
-   为什么不用 alert：它会阻塞页面，而且在错误被 catch 吞掉的路径上根本来不及看见。 */
-function toast(t){
-  var bar=document.getElementById("toast");
-  if(!bar){bar=document.createElement("div");bar.id="toast";document.body.appendChild(bar);}
-  bar.textContent=t;bar.className="on";
-  clearTimeout(bar.__t);bar.__t=setTimeout(function(){bar.className="";},6000);
+function commitApply(config){return rpc("uci","commit",{config:config}).then(function(){return rpc("uci","apply",{rollback:false});});}
+
+/* ============ 反馈：snackbar + dialog（M3） ============ */
+var snack={items:[]};
+function toast(msg,kind){var it={id:Date.now()+Math.random(),msg:msg,kind:kind||""};snack.items.push(it);
+  m.redraw();setTimeout(function(){snack.items=snack.items.filter(function(x){return x!==it;});m.redraw();},kind==="err"?6000:4000);}
+var dialog=null;
+function confirmDialog(opt){return new Promise(function(res){dialog={opt:opt,resolve:res};m.redraw();});}
+function closeDialog(v){if(dialog){var r=dialog.resolve;dialog=null;m.redraw();r(v);}}
+function renderSnack(){
+  return m(".snackbar-host",snack.items.map(function(s){
+    var children=[m("span",s.msg)];
+    if(s.kind==="err")children.push(m("button.act",{onclick:function(){
+      snack.items=snack.items.filter(function(x){return x!==s;});m.redraw();}},"知道了"));
+    return m("#snackbar-el.snackbar"+(s.kind==="err"?".err":""),{key:s.id},children);
+  }));
 }
-function bytes(n){var u=["B","KB","MB","GB","TB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}return (i?(n<10?n.toFixed(1):Math.round(n)):n)+" "+u[i];}
-function uptime(s){var d=~~(s/86400),h=~~(s%86400/3600),m=~~(s%3600/60);return d?d+" 天 "+h+" 小时":(h?h+" 小时 "+m+" 分":m+" 分");}
-function load1(v){return (v||0)/65536;}
-/* 有些 ubus 方法在设备上可能没有（版本差异）：把失败显示成「不支持」而不是整页崩。 */
-function softFail(e,el){el.innerHTML='<section class="card"><h2>数据不可用</h2><p style="color:var(--dim);margin:0">'+esc(e.message)+"（该 ubus 方法在此设备上可能不受支持）</p></section>";}
+function renderDialog(){if(!dialog)return null;var o=dialog.opt;
+  return m(".scrim",{onclick:function(e){if(e.target.classList.contains("scrim"))closeDialog(false);}},
+    m(".dialog"+(o.danger?".danger":""),{role:"alertdialog","aria-modal":"true"},
+      m(".ic",o.danger?"⚠":"?"),m("h2",o.title),o.message?m("p",o.message):null,
+      m(".actions",m("button.btn.text",{onclick:function(){closeDialog(false);},autofocus:!o.danger},o.cancel||"取消"),
+        m("button.btn"+(o.danger?".danger":""),{onclick:function(){closeDialog(true);},autofocus:!!o.danger},o.ok||"确定"))));}
 
-/* ---- 菜单与前端路由：URL 只有 <前缀> + #/片段，改前缀所有链接自动跟着变 ---- */
-var PAGES={}, timer=null;
-$("menu").innerHTML=MENU.map(function(m){
-  return '<a href="#/'+m.id+'" data-id="'+m.id+'"'+(m.ready?"":" class='soon'")+">"+esc(m.title)+(m.ready?"":" ·")+"</a>";
-}).join("");
+/* ============ 校验器 ============ */
+var V={
+  required:function(v){return v!=null&&String(v).trim()!==""||"此项必填";},
+  ipv4:function(v){if(!v)return true;return /^(\d{1,3}\.){3}\d{1,3}$/.test(v)&&v.split(".").every(function(o){return +o<=255;})||"IPv4 格式不对（如 192.168.1.10）";},
+  cidr:function(v){if(!v)return true;var m=/^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$/.exec(v);return !!m||"IP/掩码 格式不对（如 192.168.1.10/24）";},
+  mac:function(v){if(!v)return true;return /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(v)||"MAC 格式不对（00:11:22:33:44:55）";},
+  num:function(v){if(v===""||v==null)return true;return /^\d+$/.test(String(v).trim())||"只能是数字";},
+  host:function(v){if(!v)return true;return /^[\w.-]+$/.test(v)||"只能字母数字 . _ -";},
+  len:function(n){return function(v){if(!v)return true;return String(v).length>=n||"至少 "+n+" 个字符";};}
+};
+/* 表单模型：一个 model 收集字段值 + 校验状态，提交时统一校验。 */
+function form(fields){return {data:{},touched:{},errors:{},busy:false,fields:fields};}
+function validate(f){var ok=true;f.fields.forEach(function(name){var spec=f.spec[name];if(!spec)return;
+  var errs=[];[].concat(spec.rule||[]).forEach(function(r){var res=r(f.data[name],f.data);if(res!==true&&res)errs.push(res);});
+  f.errors[name]=errs[0]||"";if(errs[0])ok=false;});return ok;}
 
-/* 「前往专家版」：前缀由服务端注入（CFG.expert = --luci-prefix），不在这里硬编码。
-   两套界面共用同一条会话，所以点过去不必再登一次；没给前缀（专家版没启用）就整条链接不出现。 */
-if(CFG.expert){$("expert").href=CFG.expert+"/";$("expert").hidden=false;}
-
-/* 无片段时落到仪表盘（dash 是简洁版的首屏）。 */
-function route(){
-  var id=(location.hash||"").replace(/^#\/?/,"")||"dash";
-  var item=null;MENU.forEach(function(m){if(m.id===id)item=m;});
-  if(!item)item=MENU[0];
-  Array.prototype.forEach.call(document.querySelectorAll("#menu a[data-id]"),function(a){
-    a.className=(a.getAttribute("data-id")===item.id?"on":(MENU.filter(function(m){return m.id===a.getAttribute("data-id");})[0].ready?"":"soon"));
-  });
-  document.getElementById("h1").textContent=item.title;
-  if(timer){clearInterval(timer);timer=null;}
-  var view=document.getElementById("view");view.innerHTML="";
-  if(!item.ready){view.innerHTML='<section class="card"><h2>页面建设中</h2><p style="color:var(--dim);margin:0">这一页还没落地。</p></section>';return;}
-  try{PAGES[item.id].mount(view);}catch(e){softFail(e,view);}
+/* ============ M3 组件 ============ */
+// 文本/密码/数字输入：浮动标签、错误、帮助、密码可见切换。
+function TextField(spec){
+  var model=this&&this.model; // 由父级通过 m(TextField,{model:..,name:..}) 传入
+  return {view:function(v){var a=v.attrs,model=a.model,name=a.name,d=a;if(!a.model)return viewStatic(a);
+    var val=model.data[name]==null?(a.value||""):model.data[name];
+    var err=model.touched[name]?model.errors[name]:"";
+    return m(".field"+(err?".err":"")+(a.type==="select"?".sel":"")+(a.nochev?".nochev":""),
+      m("div.control",input(a,model,name,val,err)),
+      m("label",{for:"fld-"+a.id},a.label),
+      m(".help",err?err:(a.helper||"")));}};
 }
-window.addEventListener("hashchange",route);
+function input(a,model,name,err){
+  var attrs={id:"fld-"+a.id,"data-name":name,value:a.type==="password"?viewPwd(a,model,name):undefined,
+    placeholder:" ",autocomplete:a.autocomplete||"off",inputmode:a.inputmode,
+    oninput:function(e){model.data[name]=e.target.value;model.errors[name]="";if(model.busy)model.busy=false;},
+    onblur:function(){model.touched[name]=true;validate(model);}};
+  if(a.type!=="password")attrs.value=a.valueFill!=null?a.valueFill(model.data[name]):(model.data[name]==null?(a.value||""):model.data[name]);
+  if(a.maxlength)attrs.maxlength=a.maxlength;
+  if(a.type==="password"){var shown=model.data["__show_"+name];
+    return m(".control-rel",m("input",{type:shown?"text":"password",id:"fld-"+a.id,"data-name":name,placeholder:" ",
+      autocomplete:a.autocomplete||"off",value:model.data[name]==null?(a.value||""):model.data[name],
+      oninput:function(e){model.data[name]=e.target.value;model.errors[name]="";},
+      onblur:function(){model.touched[name]=true;validate(model);}}),
+      m("button.btn.icon.pwd-eye",{type:"button",tabindex:-1,title:shown?"隐藏密码":"显示密码","aria-label":shown?"隐藏密码":"显示密码",
+        onclick:function(e){e.preventDefault();model.data["__show_"+name]=!shown;}},Ico(shown?"eyeoff":"eye",20)),
+      m("label",{for:"fld-"+a.id},a.label));
+  }
+  return m("input",attrs);
+}
+function viewStatic(a){return m(".field",m("div.control",m("input",{placeholder:" ",value:a.value||"",readonly:true})),m("label",a.label));}
+function viewPwd(){}
+// 下拉：始终浮动标签（有值）。
+function Select(spec){return {view:function(v){var a=v.attrs,model=a.model,name=a.name;
+  var val=model.data[name]==null?(a.value||""):model.data[name];
+  return m(".field.sel",m("div.control",m("select",{id:"fld-"+a.name,
+    value:val,
+    onchange:function(e){model.data[name]=e.target.value;if(a.onchange)a.onchange(e.target.value);model.touched[name]=true;validate(model);}},
+    (a.options||[]).map(function(o){return m("option",{value:o.value},o.label);}))),
+    m("label",{for:"fld-"+a.name},a.label),m(".help",(model.touched[name]&&model.errors[name])||a.helper||""));}};}
+function FieldLabel(a){return m(".field.sel",m("div.control",m("select",{id:"fld-"+a.id,
+  value:a.value,onchange:function(e){a.onchange(e.target.value);}},(a.options||[]).map(function(o){return m("option",{value:o.value},o.label);}))),
+  m("label",{for:"fld-"+a.id},a.label),a.help?m(".help",a.help):null);}
+// 按钮：filled/tonal/out/text/danger，支持 busy（进度）。
+function Btn(a){return m("button.btn"+(a.variant?"."+a.variant:"")+(a.busy?". busy":""),
+  {type:a.type||"button",disabled:a.busy||a.disabled,onclick:a.onclick,title:a.title},
+  a.busy?m("span.spin"):null,a.icon?Ico(a.icon,18):null,a.label);}
+function Switch(a){return m("label.switch",m("input",{type:"checkbox",checked:!!a.checked,
+  onchange:function(e){a.onchange(e.target.checked);}}),m(".tr",m(".th")),a.label?m(".lb",a.label):null);}
+function Card(a){return m(".card"+(a.filled?". filled":""),a.title?m("h2",a.title,a.sub?m("span.tag",a.sub):null):null,
+  a.sub2?m(".sub",a.sub2):null,a.content||a.children);}
+function KV(a){return m(".kv",m(".k",a.k),m(".v"+(a.sm?". sm":""),a.v));}
 
-/* ---- 系统：重启 + 改口令（改口令交给 /auth/password，服务端统一处理） ---- */
-PAGES.sys={mount:function(el){
-  el.innerHTML='<section class="card"><h2>重启</h2><p style="color:var(--dim);margin:0">重启约需 1–2 分钟，期间网络会中断。</p>'+
-   '<div class="row"><button class="d" id="rb">立即重启</button></div><div class="msg" id="rbm"></div></section>'+
-   '<section class="card"><h2>修改 root 口令</h2>'+
-   '<label class="f"><span>旧口令</span><input id="po" type="password" autocomplete="current-password"></label>'+
-   '<label class="f"><span>新口令（至少 5 个字符）</span><input id="pn" type="password" autocomplete="new-password"></label>'+
-   '<div class="row"><button class="p" id="pb">保存</button></div><div class="msg" id="pbm"></div></section>';
-  $("rb").onclick=function(){if(!confirm("确定现在重启吗？网络会中断 1–2 分钟。"))return;
-    var b=this;busy(b,true);
-    rpc("system","reboot").then(function(){say($("rbm"),"已发出重启指令…",true);})
-      .catch(function(e){say($("rbm"),"重启失败："+e.message,false);busy(b,false);});};
-  $("pb").onclick=function(){
-    var b=this;busy(b,true);
-    var f=new URLSearchParams();
-    f.set("username","root");f.set("old",$("po").value);f.set("new",$("pn").value);f.set("next",location.hash||"#/sys");
-    fetch("/auth/password",{method:"POST",body:f,redirect:"follow"}).then(function(r){
-      var ok=r.url.indexOf("auth_error")<0,code=(/[?&]auth_error=([a-z_]+)/.exec(r.url)||[])[1];
-      say($("pbm"),ok?"口令已更新":("失败："+({bad_credentials:"旧口令不对",weak_password:"新口令太短（至少 5 个字符）",no_hasher:"设备缺少 openssl，无法生成 hash"}[code]||"未知错误")),ok);
-      if(ok){$("po").value="";$("pn").value="";}
-      busy(b,false);});
+/* ============ 内联 SVG 图标（单色 stroke、跟随 currentColor；离线无 CDN） ============ */
+var SVG={
+ grid:'<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/>',
+ globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>',
+ wifi:'<path d="M5 12.5a10 10 0 0 1 14 0M8 15.5a6 6 0 0 1 8 0"/><circle cx="12" cy="19" r="1"/>',
+ stack:'<rect x="4" y="4" width="16" height="7" rx="1.5"/><rect x="4" y="13" width="16" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+ gear:'<circle cx="12" cy="12" r="3"/><path d="M12 4v2M12 18v2M4 12h2M18 12h2M6.3 6.3l1.4 1.4M16.3 16.3l1.4 1.4M17.7 6.3l-1.4 1.4M7.7 16.3l-1.4 1.4"/>',
+ list:'<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
+ power:'<path d="M12 3v8"/><path d="M7 6a7 7 0 1 0 10 0"/>',
+ database:'<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+ speed:'<path d="M5 18a9 9 0 1 1 14 0"/><path d="M12 13l4-3"/><circle cx="12" cy="13" r="1"/>',
+ download:'<path d="M12 4v10M8 11l4 4 4-4M5 20h14"/>',
+ check:'<path d="M4 12l5 5L20 6"/>',
+ plus:'<path d="M12 5v14M5 12h14"/>',
+ trash:'<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+ play:'<path d="M7 5l12 7-12 7z"/>',
+ stop:'<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+ refresh:'<path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5"/>',
+ search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+ lock:'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+ eye:'<path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="3"/>',
+ eyeoff:'<path d="M3 3l18 18"/><path d="M10.6 6.2A10 10 0 0 1 22 12s-1.2 1.9-3.3 3.4M6.3 6.5C3.8 8.1 2 12 2 12s4 6 10 6a9 9 0 0 0 3.6-.7"/>',
+ pin:'<path d="M12 21s7-6.5 7-12A7 7 0 0 0 5 9c0 5.5 7 12 7 12z"/><circle cx="12" cy="9" r="2.5"/>',
+ phone:'<rect x="6" y="2.5" width="12" height="19" rx="2"/><path d="M11 18.5h2"/>',
+ home:'<path d="M4 11l8-6 8 6M6 10v9h12v-9"/>',
+ users:'<circle cx="9" cy="9" r="3"/><path d="M3 19a6 6 0 0 1 12 0M16 6a3 3 0 0 1 0 6M17 19a6 6 0 0 0-2-4"/>',
+ bookmark:'<path d="M6 4h12v16l-6-4-6 4z"/>',
+ key:'<circle cx="8" cy="8" r="4"/><path d="M11 11l8 8M15 15l2-2M18 18l2-2"/>',
+ edit:'<path d="M4 20h4L20 8l-4-4L8 16v4zM14 6l4 4"/>',
+ alert:'<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
+ chevr:'<path d="M9 6l6 6-6 6"/>',
+ repeater:'<path d="M12 13v8M8 21h8"/><circle cx="12" cy="10" r="2"/><path d="M8.5 8A5 5 0 0 1 12 4a5 5 0 0 1 3.5 4"/>',
+ cpu:'<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v2M14 3v2M10 19v2M14 19v2M3 10h2M3 14h2M19 10h2M19 14h2"/>',
+ menu:'<path d="M4 7h16M4 12h16M4 17h16"/>',
+ close:'<path d="M6 6l12 12M18 6L6 18"/>'
+};
+function Ico(n,size){var d=SVG[n];if(!d)return null;size=size||20;
+  return m.trust('<svg class="ico" width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+d+'</svg>');}
+// 纯图标按钮（带 busy 进图与 title 提示）；用于服务启停等紧凑操作。
+function IconBtn(a){return m("button.btn.icon"+(a.busy?". busy":""),{type:"button",title:a.title,"aria-label":a.title,disabled:a.busy||a.dis,onclick:a.onclick},
+  a.busy?m("span.spin"):null,Ico(a.ic,a.size||20));}
+// 信号格（按 dBm 分 4 档）；无线扫描列表用。
+function Signal(dbm){var lv=dbm==null?0:(dbm>=-60?4:dbm>=-70?3:dbm>=-80?2:1);return m("span.sig.l"+lv,[m("i"),m("i"),m("i"),m("i")]);}
+
+/* ============ 应用外壳 ============ */
+var navOpen=false;
+var NAVIC={dash:"grid",net:"globe",wifi:"wifi",dhcp:"stack",sys:"gear",log:"list",svc:"power",disk:"database",diag:"speed",bk:"download"};
+function nav(){return m("nav.nav"+(navOpen?". open":""),
+  m(".brand",m(".logo","简"),m("div",m(".t","简洁版"),m(".s",CFG.hostname||"ImmortalWrt"))),
+  m(".sec","概览"),
+  MENU.map(function(mp){return m("a.item"+(m.route.get()==="/"+mp.id?". on":"")+(mp.ready?"":".soon"),
+    {href:"#/"+mp.id,key:mp.id,onclick:function(){navOpen=false;}},
+    m("span.ic",Ico(NAVIC[mp.id],22)),m("span",mp.title),m("span.chev",Ico("chevr",18)));}),
+  m(".foot",
+    CFG.expert?m("a.item#expert",{href:CFG.expert+"/",rel:"noreferrer"},m("span.ic","↗"),m("span","前往专家版")):null));
+}
+function appbar(title){return m("header.appbar",
+  m("button.btn.icon.menu-btn",{onclick:function(){navOpen=!navOpen;},title:"菜单","aria-label":"菜单"},Ico(navOpen?"close":"menu",22)),
+  m("h1",title),
+  m(".actions",
+    m("button.btn.icon",{onclick:cycleTheme,title:"主题：" + theme.mode},theme.mode==="auto"?"◐":theme.mode==="dark"?"☾":"☀"),
+    auth.sid?m("button.btn.out.sm",{onclick:doLogout},"退出"):null));
+}
+function doLogout(){fetch("/auth/logout",{method:"POST",redirect:"follow"}).then(function(){location.href="/lite/";});}
+function Layout(id){var mp=MENU.filter(function(m){return m.id===id;})[0]||MENU[0];
+  return m(".layout",
+    nav(),
+    navOpen?m(".nav-scrim",{onclick:function(){navOpen=false;}}):null,
+    m(".content",appbar(mp?mp.title:""),
+      m("main",mp&&mp.ready&&PAGES[id]?m(PAGES[id]):m(".card",m("h2","页面建设中"),m(".sub","这一页还没落地。")))));
+}
+/* ============ 登录视图 ============ */
+function LoginOverlay(){var u={name:"root",pass:"",err:"",busy:false};
+  function submit(){if(u.busy)return;u.busy=true;u.err="";m.redraw();
+    var f=new URLSearchParams();f.set("username",u.name);f.set("password",u.pass);f.set("next",location.pathname+location.hash);
+    fetch("/auth/login",{method:"POST",body:f,redirect:"follow"}).then(function(r){
+      if(r.url.indexOf("auth_error")<0){location.href=r.url;}
+      else{u.busy=false;u.err="用户名或密码不对";m.redraw();}
+    }).catch(function(e){u.busy=false;u.err="登录失败："+e.message;m.redraw();});}
+  return {view:function(){
+    var rows=[
+      m(".logo","简"),m("h2","登录简洁版"),m(".lead","与专家版共用同一条会话。"),
+      m("form",{onsubmit:function(e){e.preventDefault();submit(e.target);}},[
+        m(".field.nochev",m("div.control",m("input",{id:"lu",name:"username",placeholder:" ",autocomplete:"username",value:u.name,
+          oninput:function(ev){u.name=ev.target.value;}}),m("label",{for:"lu"},"用户名"))),
+        m(".field.nochev"+(u.err?". err":""),m("div.control",m("input",{id:"lp",name:"password",placeholder:" ",autocomplete:"current-password",
+          type:"password",value:u.pass,oninput:function(ev){u.pass=ev.target.value;},
+          onkeydown:function(ev){if(ev.key==="Enter")submit(ev.target.form);}}),m("label",{for:"lp"},"密码"))),
+        u.err?m(".msg-inline","✕ ",u.err):null,
+        m(".row",m("button.btn",{type:"submit",disabled:u.busy},[u.busy?m("span.spin"):null,"登录"]))
+      ]),
+      m(".row",m("button.btn.text",{type:"button",onclick:function(){auth.login=false;m.redraw();}},"稍后"))
+    ];
+    return m(".auth",m(".box",rows));
+  }};
+}
+
+/* 页面里每个 PAGES.<id> 都是 Mithril 组件对象；十个 key 与菜单一一对应（smoke 依赖这个计数）。 */
+var PAGES={};
+
+/* ---------- 视图公共小工具：字段工厂 / 格式化 / 校验包装 ---------- */
+function first(v){return Array.isArray(v)?(v[0]||""):(v==null?"":v);}
+function list(v){return Array.isArray(v)?v:(v==null||v===""?[]:[v]);}
+function fmtBytes(n){n=+n||0;var u=["B","KB","MB","GB","TB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}return (i===0?Math.round(n):n.toFixed(1))+" "+u[i];}
+function fmtUptime(s){s=+s||0;var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),mi=Math.floor(s%3600/60);if(d>0)return d+" 天 "+h+" 小时";if(h>0)return h+" 小时 "+mi+" 分";return mi+" 分钟";}
+function load16(v){return (v||0)/65536;}
+function vcheck(r){return r===true?"":String(r);}
+// 受控字段：st 里读值；文本不逐键重绘（避免光标跳），下拉/密码切换重绘；错误写在 st.__e[key]。
+function mkf(st){
+  return function(k,label,o){
+    o=o||{};var id="fld-"+(o.id||k);var err=(st.__e&&st.__e[k])||"";
+    if(st[k]==null)st[k]=(o.v==null?"":o.v);
+    if(o.sel){
+      if(st[k]===""&&o.opts&&o.opts.length)st[k]=o.opts[0].v;
+      return m(".field.sel"+(err?". err":""),m("div.control",
+        m("select",{id:id,disabled:o.dis,value:st[k],
+          onchange:function(e){st[k]=e.target.value;if(o.onchange)o.onchange(e.target.value);m.redraw();}},
+          (o.opts||[]).map(function(x){return m("option",{value:x.v},x.l);}))),
+        m("label",{for:id},label),m(".help",err||(o.help||"")));
+    }
+    if(o.pass){var shown=st["__s_"+k];
+      return m(".field.nochev"+(err?". err":""),m("div.control",
+        m("input",{id:id,type:shown?"text":"password",placeholder:" ",autocomplete:o.auto||"off",disabled:o.dis,value:st[k],
+          oninput:function(e){st[k]=e.target.value;if(st.__e)st.__e[k]="";},onblur:function(){if(o.blur)o.blur();}}),
+        m("label",{for:id},label),
+        m("button.btn.icon.pwd-eye",{type:"button",tabindex:-1,title:shown?"隐藏密码":"显示密码","aria-label":shown?"隐藏密码":"显示密码",onclick:function(){st["__s_"+k]=!shown;m.redraw();}},Ico(shown?"eyeoff":"eye",20))),
+        m(".help",err||(o.help||"")));
+    }
+    return m(".field.nochev"+(err?". err":""),m("div.control",
+      m("input",{id:id,type:o.type||"text",placeholder:" ",inputmode:o.mode,autocomplete:o.auto||"off",maxlength:o.max,disabled:o.dis,value:st[k],
+        oninput:function(e){st[k]=e.target.value;if(st.__e)st.__e[k]="";if(o.oninput)o.oninput(e.target.value);},onblur:function(){if(o.blur)o.blur();}}),
+      m("label",{for:id},label)),
+      m(".help",err||(o.help||"")));
   };
-}};
+}
 
+/* ---- 仪表盘：设备状态 + 实时负载曲线 + 网络概况 + 快捷入口（只读概览，编辑在各专页） ---- */
+PAGES.dash=function(){
+  var st={board:null,info:null,net:{},dhcpOff:false,leases:[],up:[],err:"",now:""};
+  var cvs=null,ctx=null,timer=null,series=[],HIST=60;
+  function protoLabel(p){return {dhcp:"自动获取（DHCP）",static:"固定 IP",pppoe:"宽带拨号（PPPoE）"}[p]||p||"—";}
+  function draw(){
+    if(!cvs||!ctx)return;var dpr=window.devicePixelRatio||1,w=cvs.clientWidth,h=cvs.clientHeight;if(!w||!h)return;
+    if(cvs.width!==w*dpr||cvs.height!==h*dpr){cvs.width=w*dpr;cvs.height=h*dpr;}
+    ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+    var cs=getComputedStyle(document.documentElement),max=.5;
+    series.forEach(function(s){s.forEach(function(v){if(v>max)max=v;});});max=Math.ceil(max*2)/2;
+    ctx.strokeStyle=cs.getPropertyValue("--outline-variant");ctx.fillStyle=cs.getPropertyValue("--on-surface-variant");ctx.font="12px sans-serif";ctx.lineWidth=1;
+    for(var i=0;i<=2;i++){var gy=h-(h-14)*(i/2)-2;ctx.beginPath();ctx.moveTo(0,gy+.5);ctx.lineTo(w,gy+.5);ctx.stroke();ctx.fillText((max*i/2).toFixed(2),2,gy-2);}
+    var cols=[cs.getPropertyValue("--chart-1"),cs.getPropertyValue("--chart-2"),cs.getPropertyValue("--chart-3")];for(var k=0;k<3;k++){ctx.strokeStyle=cols[k];ctx.lineWidth=2;ctx.beginPath();
+      series.forEach(function(s,idx){var x=series.length>1?idx/(HIST-1)*w:0,y=h-2-(h-14)*Math.min(s[k]/max,1);idx===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});ctx.stroke();}
+  }
+  function push(){if(!st.info||!st.info.load)return;series.push([load16(st.info.load[0]),load16(st.info.load[1]),load16(st.info.load[2])]);while(series.length>HIST)series.shift();draw();st.now="当前 "+series[series.length-1].map(function(v){return v.toFixed(2);}).join(" / ");}
+  function tick(){rpc("system","info").then(function(i){st.info=i;push();m.redraw();}).catch(function(){});}
+  function load(){
+    rpc("system","board").then(function(b){st.board=b;m.redraw();}).catch(function(e){st.err=e.message;});
+    rpc("uci","get",{config:"network"}).then(function(v){st.net=(v&&v.values)||{};m.redraw();}).catch(function(){});
+    rpc("uci","get",{config:"dhcp"}).then(function(v){var l=((v&&v.values)||{}).lan||{};st.dhcpOff=(l.ignore==="1");m.redraw();}).catch(function(){});
+    rpc("luci-rpc","getDHCPLeases",{family:0}).then(function(r){st.leases=(r&&r.dhcp_leases)||[];m.redraw();}).catch(function(){st.leases=[];});
+    rpc("luci-rpc","getWirelessDevices").then(function(w){st.up=Object.keys(w||{}).filter(function(k){return w[k]&&w[k].up;});m.redraw();}).catch(function(){});
+    tick();timer=setInterval(tick,2000);
+  }
+  return {oninit:load,onremove:function(){if(timer)clearInterval(timer);},view:function(){
+    var b=st.board||{},rel=b.release||{},info=st.info||{},mem=info.memory||{};
+    var used=(mem.total||0)-(mem.available||mem.free||0),pct=mem.total?Math.round(used/mem.total*100):0;
+    var wan=st.net.wan||{},lan=st.net.lan||{};
+    return m("div",[
+      m("section.card",
+        m("h2",b.hostname||"路由器",rel.version?m("span.tag",rel.version):null),
+        m(".sub",[b.model||"",rel.description||""].filter(Boolean).join(" · ")||"未加载"),
+        info.uptime!=null?m(".grid",[KV({k:"型号",v:b.model||"–"}),KV({k:"固件",v:rel.version||"–"}),KV({k:"运行时长",v:fmtUptime(info.uptime)}),KV({k:"1 分钟负载",v:load16(info.load&&info.load[0]).toFixed(2),sm:true})]):m(".sub",st.err?("读取失败："+st.err):"读取中…"),
+        m("div",{style:"margin-top:14px"},
+          m(".row.tight",{style:"justify-content:space-between"},m("span.hint","内存占用"),m("span.hint",mem.total?(fmtBytes(used)+" / "+fmtBytes(mem.total)+"（"+pct+"%）"):"–")),
+          m(".bar",m("i",{style:"width:"+pct+"%"})))),
+      m("section.card",m("h2","实时负载",m("span.tag","近 2 分钟")),
+        m("canvas",{oncreate:function(v){cvs=v.dom;ctx=cvs.getContext("2d");window.addEventListener("resize",draw);draw();},onremove:function(){window.removeEventListener("resize",draw);}}),
+        m(".legend",[m("span",m("i",{style:"background:var(--chart-1)"}),"1 分钟"),m("span",m("i",{style:"background:var(--chart-2)"}),"5 分钟"),m("span",m("i",{style:"background:var(--chart-3)"}),"15 分钟"),m("span",{style:"margin-left:auto"},st.now||"")])),
+      m("section.card",m("h2","网络概况",m("span.tag",st.leases.length+" 台在线")),
+        m(".grid",[KV({k:"外网方式",v:protoLabel(wan.proto),sm:true}),KV({k:"内网地址",v:first(lan.ipaddr)||"–",sm:true}),KV({k:"内网 DHCP",v:st.dhcpOff?"已关闭":"开启"}),KV({k:"无线",v:st.up.length?("已起 "+st.up.join("/")):"未启用",sm:true})]),
+        m(".row",m("a.btn.out",{href:"#/net",rel:"noreferrer"},"外网 / 内网设置"),m("a.btn.out",{href:"#/wifi",rel:"noreferrer"},"无线中继"),m("a.btn.out",{href:"#/dhcp",rel:"noreferrer"},"设备与固定 IP")))
+    ]);
+  }};
+};
 
-/* ---- 仪表盘（简洁版首页）：设备状态 + 实时负载 + 上网设置 + 无线中继 + DHCP 分配 ---- */
-PAGES.dash={mount:function(el){
-  el.innerHTML=`
-    <section class="card">
-        <h2>设备概览 <span class="hint" id="st-updated"></span></h2>
-        <div class="name" id="h-name">路由器</div>
-        <div class="sub" id="h-sub">加载中…</div>
-        <div class="grid" id="st-grid"></div>
-    <div style="margin-top:12px">
-      <div style="display:flex;justify-content:space-between;color:var(--dim);font-size:12px">
-        <span>内存占用</span><span id="st-mem-text">–</span>
-      </div>
-      <div class="bar"><i id="st-mem-bar" style="width:0"></i></div>
-    </div>
-  </section>
+/* ---- 内外网：读 uci network/dhcp；改动走 uciSave（set→commit→apply，永久生效） ---- */
+PAGES.net=function(){
+  var st={__e:{},proto:"dhcp",wan_ip:"",wan_gw:"",wan_dns:"",wan_user:"",wan_pass:"",lan_ip:"",lan_dhcp:"1",busyW:false,busyL:false,loaded:false};
+  var f=mkf(st);
+  var METHODS=[{v:"dhcp",ic:"globe",l:"自动获取",d:"DHCP / 光猫拨号，最常见"},{v:"static",ic:"pin",l:"固定 IP",d:"手动指定 IP、网关、DNS"},{v:"pppoe",ic:"phone",l:"宽带拨号",d:"PPPoE，需运营商账号密码"}];
+  function label(v){var x=METHODS.filter(function(o){return o.v===v;})[0];return x?x.l:v;}
+  function load(){
+    rpc("uci","get",{config:"network"}).then(function(v){var q=(v&&v.values)||{},w=q.wan||{},l=q.lan||{};
+      st.proto=w.proto||"dhcp";st.wan_ip=first(w.ipaddr);st.wan_gw=w.gateway||"";st.wan_dns=list(w.dns).join(",");st.wan_user=w.username||"";st.lan_ip=first(l.ipaddr);st.loaded=true;m.redraw();})
+      .catch(function(e){toast("读取网络设置失败："+e.message,"err");});
+    rpc("uci","get",{config:"dhcp"}).then(function(v){var l=((v&&v.values)||{}).lan||{};st.lan_dhcp=(l.ignore==="1"?"0":"1");m.redraw();}).catch(function(){});
+  }
+  function saveWan(){st.busyW=true;m.redraw();
+    var wv={proto:st.proto};
+    if(st.proto==="static"){if(st.wan_ip)wv.ipaddr=[st.wan_ip.trim()];if(st.wan_gw)wv.gateway=st.wan_gw.trim();wv.dns=st.wan_dns.split(",").map(function(x){return x.trim();}).filter(Boolean);}
+    else if(st.proto==="pppoe"){wv.username=st.wan_user.trim();wv.password=st.wan_pass;}
+    uciSave([["set",{config:"network",section:"wan",values:wv}]],true)
+      .then(function(){toast("外网设置已保存并生效");}).catch(function(e){toast("保存失败："+e.message,"err");})
+      .then(function(){st.busyW=false;m.redraw();});
+  }
+  function saveLan(){var v={};if(st.lan_ip)v.ipaddr=[st.lan_ip.trim()];st.busyL=true;m.redraw();
+    uciSave([["set",{config:"network",section:"lan",values:v}],["set",{config:"dhcp",section:"lan",values:{ignore:st.lan_dhcp==="0"?"1":"0"}}]],true)
+      .then(function(){toast("内网设置已保存并生效；改过 IP 请用新地址重开本页");}).catch(function(e){toast("保存失败："+e.message,"err");})
+      .then(function(){st.busyL=false;m.redraw();});
+  }
+  return {oninit:load,view:function(){
+    var up=st.loaded&&(st.proto==="dhcp"?!!st.wan_ip:(st.proto==="static"?!!st.wan_ip:true));
+    var info=st.proto==="static"?("IP "+(st.wan_ip||"–")+" · 网关 "+(st.wan_gw||"–")):(st.proto==="pppoe"?("宽带账号 "+(st.wan_user||"–")):(st.wan_ip?("已获得地址 "+st.wan_ip):(st.loaded?"自动获取（尚未拿到地址，检查上级网络）":"读取中…")));
+    return m("div",[
+      m("section.card",m("h2",Ico("globe"),"外网（WAN）"),
+        m(".stat"+(up?"":". off"),m(".sico",Ico("globe",26)),m(".sbody",
+          m(".st1",up?"已连接":"未连接",m("span.tag",label(st.proto))),
+          m(".st2",info))),
+        m(".sub","选择这台路由器接入上级网络的方式，改完点「保存并应用」。"),
+        m(".tiles",METHODS.map(function(op){return m("button.tile"+(st.proto===op.v?". on":""),{type:"button",key:op.v,onclick:function(){st.proto=op.v;m.redraw();}},
+          m(".ti",Ico(op.ic,18),op.l),m(".td",op.d),m(".tick",Ico("check",18)));})),
+        m(".reveal"+(st.proto==="static"?". open":""),
+          f("wan_ip","IP 地址 / 掩码",{help:"CIDR，例如 192.168.1.10/24"}),
+          f("wan_gw","网关",{help:"例如 192.168.1.1"}),
+          f("wan_dns","DNS（逗号分隔，可留空）",{help:"例如 223.5.5.5,119.29.29.29"})),
+        m(".reveal"+(st.proto==="pppoe"?". open":""),
+          f("wan_user","宽带账号",{auto:"off"}),
+          f("wan_pass","宽带密码",{pass:true,auto:"off"})),
+        m(".row",Btn({icon:"check",label:"保存并应用",busy:st.busyW,onclick:saveWan}),m("span.hint","保存会短暂断网（网络重载）"))),
+      m("section.card",m("h2",Ico("home"),"内网（LAN）"),
+        m(".sub","路由器自身的内网地址与 DHCP 服务。"),
+        f("lan_ip","内网地址 / 掩码",{help:"例如 192.168.1.1/24"}),
+        m(".srow",m(".ico",Ico("power",20)),m(".sr-main",m(".sr-t","内网 DHCP"),m(".sr-d","开启后自动给设备分配 IP；关闭则需手动配置每台设备")),
+          Switch({checked:st.lan_dhcp==="1",onchange:function(c){st.lan_dhcp=c?"1":"0";m.redraw();}})),
+        m(".row",Btn({icon:"check",label:"保存并应用",busy:st.busyL,onclick:saveLan})))
+    ]);
+  }};
+};
 
-  <section class="card">
-    <h2>实时负载 <span class="hint">近 2 分钟，每 2 秒采一次</span></h2>
-    <canvas id="chart"></canvas>
-    <div class="legend">
-      <span><i style="background:#1f8f4e"></i>1 分钟</span>
-      <span><i style="background:#2f7fd6"></i>5 分钟</span>
-      <span><i style="background:#c98a1a"></i>15 分钟</span>
-      <span id="chart-now" style="margin-left:auto"></span>
-    </div>
-  </section>
-
-  <section class="card" id="sec-net">
-    <h2>上网设置 <span class="hint">外网（WAN）与内网（LAN）</span></h2>
-
-    <h3 style="font-size:14px;margin:6px 0 2px">外网</h3>
-    <label class="field"><span>连接方式</span>
-      <select id="wan-proto">
-        <option value="dhcp">自动获取（DHCP / 光猫拨号）</option>
-        <option value="static">固定 IP</option>
-        <option value="pppoe">宽带拨号（PPPoE）</option>
-      </select>
-    </label>
-    <div id="wan-static" hidden>
-      <label class="field"><span>IP 地址 / 掩码位数</span><input id="wan-ip" placeholder="例如 192.168.1.10/24"></label>
-      <label class="field"><span>网关</span><input id="wan-gw" placeholder="例如 192.168.1.1"></label>
-      <label class="field"><span>DNS（逗号分隔，可留空）</span><input id="wan-dns" placeholder="223.5.5.5,119.29.29.29"></label>
-    </div>
-    <div id="wan-pppoe" hidden>
-      <label class="field"><span>宽带账号</span><input id="wan-user" autocomplete="off"></label>
-      <label class="field"><span>宽带密码</span><input id="wan-pass" type="password" autocomplete="off"></label>
-    </div>
-
-    <h3 style="font-size:14px;margin:18px 0 2px">内网</h3>
-    <label class="field"><span>路由器内网 IP / 掩码位数</span><input id="lan-ip" placeholder="例如 192.168.1.1/24"></label>
-    <label class="field"><span>内网 DHCP 服务</span>
-      <select id="lan-dhcp"><option value="1">开启（自动给设备分配 IP）</option><option value="0">关闭</option></select>
-    </label>
-
-    <div class="row"><button class="primary" id="net-save">保存并生效</button><span class="hint" style="color:var(--dim);font-size:12px">改内网 IP 后需用新地址重新打开本页</span></div>
-    <div class="msg" id="net-msg"></div>
-  </section>
-
-  <section class="card" id="sec-wifi">
-    <h2>无线中继 <span class="hint">把本机接到上级路由器的 Wi-Fi</span></h2>
-    <div class="grid" id="wifi-state"></div>
-    <label class="field"><span>上级 Wi-Fi 名称（SSID）</span><input id="relay-ssid" placeholder="扫描不到就手填"></label>
-    <label class="field"><span>上级 Wi-Fi 密码</span><input id="relay-key" type="password" autocomplete="off"></label>
-    <label class="field"><span>用哪个频段去连</span><select id="relay-radio"></select></label>
-    <div class="row"><button class="primary" id="relay-save">保存并生效</button><button id="relay-scan">扫描附近 Wi-Fi</button></div>
-    <div id="relay-list" style="margin-top:10px"></div>
-    <div class="msg" id="relay-msg"></div>
-  </section>
-
-  <section class="card" id="sec-dhcp">
-    <h2>已连设备与固定 IP <span class="hint">给设备绑定固定 IP（MAC 绑定）</span></h2>
-    <table>
-      <thead><tr><th>设备</th><th>IP</th><th>MAC</th><th style="width:92px"></th></tr></thead>
-      <tbody id="lease-body"><tr><td colspan="4" style="color:var(--dim)">加载中…</td></tr></tbody>
-    </table>
-    <table style="margin-top:14px">
-      <thead><tr><th>已绑定</th><th>IP</th><th>MAC</th><th style="width:92px"></th></tr></thead>
-      <tbody id="bind-body"><tr><td colspan="4" style="color:var(--dim)">加载中…</td></tr></tbody>
-    </table>
-    <div class="msg" id="dhcp-msg"></div>
-  </section>
-
-
-  `;
-  // ---- 设备状态 ----
-    var board = null, sysinfo = null;
-  
-    function dashUptime(sec) {
-      var d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
-      if (d > 0) { return d + " 天 " + h + " 小时"; }
-      if (h > 0) { return h + " 小时 " + m + " 分"; }
-      return m + " 分钟";
-    }
-    function dashBytes(n) {
-      var u = ["B", "KB", "MB", "GB"], i = 0;
-      while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-      return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
-    }
-    // procd 的 load 是 16.16 定点（×65536），上游 LuCI 也是这么换算的。
-    function dashLoad(v) { return (v || 0) / 65536; }
-  
-    function renderStatus() {
-      if (!board) { return; }
-      var rel = board.release || {};
-      $("h-name").textContent = board.hostname || "路由器";
-      $("h-sub").textContent = (board.model || "") + " · " + (rel.description || "");
-      document.title = (board.hostname || "路由器") + " · 简洁版";
-  
-      var mem = (sysinfo && sysinfo.memory) || {};
-      var used = (mem.total || 0) - (mem.available || mem.free || 0);
-      var pct = mem.total ? Math.round(used / mem.total * 100) : 0;
-      var cards = [
-        ["型号", board.model || "–"],
-        ["固件", rel.version || "–"],
-        ["运行时长", sysinfo ? dashUptime(sysinfo.uptime) : "–"],
-        ["1 分钟负载", sysinfo ? dashLoad(sysinfo.load && sysinfo.load[0]).toFixed(2) : "–"]
-      ];
-      $("st-grid").innerHTML = cards.map(function (c) {
-        return '<div class="kv"><div class="k">' + c[0] + '</div><div class="v">' + c[1] + "</div></div>";
-      }).join("");
-      $("st-mem-text").textContent = mem.total
-        ? dashBytes(used) + " / " + dashBytes(mem.total) + "（" + pct + "%）" : "–";
-      $("st-mem-bar").style.width = pct + "%";
-      $("st-updated").textContent = "更新于 " + new Date().toLocaleTimeString();
-    }
-  
-    // ---- 负载图（canvas，无依赖） ----
-    // 注意：chart/ctx 由下面那行从 DOM 取，这里**不要**再初始化它们——
-    // var 的声明虽然会提升，但赋值的执行顺序在后面，会把刚取到的 canvas 置成 null，
-    // 于是 drawChart 永远画不出来（症状：图表区空白，但没有任何报错）。
-    var HIST = 60, series = [], chart = null, ctx = null;
-    // canvas 的 ctx 只能等元素进 DOM 之后取，所以放在 innerHTML 赋值之后的这里。
-    // 上面**声明** chart/ctx，这里**赋值**——两步必须分开：合并代码时若把声明写成
-    // `chart = null` 并放在赋值之后，会把刚取到的 canvas 重置掉（图表空白且无报错）。
-    chart = $("chart"); ctx = chart.getContext("2d");
-  
-    function pushLoad() {
-      if (!sysinfo || !sysinfo.load) { return; }
-      series.push([dashLoad(sysinfo.load[0]), dashLoad(sysinfo.load[1]), dashLoad(sysinfo.load[2])]);
-      while (series.length > HIST) { series.shift(); }
-      drawChart();
-      $("chart-now").textContent = "当前 " + series[series.length - 1].map(function (v) { return v.toFixed(2); }).join(" / ");
-    }
-  
-    function drawChart() {
-      var dpr = window.devicePixelRatio || 1;
-      var w = chart.clientWidth, h = chart.clientHeight;
-      if (chart.width !== w * dpr || chart.height !== h * dpr) {
-        chart.width = w * dpr; chart.height = h * dpr;
-      }
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-  
-      var max = 0.5;
-      series.forEach(function (s) { s.forEach(function (v) { if (v > max) { max = v; } }); });
-      max = Math.ceil(max * 2) / 2;
-  
-      // 网格 + 刻度
-      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--line");
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--dim");
-      ctx.font = "11px sans-serif"; ctx.lineWidth = 1;
-      for (var i = 0; i <= 2; i++) {
-        var y = h - (h - 14) * (i / 2) - 2;
-        ctx.beginPath(); ctx.moveTo(0, y + .5); ctx.lineTo(w, y + .5); ctx.stroke();
-        ctx.fillText((max * i / 2).toFixed(2), 2, y - 2);
-      }
-  
-      var colors = ["#1f8f4e", "#2f7fd6", "#c98a1a"];
-      for (var k = 0; k < 3; k++) {
-        ctx.strokeStyle = colors[k]; ctx.lineWidth = 2; ctx.beginPath();
-        series.forEach(function (s, idx) {
-          var x = series.length > 1 ? idx / (HIST - 1) * w : 0;
-          var y = h - 2 - (h - 14) * Math.min(s[k] / max, 1);
-          idx === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-      }
-    }
-    window.addEventListener("resize", drawChart);
-  
-    function tick() {
-      rpc("system", "info").then(function (info) {
-        sysinfo = info; renderStatus(); pushLoad();
-      }).catch(function () {});
-    }
-  
-    // ---- 上网设置 ----
-    function netSections() {
-      return rpc("uci", "get", { config: "network" }).then(function (v) {
-        return (v && v.values) || {};
-      });
-    }
-    function loadNet() {
-      return netSections().then(function (secs) {
-        var wan = secs.wan || {}, lan = secs.lan || {};
-        $("wan-proto").value = wan.proto || "dhcp";
-        var wip = wan.ipaddr, wipv = Array.isArray(wip) ? wip[0] : wip;
-        $("wan-ip").value = wipv || "";
-        $("wan-gw").value = wan.gateway || "";
-        var dns = wan.dns, dnsv = Array.isArray(dns) ? dns.join(",") : (dns || "");
-        $("wan-dns").value = dnsv;
-        var lip = lan.ipaddr, lipv = Array.isArray(lip) ? lip[0] : lip;
-        $("lan-ip").value = lipv || "";
-        toggleProto();
-      }).then(function () {
-        return rpc("uci", "get", { config: "dhcp" });
-      }).then(function (v) {
-        var secs = (v && v.values) || {}, lan = secs.lan || {};
-        $("lan-dhcp").value = String(lan.ignore === "1" ? "0" : "1");
-      }).catch(function (e) { say($("net-msg"), "读取网络设置失败：" + e.message, false); });
-    }
-    function toggleProto() {
-      var p = $("wan-proto").value;
-      $("wan-static").hidden = p !== "static";
-      $("wan-pppoe").hidden = p !== "pppoe";
-    }
-    $("wan-proto").onchange = toggleProto;
-  
-    function asList(v) { return Array.isArray(v) ? v : (v ? [v] : []); }
-  
-    // 改完配置统一走「提交 + 生效」：uci commit 落盘，uci apply 触发 /sbin/reload_config
-    // （与 LuCI 的保存应用同一条路；不带 rollback，所以不需要再确认）。
-    function commitApply(config) {
-      return rpc("uci", "commit", { config: config })
-        .then(function () { return rpc("uci", "apply", { rollback: false }); });
-    }
-  
-    function saveNet() {
-      var btn = $("net-save"), p = $("wan-proto").value;
-      busy(btn, true);
-      var wanVals = { proto: p };
-      if (p === "static") {
-        if ($("wan-ip").value) { wanVals.ipaddr = [$("wan-ip").value.trim()]; }
-        if ($("wan-gw").value) { wanVals.gateway = $("wan-gw").value.trim(); }
-        var dns = $("wan-dns").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-        wanVals.dns = dns;
-      } else if (p === "pppoe") {
-        wanVals.username = $("wan-user").value.trim();
-        wanVals.password = $("wan-pass").value;
-      }
-      var steps = [rpc("uci", "set", { config: "network", section: "wan", values: wanVals })];
-      if ($("lan-ip").value) {
-        steps.push(rpc("uci", "set", { config: "network", section: "lan",
-                                       values: { ipaddr: [$("lan-ip").value.trim()] } }));
-      }
-      steps.push(rpc("uci", "set", { config: "dhcp", section: "lan",
-                                     values: { ignore: $("lan-dhcp").value === "0" ? "1" : "0" } }));
-      steps.reduce(function (p, next) { return p.then(next); }, Promise.resolve())
-        .then(function () { return commitApply("network"); })
-        .then(function () { return commitApply("dhcp"); })
-        .then(function () { say($("net-msg"), "已保存并生效", true); })
-        .catch(function (e) { say($("net-msg"), "保存失败：" + e.message, false); })
-        .then(function () { busy(btn, false); });
-    }
-    $("net-save").onclick = saveNet;
-  
-    // ---- 无线中继 ----
-    var wdev = null, wconf = null;
-  
-    function loadWifi() {
-      return Promise.all([
-        rpc("uci", "get", { config: "wireless" }),
-        rpc("luci-rpc", "getWirelessDevices").catch(function () { return {}; })
-      ]).then(function (r) {
-        wconf = (r[0] && r[0].values) || {}; wdev = r[1] || {};
-        var radios = Object.keys(wdev);
-        $("relay-radio").innerHTML = radios.map(function (k) {
-          var band = (wdev[k].config && wdev[k].config.band) || "";
-          return '<option value="' + k + '">' + k + (band ? "（" + band + "）" : "") + "</option>";
-        }).join("") || '<option value="radio0">radio0</option>';
-  
-        // 当前是否已在中继：找 mode=sta 的 wifi-iface
-        var sta = null, staName = null, ssid = "", up = [];
-        Object.keys(wconf).forEach(function (name) {
-          var s = wconf[name];
-          if (s[".type"] === "wifi-iface" && s.mode === "sta") { sta = s; staName = name; ssid = s.ssid || ""; }
-        });
-        Object.keys(wdev).forEach(function (k) { if (wdev[k].up) { up.push(k); } });
-        $("relay-ssid").value = ssid;
-        var rows = [
-          ["无线状态", up.length ? "已启用（" + up.join(" / ") + "）" : "未启用"],
-          ["当前中继", staName ? "已连接 " + (ssid || "（未设名称）") : "未设置"],
-          ["信道", Object.keys(wdev).length ? (Object.keys(wdev).map(function (k) {
-            return (wdev[k].config && wdev[k].config.channel) || "?"; }).join(" / ")) : "–"]
-        ];
-        $("wifi-state").innerHTML = rows.map(function (c) {
-          return '<div class="kv"><div class="k">' + c[0] + '</div><div class="v">' + c[1] + "</div></div>";
-        }).join("");
-      }).catch(function (e) { say($("relay-msg"), "读取无线设置失败：" + e.message, false); });
-    }
-  
-    function saveRelay() {
-      var btn = $("relay-save");
-      var ssid = $("relay-ssid").value.trim(), key = $("relay-key").value, radio = $("relay-radio").value;
-      if (!ssid) { say($("relay-msg"), "请先填写上级 Wi-Fi 名称", false); return; }
-      busy(btn, true);
-      var staVals = { device: radio, mode: "sta", ssid: ssid, network: "wwan" };
-      if (key) { staVals.encryption = "psk2"; staVals.key = key; } else { staVals.encryption = "none"; }
-  
-      // 已经存在 sta 接口就改它，否则新建 wwan 接口 + 对应的 network 接口
-      var found = Object.keys(wconf).filter(function (n) {
-        return wconf[n][".type"] === "wifi-iface" && wconf[n].mode === "sta";
-      })[0];
-  
-      var steps = [];
-      if (found) {
-        steps.push(rpc("uci", "set", { config: "wireless", section: found, values: staVals }));
-      } else {
-        staVals.device = radio;
-        steps.push(rpc("uci", "add", { config: "wireless", type: "wifi-iface", name: "wwan", values: staVals }));
-        if (!wconf.wwan_net && !(wconf["default_radio0"] && false)) {
-          steps.push(rpc("uci", "add", { config: "network", type: "interface", name: "wwan",
-                                         values: { proto: "dhcp" } })
-            .catch(function () { /* 已存在就忽略 */ }));
-        }
-      }
-      // 用来中继的频段必须启用
-      steps.push(rpc("uci", "set", { config: "wireless", section: radio, values: { disabled: "0" } }));
-  
-      steps.reduce(function (p, n) { return p.then(n); }, Promise.resolve())
-        .then(function () { return commitApply("wireless"); })
-        .then(function () { return commitApply("network"); })
-        .then(function () { return rpc("network", "reload").catch(function () { return null; }); })
-        .then(function () { say($("relay-msg"), "已保存并生效，稍等十几秒后看「当前中继」", true); loadWifi(); })
-        .catch(function (e) { say($("relay-msg"), "保存失败：" + e.message, false); })
-        .then(function () { busy(btn, false); });
-    }
-    $("relay-save").onclick = saveRelay;
-  
-    // 扫描附近 Wi-Fi：走 iwinfo 的 scan（通过 luci-rpc 的无线设备信息拿不到列表，直接调 iwinfo）
-    $("relay-scan").onclick = function () {
-      var btn = this, radio = $("relay-radio").value;
-      busy(btn, true);
-      rpc("iwinfo", "scan", { device: radio, results: {} })
-        .then(function (r) {
-          var list2 = (r && r.results) || [];
-          if (!list2.length) { $("relay-list").innerHTML = '<span style="color:var(--dim)">没扫到网络</span>'; return; }
-          $("relay-list").innerHTML = list2.map(function (n) {
-            var ssid = n.ssid || "(隐藏)";
-            return '<button style="margin:2px" data-ssid="' + ssid.replace(/"/g, "&quot;") + '">' +
-                   ssid + "　" + (n.signal || 0) + "dBm</button>";
-          }).join("");
-          Array.prototype.forEach.call($("relay-list").querySelectorAll("button"), function (b) {
-            b.onclick = function () { $("relay-ssid").value = b.getAttribute("data-ssid"); };
-          });
-        })
-        .catch(function () { say($("relay-msg"), "扫描不可用（可直接手填 SSID）", false); })
-        .then(function () { busy(btn, false); });
-    };
-  
-    // ---- DHCP 租约与固定 IP ----
-    function loadDhcp() {
-      return Promise.all([
-        rpc("luci-rpc", "getDHCPLeases", { family: 0 }),
-        rpc("uci", "get", { config: "dhcp" })
-      ]).then(function (r) {
-        var leases = (r[0] && r[0].dhcp_leases) || [];
-        var secs = (r[1] && r[1].values) || {};
-        var hosts = Object.keys(secs).filter(function (n) { return secs[n][".type"] === "host"; });
-  
-        $("lease-body").innerHTML = leases.length ? leases.map(function (l) {
-          var name = l.hostname || "未命名设备";
-          return "<tr><td>" + name + '</td><td class="mono">' + (l.ipaddr || "") +
-                 '</td><td class="mono">' + (l.macaddr || "") +
-                 '</td><td><button data-bind=\'' + JSON.stringify([l.macaddr || "", l.ipaddr || "", name]) + "'>固定</button></td></tr>";
-        }).join("") : '<tr><td colspan="4" style="color:var(--dim)">暂无已连设备</td></tr>';
-  
-        $("bind-body").innerHTML = hosts.length ? hosts.map(function (n) {
-          var h = secs[n];
-          return "<tr><td>" + (h.name || "（未命名）") + '</td><td class="mono">' + (h.ip || "") +
-                 '</td><td class="mono">' + (h.mac || "") +
-                 '</td><td><button data-unbind="' + n + '">解绑</button></td></tr>';
-        }).join("") : '<tr><td colspan="4" style="color:var(--dim)">还没有固定 IP</td></tr>';
-  
-        Array.prototype.forEach.call($("lease-body").querySelectorAll("button[data-bind]"), function (b) {
-          b.onclick = function () { bindLease(JSON.parse(b.getAttribute("data-bind")), b); };
-        });
-        Array.prototype.forEach.call($("bind-body").querySelectorAll("button[data-unbind]"), function (b) {
-          b.onclick = function () { unbind(b.getAttribute("data-unbind"), b); };
-        });
-      }).catch(function (e) { say($("dhcp-msg"), "读取失败：" + e.message, false); });
-    }
-  
-    function bindLease(triple, btn) {
-      var mac = triple[0], ip = triple[1], name = triple[2];
-      busy(btn, true);
-      rpc("uci", "add", { config: "dhcp", type: "host",
-                          values: { name: name, mac: mac, ip: ip } })
-        .then(function () { return commitApply("dhcp"); })
-        .then(function () { say($("dhcp-msg"), name + " 已固定为 " + ip, true); loadDhcp(); })
-        .catch(function (e) { say($("dhcp-msg"), "绑定失败：" + e.message, false); })
-        .then(function () { busy(btn, false); });
-    }
-  
-    function unbind(section, btn) {
-      busy(btn, true);
-      rpc("uci", "delete", { config: "dhcp", section: section })
-        .then(function () { return commitApply("dhcp"); })
-        .then(function () { say($("dhcp-msg"), "已解绑", true); loadDhcp(); })
-        .catch(function (e) { say($("dhcp-msg"), "解绑失败：" + e.message, false); })
-        .then(function () { busy(btn, false); });
-    }
-  
-  
-  // 首次装载：设备信息 → 上网 → 无线 → DHCP → 负载曲线
-  rpc("system","board").then(function(b){board=b;return loadNet();})
-    .then(function(){return loadWifi();})
-    .then(function(){return loadDhcp();})
-    .then(function(){return rpc("system","info");})
-    .then(function(i){sysinfo=i;renderStatus();pushLoad();})
-    .catch(function(e){toast(e.message);});
-  timer=setInterval(tick,2000);
-}};
-
-/* ---- 内外网：读 uci network；改动走「set → commit → apply」（带 60 秒回滚窗口） ---- */
-function first(v){return Array.isArray(v)?(v[0]||""):(v||"");}
-function list(v){return Array.isArray(v)?v:(v?[v]:[]);}
-PAGES.net={mount:function(el){
-  el.innerHTML='<section class="card"><h2>外网（WAN）</h2>'+
-   '<label class="f"><span>连接方式</span><select id="wp"><option value="dhcp">自动获取（DHCP / 光猫拨号）</option>'+
-   '<option value="static">固定 IP</option><option value="pppoe">宽带拨号（PPPoE）</option></select></label>'+
-   '<div id="ws" hidden><label class="f"><span>IP 地址 / 掩码</span><input id="wi" placeholder="192.168.1.10/24"></label>'+
-   '<label class="f"><span>网关</span><input id="wg"></label>'+
-   '<label class="f"><span>DNS（逗号分隔，可留空）</span><input id="wd"></label></div>'+
-   '<div id="wq" hidden><label class="f"><span>宽带账号</span><input id="wu"></label>'+
-   '<label class="f"><span>宽带密码</span><input id="wpass" type="password"></label></div>'+
-   '<div class="row"><button class="p" id="wsv">保存并应用</button>'+
-   '<span style="color:var(--dim);font-size:12px">会短暂断网（网络重载）</span></div><div class="msg" id="wm"></div></section>'+
-   '<section class="card"><h2>内网（LAN）</h2>'+
-   '<label class="f"><span>路由器内网地址 / 掩码</span><input id="li" placeholder="192.168.1.1/24"></label>'+
-   '<label class="f"><span>DHCP 服务</span><select id="ld"><option value="1">开启</option><option value="0">关闭</option></select></label>'+
-   '<div class="row"><button class="p" id="lsv">保存并应用</button></div><div class="msg" id="lm"></div></section>';
-  function sync(){var p=$("wp").value;$("ws").hidden=p!=="static";$("wq").hidden=p!=="pppoe";}
-  $("wp").onchange=sync;
-  rpc("uci","get",{config:"network"}).then(function(v){
-    var q=(v&&v.values)||{},w=q.wan||{},l=q.lan||{};
-    $("wp").value=w.proto||"dhcp";sync();
-    $("wi").value=first(w.ipaddr);$("wg").value=w.gateway||"";
-    $("wd").value=list(w.dns).join(",");$("wu").value=w.username||"";
-    $("li").value=first(l.ipaddr);
-  }).catch(function(e){toast(e.message);});
-  rpc("uci","get",{config:"dhcp"}).then(function(v){
-    var l=((v&&v.values)||{}).lan||{};$("ld").value=String(l.ignore==="1"?"0":"1");}).catch(function(){});
-  $("wsv").onclick=function(){
-    var b=this,p=$("wp").value,wv={proto:p};
-    if(p==="static"){if($("wi").value)wv.ipaddr=[$("wi").value.trim()];if($("wg").value)wv.gateway=$("wg").value.trim();
-      wv.dns=$("wd").value.split(",").map(function(x){return x.trim();}).filter(Boolean);}
-    if(p==="pppoe"){wv.username=$("wu").value.trim();wv.password=$("wpass").value;}
-    busy(b,true);
-    uciSave([["set",{config:"network",section:"wan",values:wv}]])
-      .then(function(){say($("wm"),"已保存并生效",true);})
-      .catch(function(e){say($("wm"),"失败："+e.message,false);})
-      .then(function(){busy(b,false);});
-  };
-  $("lsv").onclick=function(){
-    var b=this,v={};if($("li").value)v.ipaddr=[$("li").value.trim()];busy(b,true);
-    uciSave([["set",{config:"network",section:"lan",values:v}],
-             ["set",{config:"dhcp",section:"lan",values:{ignore:$("ld").value==="0"?"1":"0"}}]])
-      .then(function(){say($("lm"),"已保存并生效",true);})
-      .catch(function(e){say($("lm"),"失败："+e.message,false);})
-      .then(function(){busy(b,false);});
-  };
-}};
-
-
-/* ---- 无线：状态来自 luci-rpc getWirelessDevices / iwinfo；改动走 uci ---- */
-PAGES.wifi={mount:function(el){
-  el.innerHTML='<section class="card"><h2>无线状态</h2><div class="grid" id="wr"></div></section>'+
-   '<section class="card"><h2>无线中继（连上级 Wi-Fi）</h2>'+
-   '<label class="f"><span>上级 Wi-Fi 名称</span><input id="rs"></label>'+
-   '<label class="f"><span>上级 Wi-Fi 密码</span><input id="rk" type="password"></label>'+
-   '<label class="f"><span>用哪个频段去连</span><select id="rr"></select></label>'+
-   '<div class="row"><button class="p" id="rsv">保存并应用</button><button id="rscan">扫描附近 Wi-Fi</button></div>'+
-   '<div id="rlist" style="margin-top:10px"></div><div class="msg" id="rm"></div></section>';
-  var conf={};
-  rpc("luci-rpc","getWirelessDevices").then(function(w){
-    var ids=Object.keys(w||{});
-    $("wr").innerHTML=ids.length?ids.map(function(k){
-      var d=w[k]||{},c=d.config||{};
-      return '<div class="kv"><div class="k">'+esc(k)+(c.band?"（"+esc(c.band)+"）":"")+'</div>'+
-        '<div class="v">'+(d.up?"已启用":"未启用")+'</div><div class="k" style="margin-top:4px">信道 '+esc(c.channel||"?")+'</div></div>';
-    }).join(""):'<div class="kv"><div class="k">无线</div><div class="v">未发现</div></div>';
-    $("rr").innerHTML=ids.map(function(k){return '<option value="'+k+'">'+k+(w[k].config.band?"（"+esc(w[k].config.band)+"）":"")+'</option>';}).join("");
-  }).catch(function(e){toast(e.message);});
-  rpc("uci","get",{config:"wireless"}).then(function(v){
-    conf=(v&&v.values)||{};
-    Object.keys(conf).forEach(function(n){var x=conf[n];
-      if(x[".type"]==="wifi-iface"&&x.mode==="sta")$("rs").value=x.ssid||"";});
-  }).catch(function(e){toast(e.message);});
-  $("rsv").onclick=function(){
-    var b=this,ssid=$("rs").value.trim(),radio=$("rr").value;
-    if(!ssid){say($("rm"),"请先填写上级 Wi-Fi 名称",false);return;}
-    if(!radio){say($("rm"),"没有可用频段",false);return;}
-    busy(b,true);
-    var vals={device:radio,mode:"sta",ssid:ssid,network:"wwan",encryption:$("rk").value?"psk2":"none"};
-    if($("rk").value)vals.key=$("rk").value;
-    var sta=Object.keys(conf).filter(function(n){return conf[n][".type"]==="wifi-iface"&&conf[n].mode==="sta";})[0];
+/* ---- 无线：状态来自 luci-rpc getWirelessDevices；中继走 uci wireless/network（不调 network.reload，apply 已重载） ---- */
+PAGES.wifi=function(){
+  var st={__e:{},wdev:{},conf:{},ssid:"",key:"",radio:"",scan:null,busySave:false,busyScan:false,loaded:false};
+  var f=mkf(st);
+  function ids(){return Object.keys(st.wdev||{});}
+  function load(){
+    rpc("luci-rpc","getWirelessDevices").then(function(w){st.wdev=w||{};if(!st.radio&&ids().length)st.radio=ids()[0];st.loaded=true;m.redraw();}).catch(function(e){toast("读取无线状态失败："+e.message,"err");});
+    rpc("uci","get",{config:"wireless"}).then(function(v){st.conf=(v&&v.values)||{};Object.keys(st.conf).forEach(function(n){var x=st.conf[n];if(x[".type"]==="wifi-iface"&&x.mode==="sta")st.ssid=x.ssid||"";});m.redraw();}).catch(function(e){toast("读取无线配置失败："+e.message,"err");});
+  }
+  function save(){var ssid=(st.ssid||"").trim();st.__e={};
+    if(!ssid){st.__e.ssid="请先填写上级 Wi-Fi 名称";m.redraw();return;}
+    if(!st.radio){toast("没有可用频段","err");return;}
+    st.busySave=true;m.redraw();
+    var vals={device:st.radio,mode:"sta",ssid:ssid,network:"wwan",encryption:st.key?"psk2":"none"};if(st.key)vals.key=st.key;
+    var found=Object.keys(st.conf).filter(function(n){return st.conf[n][".type"]==="wifi-iface"&&st.conf[n].mode==="sta";})[0];
     var chain=Promise.resolve();
-    if(sta){chain=chain.then(function(){return rpc("uci","set",{config:"wireless",section:sta,values:vals});});}
+    if(found){chain=chain.then(function(){return rpc("uci","set",{config:"wireless",section:found,values:vals});});}
     else{chain=chain.then(function(){return rpc("uci","add",{config:"wireless",type:"wifi-iface",name:"wwan",values:vals});})
                  .then(function(){return rpc("uci","add",{config:"network",type:"interface",name:"wwan",values:{proto:"dhcp"}}).catch(function(){return null;});});}
-    chain.then(function(){return rpc("uci","set",{config:"wireless",section:radio,values:{disabled:"0"}});})
-     .then(function(){return rpc("uci","commit",{config:"wireless"});})
-     .then(function(){return rpc("uci","commit",{config:"network"});})
-     .then(function(){return rpc("uci","apply",{rollback:false,timeout:60});})
-     // 刻意**不**调 network.reload：uci apply 已经会 reload 关联服务，而 network.reload
-     // 在多数 ACL 面上是拒的（这台设备就是），调它只会让整条链看起来失败。
-     .then(function(){say($("rm"),"已保存并生效，稍等十几秒看状态",true);})
-     .catch(function(e){say($("rm"),"失败："+e.message,false);})
-     .then(function(){busy(b,false);});
-  };
-  $("rscan").onclick=function(){
-    var b=this;busy(b,true);
-    rpc("iwinfo","scan",{device:$("rr").value,results:{}}).then(function(r){
-      var l=(r&&r.results)||[];
-      $("rlist").innerHTML=l.length?l.map(function(n){return '<button data-s="'+esc(n.ssid||"")+'">'+esc(n.ssid||"(隐藏)")+" "+(n.signal||0)+"dBm</button>";}).join(" "):'<span style="color:var(--dim)">没扫到网络</span>';
-      Array.prototype.forEach.call($("rlist").querySelectorAll("button"),function(x){
-        x.onclick=function(){$("rs").value=x.getAttribute("data-s");};});
-    }).catch(function(e){
-      say($("rm"),"这台设备没有 iwinfo 对象（"+(e&&e.message||e)+"），直接手填名称即可。",false);})
-     .then(function(){busy(b,false);});
-  };
-}};
-
-
-/* ---- DHCP：租约来自 luci-rpc getDHCPLeases；池参数与静态绑定走 uci dhcp ---- */
-PAGES.dhcp={mount:function(el){
-  el.innerHTML='<section class="card"><h2>地址池</h2>'+
-   '<div class="grid"><label class="f"><span>起始地址</span><input id="ds"></label>'+
-   '<label class="f"><span>地址个数</span><input id="dn" inputmode="numeric"></label>'+
-   '<label class="f"><span>租期（分钟）</span><input id="dt" inputmode="numeric"></label></div>'+
-   '<div class="row"><button class="p" id="dsv">保存并应用</button></div><div class="msg" id="dsm"></div></section>'+
-   '<section class="card"><h2>MAC 静态绑定</h2>'+
-   '<div class="grid"><label class="f"><span>MAC</span><input id="bm" placeholder="00:11:22:33:44:55"></label>'+
-   '<label class="f"><span>固定 IP</span><input id="bi" placeholder="192.168.1.100"></label>'+
-   '<label class="f"><span>备注名</span><input id="bn" placeholder="可选"></label></div>'+
-   '<div class="row"><button class="p" id="bav">添加绑定</button></div><div class="msg" id="bam"></div>'+
-   '<table style="margin-top:12px"><thead><tr><th>MAC</th><th>IP</th><th>备注</th><th></th></tr></thead><tbody id="bl"></tbody></table></section>'+
-   '<section class="card"><h2>当前租约</h2><table><thead><tr><th>设备</th><th>IP</th><th>MAC</th></tr></thead><tbody id="dl2"></tbody></table></section>';
-  function paintBinds(v){
-    var q=(v&&v.values)||{},rows=[];
-    Object.keys(q).forEach(function(n){var x=q[n];
-      if(x[".type"]==="host"){rows.push("<tr class='mono'><td>"+esc(x.mac||"")+"</td><td>"+esc(x.ip||"")+
-        "</td><td>"+esc(x.name||"")+"</td><td><button data-x='"+n+"'>删除</button></td></tr>");}});
-    $("bl").innerHTML=rows.join("")||'<tr><td colspan="4" style="color:var(--dim)">暂无绑定</td></tr>';
-    Array.prototype.forEach.call($("bl").querySelectorAll("button"),function(b){
-      b.onclick=function(){
-        if(!confirm("删除这条绑定？"))return;
-        rpc("uci","delete",{config:"dhcp",section:b.getAttribute("data-x")})
-          .then(function(){return rpc("uci","commit",{config:"dhcp"});})
-          .then(function(){return rpc("uci","apply",{rollback:false,timeout:60});})
-          .then(function(){toast("已删除");load();})
-          .catch(function(e){toast("失败："+e.message);});
-      };});
+    chain.then(function(){return rpc("uci","set",{config:"wireless",section:st.radio,values:{disabled:"0"}});})
+      .then(function(){return commitApply("wireless");}).then(function(){return commitApply("network");})
+      .then(function(){toast("已保存并生效，稍等十几秒看状态");return load();}).catch(function(e){toast("保存失败："+e.message,"err");})
+      .then(function(){st.busySave=false;m.redraw();});
   }
-  function load(){
-    rpc("uci","get",{config:"dhcp"}).then(function(v){
-      var l=((v&&v.values)||{}).lan||{};
-      $("ds").value=l.start||"";$("dn").value=l.limit||"";$("dt").value=first(l.leasetime)||"";
-      paintBinds(v);}).catch(function(e){toast(e.message);});
-    rpc("luci-rpc","getDHCPLeases",{family:0}).then(function(r){
-      var ls=(r&&r.dhcp_leases)||[];
-      $("dl2").innerHTML=ls.map(function(l){return "<tr><td>"+esc(l.hostname||"未命名")+
-        "</td><td class='mono'>"+esc(l.ipaddr)+"</td><td class='mono'>"+esc(l.macaddr)+"</td></tr>";}).join("")||
-        '<tr><td colspan="3" style="color:var(--dim)">暂无租约</td></tr>';
-    }).catch(function(e){$("dl2").innerHTML='<tr><td colspan="3" style="color:var(--dim)">'+esc(e.message)+"</td></tr>";});
+  function scan(){st.busyScan=true;st.scan=null;m.redraw();
+    rpc("iwinfo","scan",{device:st.radio,results:{}}).then(function(r){st.scan=(r&&r.results)||[];if(!st.scan.length)toast("没扫到网络");m.redraw();})
+      .catch(function(e){toast("扫描不可用（"+(e&&e.message||e)+"），可直接手填 SSID","err");})
+      .then(function(){st.busyScan=false;m.redraw();});
   }
-  $("dsv").onclick=function(){
-    var b=this,v={start:$("ds").value.trim(),limit:$("dn").value.trim(),leasetime:$("dt").value.trim()};
-    busy(b,true);
-    uciSave([["set",{config:"dhcp",section:"lan",values:v}]])
-      .then(function(){say($("dsm"),"已保存并生效",true);})
-      .catch(function(e){say($("dsm"),"失败："+e.message,false);})
-      .then(function(){busy(b,false);});
-  };
-  $("bav").onclick=function(){
-    var b=this,mac=$("bm").value.trim().toLowerCase(),ip=$("bi").value.trim();
-    if(!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac)){say($("bam"),"MAC 格式不对（00:11:22:33:44:55）",false);return;}
-    if(!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)){say($("bam"),"IP 格式不对",false);return;}
-    busy(b,true);
-    var v={mac:mac,ip:ip};if($("bn").value.trim())v.name=$("bn").value.trim();
-    rpc("uci","add",{config:"dhcp",type:"host",values:v})
-      .then(function(){return rpc("uci","commit",{config:"dhcp"});})
-      .then(function(){return rpc("uci","apply",{rollback:false,timeout:60});})
-      .then(function(){say($("bam"),"已添加",true);$("bm").value="";$("bi").value="";$("bn").value="";load();})
-      .catch(function(e){say($("bam"),"失败："+e.message,false);})
-      .then(function(){busy(b,false);});
-  };
-  load();
-}};
-
-
-/* ---- 日志：走 ubus 的 log.read（rpcd 的日志对象）。
-   为什么不用 `file exec /sbin/logread`：OpenWrt 上它是 /usr/libexec/logread-ubox 的
-   符号链接，而那个目录不在 PATH 也不在 LuCI 的授权面里，file 对象会回
-   "Operation not supported"。log.read 是 rpcd 自己的方法，正是 LuCI 日志页用的那条路。 ---- */
-function logLine(x){
-  var t=x&&x.time?new Date(x.time).toISOString().replace("T"," ").slice(0,19):"";
-  var lv=x&&x.priority!=null?({86:" emerg",85:" alert",84:" crit",83:" err",82:" warn",
-    81:" note",80:" info",79:" debug"}[x.priority]||" "+x.priority):"";
-  return (t+" ["+(lv||"").trim()+"] "+(x&&x.msg||"")).replace(/\s+$/,"");
-}
-PAGES.log={mount:function(el){
-  el.innerHTML='<section class="card"><h2>系统日志</h2>'+
-   '<div class="row"><button class="p" id="lr">刷新</button>'+
-   '<label class="f" style="margin:0;flex:1"><span>过滤（子串，留空看全部）</span><input id="lf"></label>'+
-   '<label class="f" style="margin:0;width:110px"><span>行数</span><input id="ln" value="200" inputmode="numeric"></label>'+
-   '<label class="f" style="margin:0;width:110px"><span>最低级别</span><select id="lp">'+
-   '<option value="">全部</option><option value="err">err 及以上</option><option value="warn">warn 及以上</option>'+
-   '<option value="notice">notice 及以上</option><option value="info">info 及以上</option></select></label></div>'+
-   '<div class="msg" id="lm"></div><pre id="lx" style="margin-top:10px">读取中…</pre></section>';
-  function go(){
-    $("lx").textContent="读取中…";
-    var n=Math.min(parseInt($("ln").value,10)||200,2000);
-    rpc("log","read",{stream:false,lines:n}).then(function(r){
-      var items=(r&&r.log)||[];
-      var min=$("lp").value,cut={err:83,warn:82,notice:81,info:80}[min];
-      if(cut!=null)items=items.filter(function(x){return x.priority!=null&&x.priority<=cut;});
-      var f=$("lf").value.trim();
-      var lines=items.map(logLine);
-      if(f)lines=lines.filter(function(l){return l.indexOf(f)>=0;});
-      $("lx").textContent=lines.reverse().join("\n")||"(没有匹配的日志行)";
-    }).catch(function(e){
-      $("lx").textContent="";
-      $("lm").className="msg err";
-      $("lm").textContent="读不到系统日志："+e.message+"（需要 log.read 的 ACL）";
-    });
-  }
-  $("lr").onclick=go;go();
-}};
-
-/* ---- 存储：挂载表来自 file read /proc/mounts（LuCI 已授权）；容量来自 df ---- */
-PAGES.disk={mount:function(el){
-  el.innerHTML='<section class="card"><h2>挂载点</h2>'+
-   '<table><thead><tr><th>设备</th><th>挂载点</th><th>类型</th></tr></thead><tbody id="mt"></tbody></table></section>'+
-   '<section class="card"><h2>容量</h2><table><thead><tr><th>挂载点</th><th>总量</th><th>已用</th><th>可用</th></tr></thead>'+
-   '<tbody id="dv"><tr><td colspan="4" style="color:var(--dim)">读取中…</td></tr></tbody></table>'+
-   '<div class="msg" id="dm"></div></section>';
-  rpc("file","read",{path:"/proc/mounts"}).then(function(r){
-    var ls=((r&&r.data)||"").trim().split("\n").map(function(l){var f=l.split(/\s+/);
-      return {dev:f[0],mnt:f[1],type:f[2]};})
-      .filter(function(x){return x.mnt&&["proc","sysfs","devtmpfs","tmpfs","devpts","cgroup",
-        "debugfs","mqueue","hugetlbfs"].indexOf(x.type)<0&&x.mnt.indexOf("/dev/")!==0;});
-    $("mt").innerHTML=ls.map(function(x){return "<tr class='mono'><td>"+esc(x.dev)+"</td><td>"+esc(x.mnt)+
-      "</td><td>"+esc(x.type)+"</td></tr>";}).join("")||'<tr><td colspan="3" style="color:var(--dim)">暂无</td></tr>';
-  }).catch(function(e){$("mt").innerHTML='<tr><td colspan="3" style="color:var(--dim)">'+esc(e.message)+"</td></tr>";});
-  rpc("file","exec",{command:"/bin/df",params:["-k"]}).then(function(r){
-    var ls=((r&&r.stdout)||"").trim().split("\n").slice(1).map(function(l){
-      var f=l.trim().split(/\s+/);return {mnt:f[5],tot:f[1],use:f[2],avail:f[3]};}).filter(function(x){return x.mnt;});
-    $("dv").innerHTML=ls.map(function(x){return "<tr><td class='mono'>"+esc(x.mnt)+"</td><td>"+esc(x.tot)+
-      "K</td><td>"+esc(x.use)+"K</td><td>"+esc(x.avail)+"K</td></tr>";}).join("")||
-      '<tr><td colspan="4" style="color:var(--dim)">暂无</td></tr>';
-  }).catch(function(e){
-    $("dv").innerHTML='<tr><td colspan="4" style="color:var(--dim)">df 不可用</td></tr>';
-    $("dm").className="msg err";
-    $("dm").textContent="读容量失败："+e.message+"。需要在 acl.d 放行 /bin/df。";
-  });
-}};
-
-
-/* ---- 服务：/etc/rc.d 里的 S* 链接 = 已注册的开机自启项；启停与自启都走 init 脚本 ---- */
-PAGES.svc={mount:function(el){
-  el.innerHTML='<section class="card"><h2>服务</h2>'+
-   '<div class="row"><button class="p" id="sr">刷新</button>'+
-   '<label class="f" style="margin:0;flex:1"><span>过滤服务名</span><input id="sf"></label></div>'+
-   '<div class="msg" id="sm"></div>'+
-   '<table style="margin-top:10px"><thead><tr><th>服务</th><th>运行</th><th>开机自启</th><th>操作</th></tr></thead>'+
-   '<tbody id="sl"><tr><td colspan="4" style="color:var(--dim)">读取中…</td></tr></tbody></table></section>';
-  var all=[];
-  function run(svc,act){
-    // init 脚本按约定：参数不带路径，先 -x 再给动作（与 rc.common 一致）
-    rpc("file","exec",{command:"/etc/init.d/"+svc,params:["-x",act]}).then(function(){
-      say($("sm"),svc+" "+act+" 已执行",true);return load();
-    }).catch(function(e){say($("sm"),svc+" "+act+" 失败："+e.message,false);});
-  }
-  function paint(){
-    var f=$("sf").value.trim();
-    var ls=all.filter(function(x){return !f||x.name.indexOf(f)>=0;});
-    $("sl").innerHTML=ls.map(function(x){
-      return "<tr><td class='mono'>"+esc(x.name)+"</td><td>"+(x.enabled?"自启":"—")+"</td><td>"+
-        "<button data-a='"+esc(x.enabled?"disable":"enable")+"' data-s='"+esc(x.name)+"'>"+(x.enabled?"停自启":"开自启")+
-        "</button></td><td><button data-a='start' data-s='"+esc(x.name)+"'>启动</button> "+
-        "<button data-a='stop' data-s='"+esc(x.name)+"'>停止</button> "+
-        "<button data-a='restart' data-s='"+esc(x.name)+"'>重载</button></td></tr>";}).join("")||
-      '<tr><td colspan="4" style="color:var(--dim)">没有匹配的服务</td></tr>';
-    Array.prototype.forEach.call($("sl").querySelectorAll("button"),function(b){
-      b.onclick=function(){
-        var s=b.getAttribute("data-s"),a=b.getAttribute("data-a");
-        if((a==="stop"||a==="restart")&&!confirm("确定对 "+s+" 执行 "+a+"？"))return;
-        if(a==="enable"||a==="disable"){if(!confirm("确定修改 "+s+" 的开机自启？"))return;}
-        run(s,a);};});
-  }
-  function load(){
-    rpc("file","list",{path:"/etc/rc.d"}).then(function(r){
-      var names=((r&&r.entries)||[]).map(function(e){
-        var n=typeof e==="string"?e:(e&&e.name);return n||"";})
-        .filter(function(n){return /^S\d+/.test(n);})
-        .map(function(n){return n.replace(/^S\d+/,"");})
-        .filter(function(n){return n&&n!=="molly";}).sort();
-      // 自启状态就是「有没有 S* 链接」——这里全都在 rc.d 里，所以都是自启的；
-      // 关掉自启会移除链接，因此要减去当前不存在的那些（list 本身就是真相）。
-      all=names.map(function(n){return {name:n,enabled:true};});
-      paint();
-    }).catch(function(e){
-      $("sl").innerHTML='<tr><td colspan="4" style="color:var(--dim)">'+esc(e.message)+"</td></tr>";});
-  }
-  $("sr").onclick=load;$("sf").oninput=paint;load();
-}};
-
-/* ---- 网络诊断：ping / traceroute / nslookup 走 file exec（acl.d 授权） ---- */
-PAGES.diag={mount:function(el){
-  el.innerHTML='<section class="card"><h2>网络诊断</h2>'+
-   '<div class="grid"><label class="f"><span>目标主机</span><input id="dh" value="223.5.5.5"></label>'+
-   '<label class="f"><span>工具</span><select id="dt2"><option value="ping">ping</option>'+
-   '<option value="traceroute">traceroute</option><option value="nslookup">nslookup</option>'+
-   '<option value="wget">wget（取一个 URL）</option></select></label>'+
-   '<label class="f"><span>次数 / 参数（可选）</span><input id="da" placeholder="ping 填 4"></label></div>'+
-   '<div class="row"><button class="p" id="dg">执行</button>'+
-   '<span style="color:var(--dim);font-size:12px">最长约 30 秒</span></div>'+
-   '<div class="msg" id="dm2"></div><pre id="dx" style="margin-top:10px">结果会显示在这里。</pre></section>';
-  var BIN={ping:"/bin/ping",traceroute:"/usr/sbin/traceroute",nslookup:"/usr/bin/nslookup",wget:"/usr/bin/wget"};
-  $("dg").onclick=function(){
-    var b=this,tool=$("dt2").value,host=$("dh").value.trim(),extra=$("da").value.trim();
-    if(!host){say($("dm2"),"请填目标主机",false);return;}
-    var args=[tool==="ping"?-4:null,tool==="ping"?-c:null,tool==="ping"?(extra||"4"):null,tool==="traceroute"?"-n":null,
-      tool==="nslookup"?"-type=A":null,tool==="wget"?null:null,host].filter(function(x){return x;});
-    if(tool==="wget")args=["-O","-","--timeout=10",host];
-    if(tool==="ping")args=["-c",extra||"4",host];
-    busy(b,true);$("dx").textContent="执行中…";
-    rpc("file","exec",{command:BIN[tool],params:args}).then(function(r){
-      var out=((r&&r.stdout)||"")+((r&&r.stderr)||"");
-      $("dx").textContent=out.trim()||"(无输出，退出码 "+(r&&r.code)+")";
-    }).catch(function(e){
-      $("dx").textContent="";
-      say($("dm2"),"执行失败："+e.message+"。该命令需要在 acl.d 放行（见 molly.json）。",false);
-    }).then(function(){busy(b,false);});
-  };
-}};
-
-
-/* ---- 备份与恢复：/etc/config 逐文件读写。
-   刻意**不做**固件刷写（sysupgrade）：那是不可逆操作，不该由一个网页表单触发。 ---- */
-PAGES.bk={mount:function(el){
-  el.innerHTML='<section class="card"><h2>配置备份</h2>'+
-   '<p style="color:var(--dim);margin:0 0 10px">导出 /etc/config 下的配置文件。'+
-   '恢复会<strong>覆盖</strong>同名文件并 reload_config，请确认后再操作。</p>'+
-   '<div class="row"><button class="p" id="be">导出到下方</button>'+
-   '<button id="bc">复制</button><button id="bd">下载 .txt</button></div>'+
-   '<div class="msg" id="bem"></div>'+
-   '<textarea id="bx" style="width:100%;height:240px;margin-top:10px;font:12px ui-monospace,monospace;'+
-   'background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:10px" '+
-   'placeholder="点「导出」后这里会出现备份内容"></textarea></section>'+
-   '<section class="card"><h2>配置恢复</h2>'+
-   '<p style="color:var(--dim);margin:0 0 10px">把上一步导出的内容粘回来，逐个文件写回 '+
-   '/etc/config/<strong>同名文件</strong>。同名 = 覆盖，不会删除别的文件。</p>'+
-   '<label class="f"><span>要恢复的配置（文件名）</span><input id="rn" placeholder="network"></label>'+
-   '<div class="row"><button class="d" id="br">恢复并生效</button></div>'+
-   '<div class="msg" id="brm"></div></section>'+
-   '<section class="card"><h2>固件升级</h2>'+
-   '<p style="color:var(--dim);margin:0">刻意不在这里做：刷固件不可逆，值得走 sysupgrade 命令或'+
-   'LuCI 的升级页（那里有校验与中断保护）。</p></section>';
-  var SEP="\n##### molly-config: ";
-  function name(n){return String(n).split("/").pop();}
-  function walk(v,base,out){
-    base=base||"";out=out||[];
-    Object.keys(v||{}).forEach(function(k){
-      if(k.charAt(0)===".")return;
-      var val=v[k];
-      if(val&&typeof val==="object"&&!Array.isArray(val))walk(val,base?base+"/"+k:k,out);
-      else out.push(SEP+(base?base+"/":"")+k+"="+(Array.isArray(val)?val.join(" "):val));
-    });
-    return out;
-  }
-  $("be").onclick=function(){
-    var b=this;busy(b,true);$("bx").value="读取中…";
-    rpc("file","list",{path:"/etc/config"}).then(function(r){
-      var ns=((r&&r.entries)||[]).map(name).filter(function(n){return n&&n.indexOf(".conf")<0||
-        n.indexOf(".conf")===n.length-5;});
-      if(!ns.length)ns=((r&&r.entries)||[]).map(name).filter(Boolean);
-      var chain=Promise.resolve(["# molly 配置备份  "+new Date().toISOString()]);
-      ns.forEach(function(n){
-        chain=chain.then(function(acc){
-          return rpc("file","read",{path:"/etc/config/"+n})
-            .then(function(x){acc.push(SEP+"file:"+n);acc.push((x&&x.data)||"");return acc;})
-            .catch(function(){return acc;});
-        });
-      });
-      return chain.then(function(acc){$("bx").value=acc.join("\n");$("bx").select();
-        say($("bem"),"已导出 "+ns.length+" 个文件",true);});
-    }).catch(function(e){say($("bem"),"导出失败："+e.message,false);})
-      .then(function(){busy(b,false);});
-  };
-  $("bc").onclick=function(){
-    var t=$("bx");t.select();
-    if(navigator.clipboard)navigator.clipboard.writeText(t.value).then(function(){say($("bem"),"已复制",true);});
-    else{try{document.execCommand("copy");say($("bem"),"已复制",true);}catch(e){say($("bem"),"复制失败，请手动全选",false);}}
-  };
-  $("bd").onclick=function(){
-    var t=$("bx");if(!t.value.trim()){say($("bem"),"先导出",false);return;}
-    var b=document.createElement("a");
-    b.href="data:text/plain;charset=utf-8,"+encodeURIComponent(t.value);
-    b.download="molly-config-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"")+".txt";
-    b.click();
-  };
-  $("br").onclick=function(){
-    var name0=$("rn").value.trim(),text=$("bx").value;
-    if(!name0){say($("brm"),"请填要恢复的配置名",false);return;}
-    if(!/^[\w.-]+$/.test(name0)){say($("brm"),"配置名只能用字母数字 . _ -",false);return;}
-    var lines=text.split("\n"),parts=[],cur=null;
-    lines.forEach(function(l){
-      if(l.indexOf(SEP+"file:")===0){cur={name:l.slice((SEP+"file:").length),body:[]};parts.push(cur);}
-      else if(cur)cur.body.push(l);
-    });
-    var target=parts.filter(function(p){return p.name===name0;})[0];
-    if(!target){say($("brm"),"备份里没有 "+name0+" 这一段",false);return;}
-    if(!confirm("将覆盖 /etc/config/"+name0+" 并 reload_config，网络会短暂中断。确定？"))return;
-    var b=this;busy(b,true);
-    rpc("file","write",{path:"/etc/config/"+name0,data:target.body.join("\n").replace(/\n+$/,"")+"\n",mode:420})
-      .then(function(){return rpc("file","exec",{command:"/sbin/reload_config",params:[]})
-        .catch(function(){return null;});})
-      .then(function(){say($("brm"),name0+" 已恢复并生效",true);})
-      .catch(function(e){say($("brm"),"恢复失败："+e.message,false);})
-      .then(function(){busy(b,false);});
-  };
-}};
-
-/* ---- 登录 / 退出：一律走 /auth（与专家版共用同一个会话） ---- */
-function loginView(){
-  $("login").hidden=false;
-  $("lg").onclick=function(){
-    var b=this;busy(b,true);
-    var f=new URLSearchParams();
-    f.set("username",$("lu").value);f.set("password",$("lp").value);f.set("next",location.pathname+location.hash);
-    fetch("/auth/login",{method:"POST",body:f,redirect:"follow"}).then(function(r){
-      var ok=r.url.indexOf("auth_error")<0;
-      if(ok){location.href=r.url;}else{say($("lm"),"用户名或密码不对",false);busy(b,false);}
-    }).catch(function(e){say($("lm"),"登录失败："+e.message,false);busy(b,false);});
-  };
-  $("lp").addEventListener("keydown",function(e){if(e.key==="Enter")$("lg").click();});
-}
-$("logout").onclick=function(){
-  fetch("/auth/logout",{method:"POST",redirect:"follow"}).then(function(){location.href="/lite/";});
+  return {oninit:load,view:function(){
+    var ks=ids();var opts=ks.map(function(k){var band=(st.wdev[k]&&st.wdev[k].config&&st.wdev[k].config.band)||"";return {v:k,l:k+(band?"（"+band+"）":"")};});
+    var up=ks.filter(function(k){return st.wdev[k]&&st.wdev[k].up;});
+    function locked(enc){var e=Array.isArray(enc)?enc[0]:enc;return e&&e!=="none"&&e!=="open"&&e!=="No encryption"?Ico("lock",16):null;}
+    return m("div",[
+      m("section.card",m("h2",Ico("wifi"),"无线状态",up.length?m("span.tag.ok","已起 "+up.length+" / "+ks.length):m("span.tag","未启用")),
+        ks.length?m(".rows",ks.map(function(k){var d=st.wdev[k]||{},c=d.config||{};var ss=first(c.ssid);return m(".lrow",{key:k},
+          m(".lico"+(d.up?". on":""),Ico("wifi",20)),
+          m(".lmain",m(".lt",k+(c.band?"（"+c.band+"）":"")),m(".lm","信道 "+(c.channel||"？")+(ss?" · "+ss:""))),
+          m(".lact",d.up?m("span.tag.ok","已启用"):m("span.hint","未启用")));})):m(".empty",st.loaded?"未发现无线设备":"读取中…")),
+      m("section.card",m("h2",Ico("repeater"),"无线中继"),
+        m(".steps",[m(".step",m("b","1"),"扫描并选择"),m("span.ar",Ico("chevr",16)),m(".step",m("b","2"),"输入密码"),m("span.ar",Ico("chevr",16)),m(".step",m("b","3"),"保存并应用")]),
+        m(".sub","把本机作为客户端接入上级路由器的 Wi-Fi，用来扩展无线覆盖。"),
+        m(".row",Btn({label:st.scan?"重新扫描":"扫描附近 Wi-Fi",icon:"search",variant:"out",busy:st.busyScan,onclick:scan})),
+        st.scan?m(".rows",st.scan.length?st.scan.map(function(n){var sel=st.ssid&&st.ssid===n.ssid;return m(".lrow.click"+(sel?". sel":""),{key:n.ssid||("#"+n.bssid),onclick:function(){st.ssid=n.ssid||"";m.redraw();}},
+          m(".lico",Signal(n.signal)),m(".lmain",m(".lt",(n.ssid||"(隐藏)"),locked(n.encryption)),m(".lm",(n.signal||0)+" dBm · 信道 "+(n.channel||"？"))),m(".lact",sel?m("span.tag.ok","已选"):m("span.hint","点选择")));}):m("span.hint","没扫到网络，可直接手填 SSID")):null,
+        f("ssid","上级 Wi-Fi 名称（SSID）",{help:"点上方列表选择，或直接手填"}),
+        f("key","上级 Wi-Fi 密码",{pass:true,auto:"off",help:"开放网络留空"}),
+        f("radio","用哪个频段去连",{sel:true,opts:opts.length?opts:[{v:"",l:"（未发现频段）"}]}),
+        m(".row",Btn({label:"保存并应用",icon:"check",busy:st.busySave,onclick:save})))
+    ]);
+  }};
 };
-route();
-if(!SID){loginView();}
+
+/* ---- DHCP：地址池 + MAC 静态绑定（uci dhcp），当前租约来自 luci-rpc getDHCPLeases ---- */
+PAGES.dhcp=function(){
+  var st={__e:{},start:"",limit:"",leasetime:"",lanip:"",hosts:[],leases:[],bm:"",bi:"",bn:"",busyPool:false,busyAdd:false,loaded:false};
+  var f=mkf(st);
+  function load(){
+    rpc("uci","get",{config:"dhcp"}).then(function(v){var q=(v&&v.values)||{},l=q.lan||{};
+      st.start=l.start||"";st.limit=l.limit||"";st.leasetime=first(l.leasetime)||"";
+      st.hosts=Object.keys(q).filter(function(n){return q[n][".type"]==="host";}).map(function(n){var x=q[n];return {sec:n,mac:String(first(x.mac)||""),ip:String(first(x.ip)||""),name:String(first(x.name)||"")};});
+      st.loaded=true;m.redraw();}).catch(function(e){toast("读取 DHCP 失败："+e.message,"err");});
+    rpc("luci-rpc","getDHCPLeases",{family:0}).then(function(r){st.leases=(r&&r.dhcp_leases)||[];m.redraw();}).catch(function(){st.leases=[];m.redraw();});
+    rpc("uci","get",{config:"network"}).then(function(v){var l=((v&&v.values)||{}).lan||{};st.lanip=first(l.ipaddr)||"";m.redraw();}).catch(function(){});
+  }
+  function range(){var s=parseInt(st.start,10),n=parseInt(st.limit,10);
+    if(!st.lanip||isNaN(s)||isNaN(n)||n<=0)return "";
+    var net=st.lanip.split("/")[0].split(".").slice(0,3).join(".");
+    if(s+n-1>254)return net+"."+s+" –（超出 /24 范围）";
+    return net+"."+s+" – "+net+"."+(s+n-1)+"（共 "+n+" 个地址）";}
+  function savePool(){st.busyPool=true;m.redraw();
+    uciSave([["set",{config:"dhcp",section:"lan",values:{start:st.start.trim(),limit:st.limit.trim(),leasetime:st.leasetime.trim()}}]],true)
+      .then(function(){toast("地址池已保存并生效");}).catch(function(e){toast("保存失败："+e.message,"err");})
+      .then(function(){st.busyPool=false;m.redraw();});
+  }
+  function addHost(){st.__e={};var mac=(st.bm||"").trim().toLowerCase(),ip=(st.bi||"").trim(),ok=true;
+    var e1=vcheck(V.mac(mac));if(e1){st.__e.bm=e1;ok=false;}
+    var e2=vcheck(V.ipv4(ip));if(e2){st.__e.bi=e2;ok=false;}
+    if(!ok){m.redraw();return;}
+    st.busyAdd=true;m.redraw();var vals={mac:mac,ip:ip};if(st.bn.trim())vals.name=st.bn.trim();
+    rpc("uci","add",{config:"dhcp",type:"host",values:vals}).then(function(){return commitApply("dhcp");})
+      .then(function(){toast("已添加绑定");st.bm="";st.bi="";st.bn="";return load();})
+      .catch(function(e){toast("添加失败："+e.message,"err");})
+      .then(function(){st.busyAdd=false;m.redraw();});
+  }
+  function bindLease(l){var mac=(l.macaddr||"").toLowerCase(),ip=(l.ipaddr||"").trim();
+    if(!mac||!ip){toast("该设备缺少 MAC/IP，无法绑定","err");return;}
+    confirmDialog({title:"固定 IP",message:"将 "+(l.hostname||"未命名设备")+"（"+ip+"）的地址设为固定？",ok:"绑定"}).then(function(y){if(!y)return;
+      st.busyAdd=true;m.redraw();var vals={mac:mac,ip:ip};if(l.hostname)vals.name=l.hostname;
+      rpc("uci","add",{config:"dhcp",type:"host",values:vals}).then(function(){return commitApply("dhcp");})
+        .then(function(){toast("已固定 "+ip);return load();})
+        .catch(function(e){toast("绑定失败："+e.message,"err");})
+        .then(function(){st.busyAdd=false;m.redraw();});});}
+  function del(sec,name){confirmDialog({title:"删除绑定",message:"删除 "+(name||sec)+" 的固定 IP？",danger:true,ok:"删除"}).then(function(y){if(!y)return;
+    rpc("uci","delete",{config:"dhcp",section:sec}).then(function(){return commitApply("dhcp");}).then(function(){toast("已删除");return load();}).catch(function(e){toast("删除失败："+e.message,"err");});});}
+  return {oninit:load,view:function(){
+    var rp=range();
+    return m("div",[
+      m("section.card",m("h2",Ico("database"),"地址池"),
+        m(".sub","局域网自动分配的地址范围（起始偏移 + 数量 + 租期）。"),
+        m(".grid",f("start","起始地址（偏移）",{mode:"numeric",help:"如 100"}),f("limit","地址个数",{mode:"numeric",help:"如 150"}),f("leasetime","租期",{help:"如 12h / 1d"})),
+        m(".rng",Ico("speed",18),rp?["可分配范围 ",m("b",rp)]:["填好上方起始与个数后，这里预览实际范围（内网 "+(st.lanip||"未读取")+"）"]),
+        m(".row",Btn({icon:"check",label:"保存并应用",busy:st.busyPool,onclick:savePool}))),
+      m("section.card",m("h2",Ico("bookmark"),"MAC 静态绑定",m("span.tag",st.hosts.length+" 条")),
+        st.hosts.length?m(".rows",st.hosts.map(function(h){return m(".lrow",{key:h.sec},
+          m(".lico",Ico("pin",20)),
+          m(".lmain",m(".lt",h.name||"未命名"),m(".lm",h.ip+" · "+h.mac)),
+          m(".lact",IconBtn({ic:"trash",title:"删除绑定",onclick:function(){del(h.sec,h.name);}})));})):m(".empty",st.loaded?"还没有固定地址":"读取中…"),
+        m(".sub",{style:"margin-top:16px"},"或手动添加一条固定地址："),
+        m(".grid",f("bm","MAC",{help:"00:11:22:33:44:55"}),f("bi","固定 IP",{help:"192.168.1.100"}),f("bn","备注名",{help:"可选"})),
+        m(".row",Btn({icon:"plus",label:"添加绑定",busy:st.busyAdd,onclick:addHost}))),
+      m("section.card",m("h2",Ico("users"),"在线设备",m("span.tag",st.leases.length+" 台")),
+        m(".sub","点右侧书签图标，即可把在线设备的当前地址一键固定为静态 IP。"),
+        st.leases.length?m(".rows",st.leases.map(function(l,i){var bound=st.hosts.some(function(h){return h.mac&&h.mac.toLowerCase()===(l.macaddr||"").toLowerCase();});
+          return m(".lrow",{key:(l.macaddr||"")+"#"+i},
+            m(".lico",Ico("users",20)),
+            m(".lmain",m(".lt",l.hostname||"未命名设备",bound?m("span.tag.ok","已固定"):null),m(".lm",(l.ipaddr||"–")+" · "+(l.macaddr||"–"))),
+            m(".lact",bound?null:IconBtn({ic:"bookmark",title:"固定该设备",dis:st.busyAdd,onclick:function(){bindLease(l);}})));})):m(".empty",st.loaded?"暂无在线设备":"读取中…"))
+    ]);
+  }};
+};
+/* ---- 系统：重启（system.reboot）与改 root 口令（/auth/password） ---- */
+PAGES.sys=function(){
+  var st={__e:{},old:"",nw1:"",busyPw:false,rb:false};
+  var f=mkf(st);
+  function reboot(){confirmDialog({title:"重启设备",message:"重启约需 1–2 分钟，期间网络会中断。确定现在重启？",danger:true,ok:"立即重启"}).then(function(y){if(!y)return;
+    st.rb=true;m.redraw();rpc("system","reboot").then(function(){toast("已发出重启指令…");}).catch(function(e){toast("重启失败："+e.message,"err");st.rb=false;m.redraw();});});}
+  function chpw(){st.__e={};
+    if(!st.old)st.__e.old="请输入旧口令";
+    if(String(st.nw1).length<5)st.__e.nw1="新口令至少 5 个字符";
+    if(st.__e.old||st.__e.nw1){m.redraw();return;}
+    st.busyPw=true;m.redraw();
+    var p=new URLSearchParams();p.set("username","root");p.set("old",st.old);p.set("new",st.nw1);p.set("next","#/sys");
+    fetch("/auth/password",{method:"POST",body:p,redirect:"follow"}).then(function(r){
+      var ok=r.url.indexOf("auth_error")<0,code=(/[?&]auth_error=([a-z_]+)/.exec(r.url)||[])[1];
+      if(ok){toast("口令已更新");st.old="";st.nw1="";}
+      else st.__e={old:"失败："+({bad_credentials:"旧口令不对",weak_password:"新口令太短（至少 5 个字符）",no_hasher:"设备缺少 openssl，无法生成 hash"}[code]||"未知错误")};
+      st.busyPw=false;m.redraw();}).catch(function(e){toast("提交失败："+e.message,"err");st.busyPw=false;m.redraw();});}
+  return {view:function(){
+    return m("div",[
+      m("section.card",m("h2","重启设备"),
+        m(".sub","重启约需 1–2 分钟，期间网络会中断。"),
+        m(".row",Btn({label:"立即重启",variant:"danger",busy:st.rb,onclick:reboot}))),
+      m("section.card",m("h2","修改 root 口令"),
+        f("old","旧口令",{pass:true,auto:"current-password"}),
+        f("nw1","新口令（至少 5 个字符）",{pass:true,auto:"new-password"}),
+        m(".row",Btn({label:"保存口令",busy:st.busyPw,onclick:chpw})))
+    ]);
+  }};
+};
+
+/* ---- 日志：走 ubus 的 log.read（rpcd 日志对象）；级别/子串/行数过滤 ---- */
+PAGES.log=function(){
+  var st={lines:"200",filter:"",level:"",text:"读取中…",err:""};
+  var f=mkf(st);
+  function LOGP(x){var t=x&&x.time?new Date(x.time).toISOString().replace("T"," ").slice(0,19):"";
+    var s=x&&x.priority!=null?(x.priority&7):null;var lv=s==null?"":["emerg","alert","crit","err","warn","notice","info","debug"][s];
+    return (t+" ["+lv+"] "+(x&&x.msg||"")).replace(/\s+$/,"");}
+  function go(){st.text="读取中…";st.err="";m.redraw();
+    var n=Math.min(parseInt(st.lines,10)||200,2000);
+    rpc("log","read",{stream:false,lines:n}).then(function(r){var items=(r&&r.log)||[];
+      var cut={err:3,warn:4,notice:5,info:6}[st.level];if(cut!=null)items=items.filter(function(x){return x.priority!=null&&(x.priority&7)<=cut;});
+      var lines=items.map(LOGP);var fl=st.filter.trim();if(fl)lines=lines.filter(function(l){return l.indexOf(fl)>=0;});
+      st.text=lines.reverse().join("\n")||"(没有匹配的日志行)";m.redraw();})
+      .catch(function(e){st.text="";st.err="读不到系统日志："+e.message+"（需要 log.read 的 ACL）";m.redraw();});}
+  return {oninit:go,view:function(){
+    return m("div",m("section.card",m("h2","系统日志"),
+      m(".grid",f("filter","过滤（子串，留空看全部）"),f("lines","行数",{mode:"numeric"}),
+        f("level","最低级别",{sel:true,opts:[{v:"",l:"全部"},{v:"err",l:"err 及以上"},{v:"warn",l:"warn 及以上"},{v:"notice",l:"notice 及以上"},{v:"info",l:"info 及以上"}]})),
+      st.err?m(".msg-inline","✕ "+st.err):null,
+      m(".row",Btn({label:"刷新",onclick:go})),
+      m("pre",{style:"margin-top:12px"},st.text)));
+  }};
+};
+
+/* ---- 存储：挂载表来自 file read /proc/mounts；容量来自 file exec /bin/df -k ---- */
+PAGES.disk=function(){
+  var st={mounts:[],df:[],err:"",loadedM:false,loadedD:false};
+  function load(){
+    rpc("file","read",{path:"/proc/mounts"}).then(function(r){var ls=((r&&r.data)||"").trim().split("\n").map(function(l){var p=l.split(/\s+/);return{dev:p[0],mnt:p[1],type:p[2]};})
+      .filter(function(x){return x.mnt&&["proc","sysfs","devtmpfs","tmpfs","devpts","cgroup","debugfs","mqueue","hugetlbfs"].indexOf(x.type)<0&&x.mnt.indexOf("/dev/")!==0;});
+      st.mounts=ls;st.loadedM=true;m.redraw();}).catch(function(e){st.err="挂载表："+e.message;st.loadedM=true;m.redraw();});
+    rpc("file","exec",{command:"/bin/df",params:["-k"]}).then(function(r){var ls=((r&&r.stdout)||"").trim().split("\n").slice(1).map(function(l){var p=l.trim().split(/\s+/);return{mnt:p[5],tot:+p[1]||0,use:+p[2]||0,avail:+p[3]||0};}).filter(function(x){return x.mnt;});
+      st.df=ls;st.loadedD=true;m.redraw();}).catch(function(e){st.err=(st.err?st.err+" · ":"")+"读容量失败："+e.message+"（需在 acl.d 放行 /bin/df）";st.loadedD=true;m.redraw();});
+  }
+  return {oninit:load,view:function(){
+    var mrows=st.mounts.length?st.mounts.map(function(x){return m("tr",m("td.mono",x.dev),m("td.mono",x.mnt),m("td.mono",x.type));}):[m("tr",m("td.empty",{colspan:"3"},st.loadedM?"暂无":"读取中…"))];
+    var drows=st.df.length?st.df.map(function(x){var pct=x.tot?Math.round(x.use/x.tot*100):0;return m("tr",m("td.mono",x.mnt),m("td",fmtBytes(x.tot*1024)),m("td",fmtBytes(x.use*1024)),m("td",fmtBytes(x.avail*1024)),m("td",{style:"min-width:90px"},m(".bar",m("i",{style:"width:"+pct+"%"}))));}):[m("tr",m("td.empty",{colspan:"5"},st.loadedD?(st.err?"df 不可用":"暂无"):"读取中…"))];
+    return m("div",[
+      m("section.card",m("h2","挂载点"),
+        m("table",[m("thead",m("tr",m("th","设备"),m("th","挂载点"),m("th","类型"))),m("tbody",mrows)])),
+      m("section.card",m("h2","容量"),
+        m("table",[m("thead",m("tr",m("th","挂载点"),m("th","总量"),m("th","已用"),m("th","可用"),m("th",""))),m("tbody",drows)]),
+        st.err?m(".msg-inline","✕ "+st.err):null)
+    ]);
+  }};
+};
+
+/* ---- 服务：/etc/rc.d 里的 S* 链接 = 已注册开机自启项；启停与自启都走 init 脚本（file exec） ---- */
+PAGES.svc=function(){
+  var st={filter:"",all:[],busy:{},loaded:false};
+  function act0(a){return {start:"启动",stop:"停止",restart:"重载",enable:"开自启",disable:"停自启"}[a]||a;}
+  function load(){rpc("file","list",{path:"/etc/rc.d"}).then(function(r){var names=((r&&r.entries)||[]).map(function(e){return (typeof e==="string")?e:((e&&e.name)||"");})
+      .filter(function(n){return /^S\d+/.test(n);}).map(function(n){return n.replace(/^S\d+/,"");}).filter(function(n){return n&&n!=="molly";}).sort();
+      st.all=names.map(function(n){return{name:n,enabled:true};});st.loaded=true;m.redraw();})
+      .catch(function(e){st.all=[];st.loaded=true;toast("读取服务失败："+e.message,"err");});}
+  function run(s,a){st.busy[s+"_"+a]=true;m.redraw();
+    rpc("file","exec",{command:"/etc/init.d/"+s,params:[a]}).then(function(){toast(s+" "+act0(a)+" 已执行");return load();})
+      .catch(function(e){toast(s+" "+act0(a)+" 失败："+e.message,"err");})
+      .then(function(){st.busy[s+"_"+a]=false;m.redraw();});}
+  function ask(s,a){if(a==="start"){run(s,a);return;}
+    confirmDialog({title:act0(a),message:"确定对 "+s+" 执行「"+act0(a)+"」？",danger:(a==="stop"),ok:act0(a)}).then(function(y){if(y)run(s,a);});}
+  return {oninit:load,view:function(){
+    var flt=st.filter.trim();var ls=st.all.filter(function(x){return !flt||x.name.indexOf(flt)>=0;});
+    return m("div",m("section.card",m("h2",Ico("power"),"服务进程",m("span.tag",st.all.length+" 个")),
+      m(".searchbox",Ico("search",18),
+        m("input",{type:"text",placeholder:"搜索服务名…",value:st.filter,oninput:function(e){st.filter=e.target.value;m.redraw();}}),
+        st.filter?IconBtn({ic:"close",title:"清除",size:16,onclick:function(){st.filter="";m.redraw();}}):null),
+      ls.length?m(".rows",ls.map(function(x){var b=st.busy;return m(".lrow",{key:x.name},
+        m(".lico.on",Ico("power",20)),
+        m(".lmain",m(".lt",x.name),m(".lm",x.enabled?"开机自启":"手动启动")),
+        m(".lact",
+          IconBtn({ic:"play",title:"启动",busy:b[x.name+"_start"],onclick:function(){ask(x.name,"start");}}),
+          IconBtn({ic:"refresh",title:"重载",busy:b[x.name+"_restart"],onclick:function(){ask(x.name,"restart");}}),
+          IconBtn({ic:"stop",title:"停止",busy:b[x.name+"_stop"],onclick:function(){ask(x.name,"stop");}})),
+        Switch({checked:x.enabled,onchange:function(){ask(x.name,x.enabled?"disable":"enable");}}));})):m(".empty",st.loaded?"没有匹配的服务":"读取中…"),
+      m(".row",Btn({icon:"refresh",label:"刷新列表",variant:"out",onclick:load}))));
+  }};
+};
+
+/* ---- 网络诊断：ping / traceroute / nslookup / wget 走 file exec（acl.d 授权） ---- */
+PAGES.diag=function(){
+  var st={__e:{},tool:"ping",host:"223.5.5.5",extra:"",busy:false,out:"结果会显示在这里。"};
+  var f=mkf(st);
+  var BIN={ping:"/bin/ping",traceroute:"/usr/sbin/traceroute",nslookup:"/usr/bin/nslookup",wget:"/usr/bin/wget"};
+  function run(){if(!(st.host||"").trim()){st.__e={host:"请填目标主机"};m.redraw();return;}
+    var tool=st.tool,host=st.host.trim(),ex=(st.extra||"").trim(),args;
+    if(tool==="ping")args=["-c",ex||"4",host];else if(tool==="traceroute")args=["-n",host];else if(tool==="nslookup")args=[host];else args=["-O","-","--timeout=10",host];
+    st.busy=true;st.out="执行中…";m.redraw();
+    rpc("file","exec",{command:BIN[tool],params:args}).then(function(r){var out=((r&&r.stdout)||"")+((r&&r.stderr)||"");st.out=(out||"").trim()||"(无输出，退出码 "+(r&&r.code)+")";m.redraw();})
+      .catch(function(e){st.out="";toast("执行失败："+e.message+"（该命令需在 acl.d 放行）","err");m.redraw();})
+      .then(function(){st.busy=false;m.redraw();});}
+  return {view:function(){
+    return m("div",m("section.card",m("h2","网络诊断"),
+      m(".grid",f("host","目标主机",{help:"223.5.5.5 或 example.com"}),
+        f("tool","工具",{sel:true,opts:[{v:"ping",l:"ping"},{v:"traceroute",l:"traceroute"},{v:"nslookup",l:"nslookup"},{v:"wget",l:"wget（取一个 URL）"}]}),
+        f("extra","次数 / 参数（可选）",{help:"ping 填 4"})),
+      m(".row",Btn({label:"执行",busy:st.busy,onclick:run}),m("span.hint","最长约 30 秒")),
+      m("pre",{style:"margin-top:12px"},st.out)));
+  }};
+};
+
+/* ---- 备份与恢复：/etc/config 逐文件读写（刻意不做固件刷写） ---- */
+PAGES.bk=function(){
+  var st={busyExp:false,text:"",name:"",msg:"",msgErr:false};
+  var f=mkf(st);
+  var SEP="\n##### molly-config: ";
+  function nm(n){var s=(typeof n==="string")?n:((n&&n.name)||"");return s.split("/").pop();}
+  function say(m,err){st.msg=m;st.msgErr=!!err;}
+  function expo(){st.busyExp=true;st.text="读取中…";m.redraw();
+    rpc("file","list",{path:"/etc/config"}).then(function(r){var raw=((r&&r.entries)||[]).map(nm).filter(Boolean);
+      var ns=raw.filter(function(n){return n.indexOf(".conf")<0;});if(!ns.length)ns=raw;
+      var chain=Promise.resolve(["# molly 配置备份  "+new Date().toISOString()]);var got=0;
+      ns.forEach(function(n){chain=chain.then(function(acc){return rpc("file","read",{path:"/etc/config/"+n}).then(function(x){acc.push(SEP+"file:"+n);acc.push((x&&x.data)||"");got++;return acc;}).catch(function(){return acc;});});});
+      return chain.then(function(acc){st.text=acc.join("\n");got?say("已导出 "+got+" 个文件"):say("导出失败：读不到任何配置文件",true);});})
+      .catch(function(e){say("导出失败："+e.message,true);})
+      .then(function(){st.busyExp=false;m.redraw();});}
+  function copy(){if(!(st.text||"").trim()){say("先导出",true);m.redraw();return;}
+    var done=function(){say("已复制");m.redraw();};
+    var fb=function(){var el=document.getElementById("bkarea");if(el){el.select();try{document.execCommand("copy");done();}catch(e){say("复制失败，请手动全选",true);m.redraw();}}};
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(st.text).then(done).catch(fb);else fb();}
+  function download(){if(!(st.text||"").trim()){say("先导出",true);m.redraw();return;}
+    var a=document.createElement("a");a.href="data:text/plain;charset=utf-8,"+encodeURIComponent(st.text);a.download="molly-config-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"")+".txt";a.click();}
+  function restore(){var n=(st.name||"").trim();
+    if(!n){say("请填要恢复的配置名",true);m.redraw();return;}
+    var eh=vcheck(V.host(n));if(eh){say("配置名只能用字母数字 . _ -",true);m.redraw();return;}
+    var lines=(st.text||"").split("\n"),parts=[],cur=null;
+    lines.forEach(function(l){if(l.indexOf(SEP+"file:")===0){cur={name:l.slice((SEP+"file:").length),body:[]};parts.push(cur);}else if(cur)cur.body.push(l);});
+    var target=parts.filter(function(p){return p.name===n;})[0];
+    if(!target){say("备份里没有 "+n+" 这一段",true);m.redraw();return;}
+    confirmDialog({title:"恢复配置",message:"将覆盖 /etc/config/"+n+" 并 reload_config，网络会短暂中断。确定？",danger:true,ok:"恢复并生效"}).then(function(y){if(!y)return;
+      rpc("file","write",{path:"/etc/config/"+n,data:target.body.join("\n").replace(/\n+$/,"")+"\n",mode:420})
+        .then(function(){return rpc("file","exec",{command:"/sbin/reload_config",params:[]}).catch(function(){return null;});})
+        .then(function(){say(n+" 已恢复并生效");m.redraw();}).catch(function(e){say("恢复失败："+e.message,true);m.redraw();});});}
+  return {view:function(){
+    return m("div",[
+      m("section.card",m("h2","配置备份"),
+        m(".sub","导出 /etc/config 下的配置文件文本。"),
+        m(".row",Btn({label:"导出",busy:st.busyExp,onclick:expo}),Btn({label:"复制",variant:"out",onclick:copy}),Btn({label:"下载 .txt",variant:"out",onclick:download})),
+        st.msg?m(".msg-inline",(st.msgErr?"✕ ":"✓ ")+st.msg):null,
+        m("textarea#bkarea",{placeholder:"点「导出」后这里会出现备份内容",value:st.text,style:"margin-top:12px",oninput:function(e){st.text=e.target.value;}})),
+      m("section.card",m("h2","配置恢复"),
+        m(".sub","把上面导出的文本按同名文件写回 /etc/config。同名 = 覆盖，不会删别的文件。"),
+        f("name","要恢复的配置（文件名）",{help:"如 network"}),
+        m(".row",Btn({label:"恢复并生效",variant:"danger",onclick:restore}))),
+      m("section.card",m("h2","固件升级"),
+        m(".sub","刻意不在网页里做：刷固件不可逆，请走 sysupgrade 命令或专家版升级页（有校验与中断保护）。"))
+    ]);
+  }};
+};
+
+/* ============ 路由与挂载 ============ */
+var routes={};
+MENU.forEach(function(mp){routes["/"+mp.id]={render:function(){return Layout(mp.id);}};});
+if(!routes["/dash"])routes["/dash"]={render:function(){return Layout("dash");}};
+function boot(){
+  var root=document.getElementById("app");
+  if(!auth.sid){m.render(root,m(".layout",m("main"),m(LoginOverlay)));m.render(document.getElementById("dialog-host"),renderDialog());return;}
+  m.route.prefix="#";
+  var seg=(location.hash&&location.hash.replace(/^#\/?/,""))||((MENU[0]&&MENU[0].id)||"dash");
+  m.route(root,"/"+seg,routes);
+  // snackbar / dialog 常驻层
+  var sh=document.getElementById("snackbar-host"),dh=document.getElementById("dialog-host"),ah=document.getElementById("auth-host");
+  var paint=function(){m.render(sh,renderSnack());m.render(dh,renderDialog());m.render(ah,auth.login?m(LoginOverlay):null);};
+  var r1=m.redraw; m.redraw=function(){r1();paint();}; paint();
+}
+boot();
 })();
 </script>
 </body>

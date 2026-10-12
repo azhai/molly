@@ -13,12 +13,23 @@
 // `#/片段`。菜单是 Menu ——站点导航的唯一事实来源，页面不自己硬编码。
 package simple
 
-import _ "embed"
-
-import "encoding/json"
+import (
+	_ "embed"
+	"encoding/json"
+)
 
 //go:embed index.html
 var HTML string
+
+// Mithril 是官方 mithril.js v2.3.8（unpkg 取源，vendored 在 webassets/simple/mithril.js）。
+// 作为独立文件 embed，页面里用占位符 `__MITHRIL__` 注入到**单个** <script> 块里（ mithril + 应用同段），
+// 既守住「单文件 / 离线 / 零 CDN / 零构建」，又让真·Mithril 落地。
+//
+// ⚠ 注入顺序：handler 先替 `__CFG__` 再替 `__MITHRIL__`（或反之皆可）——mithril.js 正文既不含
+// `__CFG__` 也不含 `</script>`，不会破坏 HTML 或占位符。
+//
+//go:embed mithril.js
+var Mithril string
 
 // MenuItem 是菜单里的一项。
 //
@@ -38,12 +49,12 @@ var Menu = []MenuItem{
 	{ID: "net", Title: "内外网", Ready: true},
 	{ID: "wifi", Title: "无线", Ready: true},
 	{ID: "dhcp", Title: "DHCP", Ready: true},
-	{ID: "sys", Title: "系统", Ready: true},
-	{ID: "log", Title: "日志", Ready: true},
 	{ID: "svc", Title: "服务", Ready: true},
 	{ID: "disk", Title: "存储", Ready: true},
 	{ID: "diag", Title: "诊断", Ready: true},
 	{ID: "bk", Title: "备份", Ready: true},
+	{ID: "log", Title: "日志", Ready: true},
+	{ID: "sys", Title: "系统", Ready: true},
 }
 
 // MenuJSON 是菜单的 JSON 形态，供页面注入。

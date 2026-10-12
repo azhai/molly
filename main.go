@@ -139,6 +139,9 @@ func run(args []string) error {
 	if rc := backend.StartServer(*ubusSocket); rc != 0 {
 		fmt.Fprintln(os.Stderr, "[molly] ubus 服务启动失败：ucode 侧将无法经 ubus 调用 molly 对象")
 	}
+	// 依赖就绪：桥接态（--luci-cgi + 系统总线）登录与会话 ACL 依赖总线上的 rpcd，ubusd 是
+	// 所有 ubus 调用底座。起 HTTP 前先确保它们在线（只拉起缺失、绝不停服务；探不到只告警）。
+	backend.EnsureDeps()
 	srv := &http.Server{Handler: rt}
 	return srv.Serve(ln)
 }
@@ -202,8 +205,9 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// cgi-io 三件套（fs.exec_direct / read_direct / ui.uploadFile）：挂在 cgi_base 上
-	// （本部署 cgi_base="" → 裸 /cgi-exec、/cgi-download、/cgi-upload；上游默认在 /cgi-bin/cgi-*）。
+	// cgi-io 端点（fs.exec_direct / read_direct / ui.uploadFile，以及专家版备份 cgi-backup）：
+	// 挂在 cgi_base 上（本部署 cgi_base="" → 裸 /cgi-exec、/cgi-download、/cgi-upload、/cgi-backup；
+	// 上游默认在 /cgi-bin/cgi-*）。
 	// 必须排在 ServeStatic 之前：默认部署下它们落在 /cgi-bin/ 里，而 ServeStatic 对 /cgi-bin/*
 	// 一律 403（把 CGI 当脚本、不外发正文）；本部署下裸 /cgi-exec 若不管也会被 ServeStatic 判 405。
 	if handlers.IsCGIIOPath(path) {

@@ -28,7 +28,7 @@ func TestCGIIORoutingBareBase(t *testing.T) {
 	if got := cgiBasePrefix(); got != "" {
 		t.Errorf("cgi_base = %q，期望空串", got)
 	}
-	for _, p := range []string{"/cgi-exec", "/cgi-download", "/cgi-upload"} {
+	for _, p := range []string{"/cgi-exec", "/cgi-download", "/cgi-upload", "/cgi-backup"} {
 		if !IsCGIIOPath(p) {
 			t.Errorf("%s 应判为 cgi-io 端点", p)
 		}
@@ -91,6 +91,18 @@ func TestCGIIOSessionRequired(t *testing.T) {
 	rec := cgiIORequest(t, "POST", "/cgi-download", "sessionid=&path=/etc/hosts")
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("空会话 download = %d，期望 403", rec.Code)
+	}
+}
+
+// cgi-backup：非 POST→405；空会话→403（会话必需，先于跑 sysupgrade，无需真授权）。
+func TestCGIIBackupStatusMapping(t *testing.T) {
+	withPrefix(t, "/admin", "admin")
+
+	if rec := cgiIORequest(t, "GET", "/cgi-backup", ""); rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /cgi-backup = %d，期望 405", rec.Code)
+	}
+	if rec := cgiIORequest(t, "POST", "/cgi-backup", "sessionid="); rec.Code != http.StatusForbidden {
+		t.Errorf("空会话 POST /cgi-backup = %d，期望 403", rec.Code)
 	}
 }
 

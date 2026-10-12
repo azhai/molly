@@ -801,6 +801,22 @@ unit/test 全绿、`build.sh --target` 511,880 B 能交叉编译。
 - **门禁（全绿）**：gofmt/vet 干净；新增 backend `cgi_io_test.go`（tokenize、需会话、ACL 兜底/NotFound/空命令 2、授权流式跑通、命令行 ACL 精确匹配、download read、upload write）+ handlers `cgi_io_test.go`（bare/default 两种 base 的路由判定、405/403/404/400 映射、upload JSON 契约）；`go test ./...` 全绿；`tests/smoke.sh` 加 7 条 cgi-io 断言（$B2=prefix/admin+strip 实例，用查无此人的会话走 fail-closed 验路由不再 405 + ACL 没放开 + /cgi-exec/x 不误吞）→ **341/0**（原 334+7）。
 - **⚠ 真机部署被挡（非代码）**：交叉编译 `make target` 出 `build/molly-arm64` 成功；但**设备拒绝 root 的 SSH 口令登录**——`ssh -v`、`sshpass -e`/`-p` + `PubkeyAuthentication=no`/`PreferredAuthentications=password`、`scp -O` 一律 `Permission denied (publickey,password)`。同一口令 `yu678910` 走 **HTTP `/auth/login` 却成功**（302+sysauth_molly cookie）→ 是设备侧 dropbear 关了 root 口令登录（或 SSH 口令与控制台/HTTP 不同），不是 molly 代码问题。当前设备仍是**旧二进制**：`POST /cgi-exec` 实测仍 **405**。b5（真机验证 package-manager 出列表 / ACL 兜底 / 回归 device-luci47·simple39）**待 SSH 恢复**。molly 禁改 /etc/config，无法自行放开 dropbear。已就此询问用户。后续复核：`ssh -o BatchMode=yes`（纯 key）同样 `Permission denied (publickey,password)`——本机 `id_rsa` 也不在设备授权里，SSH 口令+key 双双被拒确认。也无 HTTP 路径能替换**运行中**的二进制（旧实例 `file.write` ACL 不覆盖 /usr/sbin；对运行中程序 O_TRUNC 触发 ETXTBSY）。故交付 `tests/deploy_cgi_io.sh`：一条命令做 scp→停→覆盖 /usr/sbin/molly→起→**只用 HTTP 自验**（POST /cgi-exec 断言不再 405 + 越权命令应 403）。已用当前旧设备跑其验证段，正确报 405（canary 有效，登录 sid 长度 32 正常）。用户跑该脚本即完成 b5。
 
+## 会话：部署到全新设备 10.5.2.1 + 修 /admin 页 403（cookie 改名）
+
+- **换机**：192.168.1.1 SSH 被拒且一度进入 `no_cmd_match` 异常态（:8080 已非 molly），本会话转用干净可达的 **10.5.2.1**（aarch64 mt7986a / ImmortalWrt 25.12.2 / **APK 系**，`root/yu678910` SSH 可进；`--docroot /www --luci-prefix /admin --luci-strip admin --luci-cgi /www/cgi-bin/luci`，procd `/etc/init.d/molly`，pid 8836 监听 :::8080）。
+- **cgi-io 真机全绿**：`POST /cgi-exec package-manager-call list-installed`→**200 / 720028B**（原 405 彻底消失）；`list-available`→200/11.6MiB；越权 `/bin/rm`→**403**；bogus 会话+有效命令→403；bogus 命令/不存在二进制→**404**（exec 白名单先于会话判、fail-closed）；`GET /cgi-exec`→405。download/upload 忠实镜像 rpcd file.read/write ACL。
+- **发现真 bug（桥接页 403）**：`/admin/*` 页带合法会话仍 **403**（正文却是完整页面）。根因＝**cookie 名不匹配**：molly 只下发 `sysauth_molly`，`buildCGIEnv` 把请求 Cookie 原样转发；设备上**未打补丁的 stock ucode dispatcher 只认 `sysauth_http`/`sysauth_https`**（`dispatcher.uc` 按 HTTPS 二选一）→ 子进程判未登录 → 每页 403。`session.access(scope=luci)` 显示会话有完整 grants，不是缺 ACL。
+- **修复**（`internal/handlers/cgi.go` `buildCGIEnv`）：解析 `luciSIDFromCookie(r)` 得 SID 后，把 `sysauth_http=<sid>; sysauth_https=<sid>` 追加进 `HTTP_COOKIE`；通用头循环 `skip` 原 `Cookie`、末尾统一只发**一份**改名后的 `HTTP_COOKIE`（不双写 cookie）。SID 本就是 rpcd 发的，子进程拿它 access 即共享同一条会话。
+- **门禁全绿**：新增 `cgi_test.go` 两测（`TestBuildCGIEnvRenamesSessionCookie` 断言三种名齐全且 HTTP_COOKIE 恰一份、`TestBuildCGIEnvAnonymousNoCookie` 断言匿名不伪造）；`make lint`+`make test` 绿、`make smoke` **341/0**。
+- **验证**：重编译→停服→scp 覆盖→起（pid 8836）。HTTP 侧 `sysauth_molly`（真实浏览器路径）下 `/admin/system/package-manager`、`/admin/status/overview` 由 403→**200**。`make device-luci HOST=10.5.2.1 ... /admin` **47/0**（含多页「不再要求登录」，正是本修复的体现）。`make device-simple` **37/2**——两条 FAIL 是 `file.exec /bin/df`、`file.read /etc/config/network` 返 rpcd `err=6`：实测设备所有 rpcd acl.d 里**无 df、无 /etc/config read** 授权，桥接态 molly 原样代理 rpcd 判决，**非 molly bug、与 cookie 无关**（是这台 mocca.vod 固件 ACL 比基准机更严）。**浏览器实机确认**：登录 root 后进 package-manager，Console 0 报错、无 405，`/cgi-exec` 全 200，列表渲染出「可用 8090 / 已安装 237」条目。
+
+## 会话：10.5.2.1 /lite/#/disk 读容量 Permission denied → 补装部署 ACL
+
+- **现象/根因**：/lite 存储页 `file.exec /bin/df` 报 Permission denied（device-simple 里 `disk file.exec /bin/df`、`bk file.read /etc/config/network` 两条 FAIL，err=6）。**非 molly bug**：这台固件 rpcd acl.d 里本无 df/`/etc/config` read 授权；且**全新部署只 scp 了二进制+init.d，漏了站点 ACL 那一步**（docs/interfaces.md:107 明确要 `tools/molly-acl.json → /usr/share/rpcd/acl.d/molly.json`，里面已含 `/bin/df:[exec]`、`/etc/config/*:[read]`）。
+- **修**：`scp tools/molly-acl.json → 设备:/usr/share/rpcd/acl.d/molly.json`（644）→ `/etc/init.d/rpcd reload`（SIGHUP 即重扫 acl.d，rpcd 不重启、会话不断）。桥接态 molly 的 file.exec ACL 经 `session.access` 拿 rpcd grants，故 rpcd 认了新 acl 后 molly 立刻放行。
+- **⚠ 关键操作坑**：rpcd 在 **session.login 时**就把 grants 固化进会话，reload 只影响**新登录**。旧浏览器会话（reload 前建的）仍无 df 授权 → 用户浏览器里仍会 Permission denied，**必须登出再登入**（或换新 sid）才生效。用 curl 每次 `/auth/login` 新建会话所以一路都 200。
+- **验**：新 sid 下 `file.exec {command:/bin/df,params:[-k]}`→`result[0,{code:0,stdout:Filesystem…}]`；`file.read /etc/config/network`→200。`make device-simple HOST=10.5.2.1` 由 37/2 → **39/0**。（另注：file.exec 的 RPC 签名是 `command`+`params[]`，不是 `path`/`args`；用错字段会得 code2 InvalidArgument，是探针写错非服务问题。）
+
 ## 风险与不确定性
 
 - **cgo + zig cc 交叉编译**：**已排除**（M5 侦察实测通过，配方与两个坑见上）。

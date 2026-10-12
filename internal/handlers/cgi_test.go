@@ -119,6 +119,39 @@ func TestBuildCGIEnv(t *testing.T) {
 	}
 }
 
+// molly 只下发 sysauth_molly，而设备上的原生 ucode dispatcher 只认 sysauth_http/sysauth_https；
+// 把会话转交给子进程时必须补上那两个名字，否则每个 /admin 页都会 403。
+func TestBuildCGIEnvRenamesSessionCookie(t *testing.T) {
+	sid := "0123456789abcdef0123456789abcdef"
+	r := httptest.NewRequest("GET", "/admin/system/package-manager", nil)
+	r.Header.Set("Cookie", "sysauth_molly="+sid)
+	env := buildCGIEnv(r, "/admin/system/package-manager", "127.0.0.1", "/www", "", nil)
+	got := envValue(env, "HTTP_COOKIE")
+	for _, want := range []string{"sysauth_molly=" + sid, "sysauth_http=" + sid, "sysauth_https=" + sid} {
+		if !strings.Contains(got, want) {
+			t.Errorf("HTTP_COOKIE 缺 %q；实际 %q", want, got)
+		}
+	}
+	n := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "HTTP_COOKIE=") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("HTTP_COOKIE 出现 %d 次，期望 1", n)
+	}
+}
+
+// 无会话（匿名）时不该伪造任何会话 cookie。
+func TestBuildCGIEnvAnonymousNoCookie(t *testing.T) {
+	r := httptest.NewRequest("GET", "/admin/status/overview", nil)
+	env := buildCGIEnv(r, "/admin/status/overview", "127.0.0.1", "/www", "", nil)
+	if got := envValue(env, "HTTP_COOKIE"); got != "\x00不存在" {
+		t.Errorf("匿名请求不该有 HTTP_COOKIE，实际 %q", got)
+	}
+}
+
 func TestBuildCGIEnvBarePrefix(t *testing.T) {
 	r := httptest.NewRequest("GET", "/cgi-bin/luci", nil)
 	env := buildCGIEnv(r, "", "127.0.0.1", "/www", "", nil) // 根：树路径为空串
