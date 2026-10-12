@@ -1,8 +1,8 @@
 package handlers
 
-// cgi-io —— fs.exec_direct / fs.read_direct / ui.uploadFile 三件套的 HTTP 端点。
+// cgi-io —— fs.exec_direct / fs.read_direct / ui.uploadFile 三件套，外加专家版备份 cgi-backup。
 //
-// 前端把这三件套挂在 `<cgi_base>/cgi-exec`、`cgi-download`、`cgi-upload` 上（cgi_base 由
+// 前端把这些挂在 `<cgi_base>/cgi-exec`、`cgi-download`、`cgi-upload`、`cgi-backup` 上（cgi_base 由
 // luci.js 从 scriptname 去掉最后一段推得），上游由 /usr/libexec/cgi-io 这个 CGI 二进制提供。
 // molly 在 Go 侧原生实现同一个 HTTP 契约（替换 uhttpd 的应有之义），执行/鉴权落在
 // backend/cgi_io.go：exec 走与 ubus file.exec 同源的 file.exec 白名单，download 走 file.read
@@ -24,7 +24,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/azhai/molly/internal/backend"
 )
@@ -39,6 +41,7 @@ const (
 	cgiIOExec cgiIOEndpoint = iota
 	cgiIODownload
 	cgiIOUpload
+	cgiIOBackup
 )
 
 // cgiBasePrefix 复现前端 luci.js 的 `cgi_base = scriptname.replace(/\/[^/]+$/,”)`：把
@@ -66,6 +69,7 @@ func cgiIOEndpointOf(path string) (cgiIOEndpoint, bool) {
 		{"/cgi-exec", cgiIOExec},
 		{"/cgi-download", cgiIODownload},
 		{"/cgi-upload", cgiIOUpload},
+		{"/cgi-backup", cgiIOBackup},
 	} {
 		if path == base+e.name {
 			return e.ep, true
@@ -99,6 +103,8 @@ func ServeCGIIO(w http.ResponseWriter, r *http.Request, path string) {
 		serveCGIDownload(w, r)
 	case cgiIOUpload:
 		serveCGIUpload(w, r)
+	case cgiIOBackup:
+		serveCGIBackup(w, r)
 	}
 }
 
@@ -179,11 +185,64 @@ func serveCGIUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// serveCGIBackup：urlencoded，字段 sessionid。跑固定的 `/sbin/sysupgrade -b -`，把归档
+// 以附件流式下载（Content-Disposition）。与上游 cgi-backup 一致：会话必须是已登录的，
+// 具体能不能跑由 file.exec 白名单兜底（fail-closed）。
+//
+// 响应头必须等 backend 确认 ACL 通过、即将产出第一个字节时才发出（未发头前可把失败映射成
+// 4xx）；sysupgrade 在 ACL 通过前不向 out 写，故 headerSent 为假即代表尚未提交状态码。
+func serveCGIBackup(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeCGIIOError(w, r, backend.StatusInvalidArgument)
+		return
+	}
+	sid := r.FormValue("sessionid")
+
+	sw := &streamWriter{
+		w:      w,
+		header: cgiBackupDownloadHeader(),
+	}
+	if st := backend.CGIBackup(sid, sw); st != backend.StatusOK {
+		if !sw.headerSent {
+			writeCGIIOError(w, r, st)
+		}
+		return
+	}
+	// 归档零字节（不应发生）仍补一个规整的 200 下载头。
+	sw.finish()
+}
+
+// cgiBackupDownloadHeader 构造下载归档所需的额外响应头（八位字节流 + 带文件名的附件）。
+// 文件名形如 backup-<hostname>-<yyyymmdd-hhmm>.tar.gz，与上游习惯一致。
+func cgiBackupDownloadHeader() http.Header {
+	h := http.Header{}
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "backup"
+	}
+	host = sanitizeFilenameToken(host)
+	name := "backup-" + host + "-" + time.Now().Format("20060102-1504") + ".tar.gz"
+	h.Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	return h
+}
+
+// sanitizeFilenameToken 把主机名里不适合出现在文件名/头部的字符换成下划线。
+func sanitizeFilenameToken(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == '_') {
+			b[i] = '_'
+		}
+	}
+	return string(b)
+}
+
 // streamWriter 把 backend 的流式输出直接接到 http.ResponseWriter：首次 Write 前补发
-// 200 + 八位字节流响应头（此后无法再改状态码）。headerSent 让 handler 判断「还没发出响应头」
-// 时才好把 ACL/校验失败映射成错误状态。
+// 200 响应头（此后无法再改状态码）。headerSent 让 handler 判断「还没发出响应头」
+// 时才好把 ACL/校验失败映射成错误状态。header 非 nil 时并入（如 cgi-backup 的下载头）。
 type streamWriter struct {
 	w          http.ResponseWriter
+	header     http.Header // 额外响应头（可空）；Content-Type 固定为八位字节流
 	headerSent bool
 }
 
@@ -197,6 +256,11 @@ func (s *streamWriter) Write(p []byte) (int, error) {
 func (s *streamWriter) sendHeader() {
 	h := s.w.Header()
 	h["Date"] = nil // 与本项目其余响应一致：抑制 net/http 自动补的 Date
+	for k, vs := range s.header {
+		for _, v := range vs {
+			h.Add(k, v)
+		}
+	}
 	h.Set("Content-Type", cgiIOStreamContentType)
 	s.w.WriteHeader(http.StatusOK)
 	s.headerSent = true

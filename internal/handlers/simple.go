@@ -56,7 +56,7 @@ func ServeSimple(w http.ResponseWriter, r *http.Request, path string, deps backe
 	Respond(w, r, http.StatusOK, buildSimplePage(luciSIDFromCookie(r)), "text/html; charset=utf-8")
 }
 
-// buildSimplePage 注入配置（会话 id、菜单、专家版前缀）。
+// buildSimplePage 注入配置（会话 id、菜单、专家版前缀）与 vendored 的 Mithril。
 //
 // sid 先经过 sanitizeSID（白名单收窄到 32 位 hex）：它来自客户端 Cookie，而要拼进页面的
 // JS 字符串——白名单比在 HTML/JS 两种上下文里各转义一遍可靠。
@@ -64,14 +64,17 @@ func ServeSimple(w http.ResponseWriter, r *http.Request, path string, deps backe
 // expert 就是 LuciPrefix 这一个值：路由判据、CGI 的 SCRIPT_NAME、页面里的「前往专家版」
 // 链接三者同源，分头写就会不一致（见 response.go 的 LuciPrefix 注释）。
 //
-// 用 strings.ReplaceAll 而不是 fmt：页面里有大量 %（CSS 百分比、JS 取模），走格式化容易踩。
+// 两个占位符各替一次：`__CFG__` 是配置 JSON，`__MITHRIL__` 是 mithril.js 正文（注入到页面
+// **单个** <script> 块里，mithril 与应用同段，保「单文件 / 离线」）。用 strings.ReplaceAll
+// 而不是 fmt：页面里有大量 %（CSS 百分比、JS 取模），走格式化容易踩。
 func buildSimplePage(sid string) string {
 	cfg := simple.ConfigJSON(simple.Config{
 		SID:    sanitizeSID(sid),
 		Menu:   simple.Menu,
 		Expert: LuciPrefix,
 	})
-	return strings.ReplaceAll(simple.HTML, "__CFG__", cfg)
+	html := strings.ReplaceAll(simple.HTML, "__CFG__", cfg)
+	return strings.ReplaceAll(html, "__MITHRIL__", simple.Mithril)
 }
 
 // simpleRedirect 发一个 302。与 Respond 一样不发 Date（net/http 默认会补，用置 nil 抑制），

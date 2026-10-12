@@ -65,6 +65,20 @@ func buildCGIEnv(r *http.Request, treePath, peerHost, docroot, ubusSocket string
 		env = append(env, "CONTENT_TYPE="+ct)
 	}
 
+	// 会话 cookie 改名：molly 自己下发的是 sysauth_molly，但设备上的**原生** ucode
+	// dispatcher 只认 sysauth_http / sysauth_https（见 luciSIDFromCookie 注释、dispatcher.uc
+	// 按 HTTPS 二选一）。把请求 Cookie 原样转给子进程时，子进程看不到自己认识的 cookie 名 →
+	// 判未登录 → 每个 /admin 页都 403（打过补丁的 /www-molly dispatcher 才认 sysauth_molly）。
+	// 故把 molly 已解析出的会话 id 额外以子进程认识的名字补进 HTTP_COOKIE，让「molly 登录」
+	// 与「设备 ucode 渲染」共用同一条 rpcd 会话；SID 本就是 rpcd 发的，子进程拿它去 access 即可。
+	cookie := r.Header.Get("Cookie")
+	if sid := luciSIDFromCookie(r); sid != "" {
+		if cookie != "" {
+			cookie += "; "
+		}
+		cookie += "sysauth_http=" + sid + "; sysauth_https=" + sid
+	}
+
 	// 头名排序：Go 的 r.Header 是 map，遍历顺序随机；Odin 版吃的是请求里的原始顺序。
 	names := make([]string, 0, len(r.Header))
 	for name := range r.Header {
@@ -75,6 +89,9 @@ func buildCGIEnv(r *http.Request, treePath, peerHost, docroot, ubusSocket string
 		if isCGISpecialHeader(name) {
 			continue
 		}
+		if strings.EqualFold(name, "Cookie") {
+			continue // 用下面改名后的 HTTP_COOKIE 覆盖，避免同名 cookie 双份
+		}
 		envName := "HTTP_" + headerEnvName(name)
 		for _, v := range r.Header.Values(name) {
 			env = append(env, envName+"="+v)
@@ -83,6 +100,9 @@ func buildCGIEnv(r *http.Request, treePath, peerHost, docroot, ubusSocket string
 	// Host 不在 r.Header 里（Go 把它单独放在 r.Host，且不含端口以外的处理），单独补。
 	if r.Host != "" {
 		env = append(env, "HTTP_HOST="+r.Host)
+	}
+	if cookie != "" {
+		env = append(env, "HTTP_COOKIE="+cookie)
 	}
 
 	// 私有总线模式（--ubus-socket）下，CGI 子进程（ucode LuCI）必须连到 molly 那条

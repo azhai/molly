@@ -202,8 +202,9 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// cgi-io 三件套（fs.exec_direct / read_direct / ui.uploadFile）：挂在 cgi_base 上
-	// （本部署 cgi_base="" → 裸 /cgi-exec、/cgi-download、/cgi-upload；上游默认在 /cgi-bin/cgi-*）。
+	// cgi-io 端点（fs.exec_direct / read_direct / ui.uploadFile，以及专家版备份 cgi-backup）：
+	// 挂在 cgi_base 上（本部署 cgi_base="" → 裸 /cgi-exec、/cgi-download、/cgi-upload、/cgi-backup；
+	// 上游默认在 /cgi-bin/cgi-*）。
 	// 必须排在 ServeStatic 之前：默认部署下它们落在 /cgi-bin/ 里，而 ServeStatic 对 /cgi-bin/*
 	// 一律 403（把 CGI 当脚本、不外发正文）；本部署下裸 /cgi-exec 若不管也会被 ServeStatic 判 405。
 	if handlers.IsCGIIOPath(path) {

@@ -1016,7 +1016,7 @@ EXP=$(curl -s "$B2/lite/")
 check "占位符已替换（简洁版）" "0" "$(printf '%s' "$EXP" | grep -c '__CFG__')"
 # 「前往专家版」：前缀只能来自注入项 CFG.expert（同源到 --luci-prefix），HTML 里不硬编码。
 check "简洁版注入专家版前缀" "1" "$(printf '%s' "$EXP" | grep -c '"expert":"/admin"')"
-check "简洁版有「前往专家版」锚点" "1" "$(printf '%s' "$EXP" | grep -c 'id="expert"')"
+check "简洁版有「前往专家版」锚点" "1" "$(printf '%s' "$EXP" | grep -c 'item#expert')"
 check "简洁版 HTML 里没硬编码 /admin" "0" "$(printf '%s' "$EXP" | grep -c 'href="/admin' || true)"
 check "菜单 10 项全部就绪" "0" "$(printf '%s' "$EXP" | grep -c '"ready":false')"
 check "十个页面都注册了" "10" "$(printf '%s' "$EXP" | grep -c 'PAGES\.[a-z]*=')"
@@ -1031,15 +1031,28 @@ check "简洁版没有重启入口" "0" "$(printf '%s' "$EXP" | grep -ci '重启
 # 页面里每个 $("id") 引用的元素都必须真的存在于同一段 HTML 里。少一个的后果很隐蔽：
 # mount 里抛TypeError → 整条数据链静默断掉（catch 只弹提示），页面看着正常却没有数据。
 # 这类错 curl 完全看不出来，所以在这里静态查一遍。
-check "简洁版：JS 引用的元素 id 都存在" "" \
+# Mithril 版：页面是 PAGES.<id> 的组件工厂（function(){...view...}），运行时由 Layout 用 m(PAGES[id]) 挂载。
+# 没有 DOM 字符串拼接，也就没有旧版「$() 引用的 id 是否都存在」那类静默断链风险；这里改为静态查
+# 每个页面工厂都实现了 view()（防止写成空壳工厂，点进去会落进「建设中」）。
+check "简洁版：十个页面都实现了视图组件" "" \
   "$(printf '%s' "$EXP" | python3 -c '
 import re,sys
 s=sys.stdin.read()
-a=s.index("PAGES.dash={mount:function(el){"); b=s.index("/* ---- ", a+10)
-d=s[a:b]
-ids=set(re.findall(r"id=\"([^\"]+)\"", d))
-miss=sorted(set(r for r in re.findall(r"\$\(\"([^\"]+)\"\)", d) if r not in ids))
-print(",".join(miss))' 2>/dev/null)"
+ids=["dash","net","wifi","dhcp","sys","log","svc","disk","diag","bk"]
+def body(pid):
+    m=re.search(r"PAGES\."+pid+r"=function\(\)\{",s)
+    if not m: return ""
+    i=m.end()-1; d=0; j=i
+    while j<len(s):
+        c=s[j]
+        if c=="{": d+=1
+        elif c=="}":
+            d-=1
+            if d==0: return s[i:j+1]
+        j+=1
+    return ""
+bad=[p for p in ids if "view:function" not in body(p)]
+print(",".join(bad))' 2>/dev/null)"
 
 # 页面里那段 JS 必须**语法正确**：单页应用把十个页面塞进一个 <script>，一处括号/引号错
 # 整段就不执行——表现是 h1 停在「…」、登录遮罩也不弹（没有任何报错可看）。

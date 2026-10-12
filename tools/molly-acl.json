@@ -36,6 +36,9 @@
 				],
 				"/usr/bin/wget": [
 					"exec"
+				],
+				"/sbin/sysupgrade -b -": [
+					"exec"
 				]
 			},
 			"ubus": {

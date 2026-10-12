@@ -36,6 +36,17 @@ func TestBuildSimplePage(t *testing.T) {
 	if strings.Contains(page, "__CFG__") {
 		t.Fatal("占位符没有被替换干净")
 	}
+	// Mithril 必须已注入（单文件 embed）：不能有残留占位符，且要能认出官方库的特征符号
+	if strings.Contains(page, "__MITHRIL__") {
+		t.Fatal("__MITHRIL__ 占位符没有被替换")
+	}
+	// vendored 的是 Mithril 官方构建（当前为压缩单行版，导出写作 window.m=E，非压缩版是 window.m = m，
+	// 两者都含 window.m 子串）；应用代码里也引用了 window.m，故用它做「已导出」判据，
+	// 再以官方库独有的公开 API 名 parseQueryString 证明「这一份 mithril 确实被注入了」
+	// （该属性名不受压缩影响，压缩/未压缩构建都存在）。
+	if !strings.Contains(page, "m.route") || !strings.Contains(page, "window.m") || !strings.Contains(page, "parseQueryString") {
+		t.Error("页面里没注入到 Mithril（缺 m.route / window.m / parseQueryString 特征）")
+	}
 	// 注入的是**一份**配置：sid + 菜单 + 专家版前缀
 	for _, want := range []string{
 		`"sid":"0123456789abcdef0123456789abcdef"`,

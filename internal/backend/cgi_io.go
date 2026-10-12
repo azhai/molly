@@ -124,6 +124,50 @@ func CGIExec(sid, commandLine string, wantStderr bool, out io.Writer) int {
 	return StatusOK
 }
 
+// cgiBackupExe / cgiBackupArgs 是 cgi-backup 唯一会跑的命令：`/sbin/sysupgrade -b -`。
+// 无用户输入、只读（把 /etc 配置打包成 tar.gz 写 stdout，不改系统任何状态）。上游 LuCI 的
+// cgi-backup 是独立 CGI、不经 file.exec；molly 把它收进 cgi-io 同一道白名单模型——这条命令
+// 必须显式出现在会话的 file.exec 白名单里（tools/molly-acl.json 的 molly-expert-ui 组授予），
+// 于是鉴权与 cgi-exec 完全同源，不新开泛化执行面。
+var (
+	cgiBackupExe  = "/sbin/sysupgrade"
+	cgiBackupArgs = []string{"-b", "-"}
+)
+
+// CGIBackup 跑固定的 `/sbin/sysupgrade -b -`，把生成的归档（tar.gz）流式写入 out。
+// 与 CGIExec 同一道闸：先 cgiioRequireSession，再 file.exec ACL（可执行路径或整条命令行被
+// 白名单放行）——命令不在白名单里一律 StatusPermissionDenied。ACL 通过前不向 out 写任何字节，
+// 好让 handler 在未发出响应头时把失败映射成 HTTP 错误码。
+func CGIBackup(sid string, out io.Writer) int {
+	if !cgiioRequireSession(sid) {
+		return StatusPermissionDenied
+	}
+
+	exe, st := fileExecLookup(cgiBackupExe)
+	if st != StatusOK {
+		return st // 找不到 sysupgrade → StatusNotFound
+	}
+	exeCanon, ok := fileCanonicalizePath(exe)
+	if !ok {
+		return StatusUnknownError
+	}
+	full := append([]string{exeCanon}, cgiBackupArgs...)
+
+	if st := fileExecCheckACL(sid, exeCanon, full); st != StatusOK {
+		return st // 白名单没放行 → StatusPermissionDenied
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), fileExecTimeout)
+	defer cancel()
+
+	c := exec.CommandContext(ctx, full[0], full[1:]...)
+	c.Stdout = out
+	if err := c.Run(); err != nil && ctx.Err() == context.DeadlineExceeded {
+		return StatusTimeout
+	}
+	return StatusOK
+}
+
 // CGIDownload 把 path 指向的文件内容流式写入 out。权限名 "read"（与 file.read 同），含符号链接复查。
 func CGIDownload(sid, path string, out io.Writer) int {
 	if !cgiioRequireSession(sid) {
