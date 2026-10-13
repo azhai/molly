@@ -1,5 +1,5 @@
 #!/bin/sh
-# CGI 桩程序：把 molly 构造的 CGI 环境与请求体原样吐回来，供 tests/cgi_smoke.sh 断言。
+# CGI 桩程序：把 molly 构造的 CGI 环境与请求体原样吐回来，供 tests/smoke.sh 的 CGI 分节断言。
 # 它替代设备上的 ucode dispatcher（macOS 上没有 ucode），验证的是**桥接**本身：
 # 环境变量名/取值、方法、PATH_INFO/QUERY_STRING 切分、请求体透传、响应头解析。
 printf 'Content-Type: text/plain\r\n'

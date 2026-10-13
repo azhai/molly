@@ -16,10 +16,10 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 | `--listen` | `0.0.0.0:8080` | **只接受数字地址**（`0.0.0.0:8080`、`[::]:8080`）；不做 DNS 解析，主机名直接报错退出 |
 | `--docroot` | `/www` | 静态文件根目录；启动时去掉尾部 `/` |
 | `--menu-dir` | `/usr/share/luci/menu.d` | LuCI 菜单目录（`*.json`）；同样去尾部 `/` |
-| `--luci-prefix` | `/cgi-bin/luci` | **专家版（用 Go 重写的 LuCI）的 URL 前缀**。本站部署**只留 `/admin`**（§3.1）。这一个值同时决定路由判据、CGI 的 `SCRIPT_NAME`、以及 `PATH_INFO` 的切分点——dispatcher 的 `build_url` 就是拿 `SCRIPT_NAME` 拼页面 URL 的，必须同源。形态要求：`/` 开头、不以 `/` 结尾、不含空白与 `?`/`#`，否则启动即报错退出 |
-| `--luci-cgi` | 空 | **对照/排查**用的那条路：把**专家版前缀**交给子进程执行（设备上填 `/www/cgi-bin/luci`，复刻 uhttpd 的 CGI 形态，ADR 0003 的 T1；**不是** `/usr/bin/ucode …/uhttpd.uc`，见 §5.5）。留空 = 用内置 Go dispatcher（§5），也就是本仓部署的默认形态 |
+| `--luci-prefix` | `/cgi-bin/luci` | **专家版（用 Odin 重写的 LuCI）的 URL 前缀**。本站部署**只留 `/admin`**（§3.1）。这一个值同时决定路由判据、CGI 的 `SCRIPT_NAME`、以及 `PATH_INFO` 的切分点——dispatcher 的 `build_url` 就是拿 `SCRIPT_NAME` 拼页面 URL 的，必须同源。形态要求：`/` 开头、不以 `/` 结尾、不含空白与 `?`/`#`，否则启动即报错退出 |
+| `--luci-cgi` | 空 | **对照/排查**用的那条路：把**专家版前缀**交给子进程执行（设备上填 `/www/cgi-bin/luci`，复刻 uhttpd 的 CGI 形态，ADR 0003 的 T1；**不是** `/usr/bin/ucode …/uhttpd.uc`，见 §5.5）。留空 = 用内置 Odin dispatcher（§5），也就是本仓部署的默认形态 |
 | `--ubus-socket` | 空 | 让 molly 把 ubus 对象注册在另一条独立总线（§7）；留空 = 系统总线，于是与 rpcd 争 `session`/`uci`/`file`/`luci-rpc` |
-| `--luci-render` | 推断 | 专家版渲染方式：`builtin`=内置 Go dispatcher（**本站的目标形态**，视图尚未全部落地）；`cgi`=设备 ucode dispatcher（对照/排查，需配 `--luci-cgi`）。**没显式给时按有无 `--luci-cgi` 自动推断**，所以旧部署行为不变 |
+| `--luci-render` | 推断 | 专家版渲染方式：`builtin`=内置 Odin dispatcher（**本站的目标形态**，视图尚未全部落地）；`cgi`=设备 ucode dispatcher（对照/排查，需配 `--luci-cgi`）。**没显式给时按有无 `--luci-cgi` 自动推断**，所以旧部署行为不变 |
 | `--luci-strip` | 空 | 从专家版 URL 里省掉的那段菜单路径（本站 `admin`）。URL 侧少它，进菜单树时补回——否则 ucode dispatcher 会从树根找 `status`（它挂在 `admin` 下）导致每页 404。写法容错：`admin` 与 `/admin` 等价 |
 | `--luci-prefix` 的树路径换算 | — | URL `/admin/status/overview` → 树路径 `/admin/status/overview`（`--luci-strip admin` 把省掉的那段补回）；`/admin` → `/`（走 root firstchild） |
 | `-h` / `--help` | — | 打印用法并正常退出 |
@@ -86,8 +86,8 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 
 | 界面 | 路径 | 内容 |
 |---|---|---|
-| **专家版** | `--luci-prefix`（本站 `/admin`） | **用 Go 重写的 LuCI**：菜单树、ACL 裁树、路径语义逐条对齐上游 `dispatcher.uc`，界面与操作与原版一致。默认由**内置 Go dispatcher**（`internal/luci`）渲染；`--luci-cgi` 把整段前缀交给设备 ucode（§5.5），那是**对照与排查**用的，不是部署形态。**现状差距**：视图层还没落地——cbi/view/template 类节点回 501 并带 `action.type/view/menu`，见 §5.3 |
-| **简洁版** | `/lite`（`/` 是 302 入口） | 我们自己实现的 Go+HTML **单页应用**，十个页面（仪表盘 / 内外网 / 无线 / DHCP / 系统 / 日志 / 服务 / 存储 / 诊断 / 备份），数据面只有 `/ubus`。菜单是 `webassets/simple.Menu`（Go 侧数据，**不读 menu.d**），页面是 `webassets/simple/index.html`（`go:embed` 的单文件）。仪表盘是首屏（`#/dash`），其余走 `#/片段`。**注意：仪表盘不含「重启」**——该功能只在「系统」页 |
+| **专家版** | `--luci-prefix`（本站 `/admin`） | **用 Odin 重写的 LuCI**：菜单树、ACL 裁树、路径语义逐条对齐上游 `dispatcher.uc`，界面与操作与原版一致。默认由**内置 Odin dispatcher**（`src/luci/`）渲染；`--luci-cgi` 把整段前缀交给设备 ucode（§5.5），那是**对照与排查**用的，不是部署形态。**现状差距**：视图层还没落地——cbi/view/template 类节点回 501 并带 `action.type/view/menu`，见 §5.3 |
+| **简洁版** | `/lite`（`/` 是 302 入口） | 我们自己实现的 HTML+JS **单页应用**（由 Odin 内嵌字节数组发出），十个页面（仪表盘 / 内外网 / 无线 / DHCP / 系统 / 日志 / 服务 / 存储 / 诊断 / 备份），数据面只有 `/ubus`。菜单在 `src/assets/menu.odin`（Odin 侧数据，**不读 menu.d**），页面由 `tools/embed-simple.py` 从 `webassets/simple/index.html` 生成 `src/assets/embedded.odin`（Odin 无 `#embed`，用 `[N]u8` 字节数组内嵌；同一脚本也带 vendored Mithril）。仪表盘是首屏（`#/dash`），其余走 `#/片段`。**注意：仪表盘不含「重启」**——该功能只在「系统」页 |
 
 十个页面与各自的数据面：
 
@@ -112,9 +112,9 @@ molly [--listen HOST:PORT] [--docroot PATH] [--menu-dir PATH]
 > `file` 对象会回 `Operation not supported`。`log.read` 是 rpcd 自己的方法，也正是
 > LuCI 日志页走的那条路。
 
-- 简洁版页面是**编译进二进制的单文件**（`webassets/simple/index.html`，`go:embed`；内联 CSS/JS），
+- 简洁版页面是**编译进二进制的单文件**（源在 `webassets/simple/index.html`，由 `tools/embed-simple.py` 生成 `src/assets/embedded.odin` 的字节数组内嵌；内联 CSS/JS），
   不依赖 docroot 上的文件、也不碰 ucode。服务端只在响应时替换**一个**占位符 `__CFG__`，
-  它是一份 JSON：`{sid, menu, expert}`——会话 id、菜单（`webassets/simple.Menu`）、专家版前缀
+  它是一份 JSON：`{sid, menu, expert}`——会话 id、菜单（`src/assets/menu.odin`）、专家版前缀
   （`--luci-prefix`，页面据此生成「前往专家版」的链接，所以 HTML 里没有硬编码的路径）。
 - 会话 id 取自 Cookie，会被拼进页面的 JS 字符串，所以按**白名单**收窄到「只可能是 32 位 hex」，
   非法输入直接丢弃（不做转义——两种上下文各转义一遍容易漏）。
@@ -361,9 +361,9 @@ Syntax error: Unexpected token  Expecting '}'  （`};`）
 - 请求体由一个短命线程写进子进程 stdin（避免「子进程先回响应、父进程写 body 卡死管道」）；
   `HEAD` 有头无体；keep-alive 语义与其它路径一致。
 
-**验收**：`./tests/cgi_smoke.sh`（31 项，用桩脚本覆盖环境、body 透传、64KB、状态与头透传、
+**验收**：`tests/smoke.sh` 的 CGI 分节（用桩脚本覆盖环境、body 透传、64KB、状态与头透传、
 缺 `Content-Type` → 500、脚本无输出 → 500 且正文带退出码、HEAD、keep-alive）。
-设备上的等价验收：把 `--luci-cgi` 换成真实的 `/www/cgi-bin/luci`，与原厂 uhttpd 做 golden 对比。
+设备上的等价验收：把 `--luci-cgi` 换成真实的 `/www/cgi-bin/luci`，与原厂 uhttpd 做对照。
 
 ### 5.4 菜单语义
 
@@ -371,7 +371,7 @@ Syntax error: Unexpected token  Expecting '}'  （`};`）
 `dispatcher.uc`（提交 `d6167ea`），逐条对照与行号见
 [`architecture.md`](architecture.md) §7 与 `.ai-memory/r8-menu-sample.md`；
 一致性由 `.ai-memory/r8_probe.py`（`不一致条目: 0 / 11`）与
-`tests/http_smoke.sh` 的 dispatcher 分节共同钉住。
+`tests/smoke.sh` 的 dispatcher 分节共同钉住。
 
 ## 6. 内部契约：接口层 ↔ 数据层之间唯一的窄接口
 
@@ -843,7 +843,7 @@ pkttype 10 / halen 11 / addr 12-19（`linux/if_packet.h`），S2d 实现 ifaddrs
 | 任一组有 write | `true` | 正常（`readonly=no`） |
 
 - **会话来源**：LuCI 写的 cookie（`sysauth_http` / `sysauth_https`，上游 `:963-966`），由
-  `internal/handlers/luci.go` 的 `luciSIDFromCookie` 解析后交给 `luci.Dispatch`；没有 cookie
+  `src/handlers/auth.odin` 的 `sid_from_cookie` 解析后交给 `luci.Dispatch`；没有 cookie
   就是「无会话」。它另外还认 `sysauth_molly`（molly 侧专属名），简洁版用同一个函数，于是两套
   界面共用一条会话。
 - **判权口径**：路径上所有节点的组名取**并集**（上游 `ctx.acls`），其中**任一**有 write 就不算
@@ -869,7 +869,7 @@ pkttype 10 / halen 11 / addr 12-19（`linux/if_packet.h`），S2d 实现 ifaddrs
 `test_login_required_without_session` / `test_login_not_required_with_session` /
 `test_auth_login_last_node_wins`（无会话 → 登录提示；有会话 → 照 ACL 解析；`ctx.auth` 最后者胜）。
 
-`tests/http_smoke.sh` 的 dispatcher 节：带 cookie 的登录会话用 `-b "sysauth_http=$P2SID"`；
+`tests/smoke.sh` 的 dispatcher 节：带 cookie 的登录会话用 `-b "sysauth_http=$P2SID"`；
 **无 cookie（= 要登录）**验 403 + `X-LuCI-Login-Required` + 提示页正文与路径；**缺组**则用
 默认/哨兵会话（有会话但没权限，因而不触发登录分支）验 404 与 firstchild 跳过；再用撤销 write
 的只读会话验 `readonly=yes`。
@@ -898,16 +898,16 @@ pkttype 10 / halen 11 / addr 12-19（`linux/if_packet.h`），S2d 实现 ifaddrs
 
 | 契约 | 权威来源 | molly 的验证 |
 |---|---|---|
-| `/ubus` 各形态、错误码、会话来源 | 上游 uhttpd 的 `ubus.c`（25.12.2 对应提交） | `tests/http_smoke.sh` 的 `/ubus` 两节 + `-32000/-32601/-32700/-32602` 断言 |
-| dispatcher 语义（建树、`depends.fs`/`uci`、firstchild、通配、alias、**`depends.acl` 裁树与只读**、**`auth.login` → 403 + 登录提示**） | `modules/luci-base/ucode/dispatcher.uc`（luci `d6167ea`） | `tests/http_smoke.sh` 的 dispatcher 节 + `src/luci/menu_test.odin` + `.ai-memory/r8_probe.py` |
-| HTTP 层上限与 keep-alive | uhttpd 行为（部分自定，风险 R7） | `tests/http_smoke.sh` 的「上限与错误码」「keep-alive」「管道请求」节 |
-| 静态文件与 MIME | uhttpd 行为 | `tests/http_smoke.sh` 静态节 + `src/http/mime_test.odin` |
-| `luci-rpc` 对象（6 方法：board/leases/duid/network/wireless/host hints） | `luci@d6167ea` 的 `luci.c` | `src/backend/luci_object_test.odin`（4 用例组）+ `tests/http_smoke.sh` 的「P3-5 luci-rpc 对象」节（17 项）；S2b/c/d 三个设备绑定方法只能交叉编译 + 设备验证 |
-| `file` 对象（8 方法、各方法的权限名、符号链接复查、exec 的两层 ACL） | `rpcd@e37ed9d8` 的 `file.c` | `src/backend/file_object_test.odin`（2 用例组）+ `tests/http_smoke.sh` 的「P3-4 file 对象」节（26 项） |
-| `uci` 对象（S1：`configs`/`get` 的回复形状、`.index`、`match`/`type`、ACL 钩子；S2：`changes` 的三形态、`state`/`commit`/`revert` 的状态码、savedir 清理；S3：五个写操作的参数校验、写计划与错误聚合；S4：apply 系的中性路径（5/4/2 与状态码顺序）） | `rpcd@e37ed9d8` 的 `uci.c` | `src/backend/uci_object_test.odin` + `uci_write_test.odin`（11 用例组）+ `tests/http_smoke.sh` 的「P3-3 uci 对象」节（36 项） |
-| `session` 对象（10 方法、状态码、dump 形状、ACL 匹配） | `rpcd@e37ed9d8` 的 `session.c` | `src/backend/session_test.odin`（11 用例）+ `tests/http_smoke.sh` 的「P3-2 session 对象」节（13 项） |
-| 入站 ACL（acl.d 两种形态与加载、`!` 取反、`/ubus` 前置校验顺序与 `-32002`、dispatcher 的 `depends.acl` 裁树与只读、无会话 → 403 + 登录提示） | `rpcd@e37ed9d8` 的 `session.c` + 上游 uhttpd 的 `ubus.c` + `dispatcher.uc` 的 `check_acl_depends` / `resolve_firstchild` / `:930-960` | `src/backend/session_test.odin`（3 用例）+ `src/luci/menu_test.odin`（5 用例，含 3 个登录判定）+ `tests/http_smoke.sh` 的 `/ubus`、P3-2、dispatcher 三处 ACL/登录断言 |
-| 真机 golden 对比 | 原厂固件响应样本 | **待第 7 步**（替换前须先在设备上抓全量样本存档） |
+| `/ubus` 各形态、错误码、会话来源 | 上游 uhttpd 的 `ubus.c`（25.12.2 对应提交） | `tests/smoke.sh` 的 `/ubus` 两节 + `-32000/-32601/-32700/-32602` 断言 |
+| dispatcher 语义（建树、`depends.fs`/`uci`、firstchild、通配、alias、**`depends.acl` 裁树与只读**、**`auth.login` → 403 + 登录提示**） | `modules/luci-base/ucode/dispatcher.uc`（luci `d6167ea`） | `tests/smoke.sh` 的 dispatcher 节 + `src/luci/menu_test.odin` + `.ai-memory/r8_probe.py` |
+| HTTP 层上限与 keep-alive | uhttpd 行为（部分自定，风险 R7） | `tests/smoke.sh` 的「上限与错误码」「keep-alive」「管道请求」节 |
+| 静态文件与 MIME | uhttpd 行为 | `tests/smoke.sh` 静态节 + `src/http/uri_test.odin` |
+| `luci-rpc` 对象（6 方法：board/leases/duid/network/wireless/host hints） | `luci@d6167ea` 的 `luci.c` | `src/backend/luci_object_test.odin`（4 用例组）+ `tests/smoke.sh` 的「P3-5 luci-rpc 对象」节（17 项）；S2b/c/d 三个设备绑定方法只能交叉编译 + 设备验证 |
+| `file` 对象（8 方法、各方法的权限名、符号链接复查、exec 的两层 ACL） | `rpcd@e37ed9d8` 的 `file.c` | `src/backend/file_object_test.odin`（2 用例组）+ `tests/smoke.sh` 的「P3-4 file 对象」节（26 项） |
+| `uci` 对象（S1：`configs`/`get` 的回复形状、`.index`、`match`/`type`、ACL 钩子；S2：`changes` 的三形态、`state`/`commit`/`revert` 的状态码、savedir 清理；S3：五个写操作的参数校验、写计划与错误聚合；S4：apply 系的中性路径（5/4/2 与状态码顺序）） | `rpcd@e37ed9d8` 的 `uci.c` | `src/backend/uci_object_test.odin` + `uci_write_test.odin`（11 用例组）+ `tests/smoke.sh` 的「P3-3 uci 对象」节（36 项） |
+| `session` 对象（10 方法、状态码、dump 形状、ACL 匹配） | `rpcd@e37ed9d8` 的 `session.c` | `src/backend/session_test.odin`（11 用例）+ `tests/smoke.sh` 的「P3-2 session 对象」节（13 项） |
+| 入站 ACL（acl.d 两种形态与加载、`!` 取反、`/ubus` 前置校验顺序与 `-32002`、dispatcher 的 `depends.acl` 裁树与只读、无会话 → 403 + 登录提示） | `rpcd@e37ed9d8` 的 `session.c` + 上游 uhttpd 的 `ubus.c` + `dispatcher.uc` 的 `check_acl_depends` / `resolve_firstchild` / `:930-960` | `src/backend/session_test.odin`（3 用例）+ `src/luci/menu_test.odin`（5 用例，含 3 个登录判定）+ `tests/smoke.sh` 的 `/ubus`、P3-2、dispatcher 三处 ACL/登录断言 |
+| 真机对比（历史 golden，已退役） | 原厂固件响应样本 | 现役面已由 `tests/device_simple.sh` + `tests/device_luci.sh` 覆盖；替换前的全量样本存档仍待第 7 步 |
 
 其它文档：[`build-and-run.md`](build-and-run.md)（配置与部署运行）、
 [`testing.md`](testing.md)（三层测试与执行流程）、[`architecture.md`](architecture.md)（分层与依赖规则）。

@@ -1,12 +1,12 @@
 # 开发环境搭建（Homebrew → aarch64 / musl）
 
-本文记录"为什么这样搭"和"踩过哪些坑"。**权威实现是 [`toolchain/setup.sh`](../toolchain/setup.sh)**，本文只解释它的每一处取舍；两者冲突时以脚本为准。
+本文记录“为什么这样搭”和“踩过哪些坑”。仓库内目前**没有** `toolchain/setup.sh`；下面 §3 即为手工搭建的完整步骤，可按需自己串成脚本。
 
 ## 0. 适用范围
 
 主机：macOS arm64 + Homebrew。产物：ImmortalWrt 25.12.2 / `aarch64_cortex-a53` / musl 1.2.5 上能跑的动态链接 ELF。
 
-目标是**本地能编、能自测，真机只负责跑**：HTTP、路由、dispatcher 全是平台无关代码，只有 uci/ubus 在 macOS 上换成假数据（`src/backend/darwin.odin`）。所以整套路由在 Mac 上就能用 curl 验证。
+目标是**本地能编、能自测，真机只负责跑**：HTTP、路由、dispatcher 全是平台无关代码，只有 uci/ubus 在 macOS 上换成假数据（`src/backend/object_provider_darwin.odin`）。所以整套路由在 Mac 上就能用 curl 验证。
 
 ## 1. 依赖（全部由 brew 提供）
 
@@ -21,7 +21,7 @@
 brew install odin zig cmake llvm
 ```
 
-`setup.sh` 与 `build.sh` 都会做工具自检，缺哪个就报哪个；两个脚本都能用环境变量覆盖路径（见 §7）。
+`build.sh --target` 会做工具自检，缺哪个就报哪个；两条路径都能用环境变量覆盖（见 §6）。
 
 ## 2. 为什么不能直接用 25.12 SDK 里的预编译库
 
@@ -33,9 +33,9 @@ brew install odin zig cmake llvm
 
 编出来的 `.so` **只在链接期当符号来源**。运行时用的是设备上的同名库——两边 SONAME 一致才能命中，所以"必须用同一个 commit"是硬约束，不是洁癖。
 
-## 3. `setup.sh` 做了什么
+## 3. 库构建的手工步骤
 
-幂等，可反复跑；`./toolchain/setup.sh --clean` 先清掉源码与构建目录再重来。
+以下步骤幂等，可反复跑；重来时清掉 `$OPENWRT_SRC` 与 `$OPENWRT_LIB_BUILD` 即可。
 
 ### 3.1 编译四个库（顺序不能变）
 
@@ -104,7 +104,7 @@ grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' \
   /opt/homebrew/Cellar/zig/*/lib/zig/libc/musl/src/internal/version.h | tr -d '"' | head -1  # zig 侧 → 1.2.5
 ```
 
-**别被目录结构骗了**：`zig cc` 编 musl 目标时**不会**用 sysroot 里的 `libc.so`，它固定取自己缓存的那份和 `crt1.o`（`zig cc -###` 可验证）；sysroot 里那份只被 `-L` 找到但不被选中。所以"挂了 libc 软链"的价值在头文件与统一搜索根，真正的 ABI 风险是**版本是否同源**——不一致时链接可能引到设备 libc 里没有的符号，运行时才炸。`setup.sh` 会核对并在不一致时打印警告，构建期就拦住。
+**别被目录结构骗了**：`zig cc` 编 musl 目标时**不会**用 sysroot 里的 `libc.so`，它固定取自己缓存的那份和 `crt1.o`（`zig cc -###` 可验证）；sysroot 里那份只被 `-L` 找到但不被选中。所以“挂了 libc 软链”的价值在头文件与统一搜索根，真正的 ABI 风险是**版本是否同源**——不一致时链接可能引到设备 libc 里没有的符号，运行时才炸。上面两条 `strings`/`grep` 即版本一致性的自查，不一致就在构建前换 zig。
 
 设备最终跑的是它自己的 `libc.so`（`NEEDED` 只记 SONAME），因此这条核对是必须的、不是可选的。
 
@@ -123,12 +123,12 @@ grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' \
 
 | 现象 | 原因 | 处置 |
 |---|---|---|
-| `build.sh --target` 报找不到 `libuci.so` | 还没建 sysroot | 先跑 `./toolchain/setup.sh` |
-| cmake 构建共享库时段错误（退出码 139） | `CMAKE_LINK_DEPENDS_USE_LINKER` 没关 | 检查 `setup.sh` 的 `build_lib` 是否传了 `=OFF` |
+| `build.sh --target` 报找不到 `libuci.so` | 还没建 sysroot | 按§3 手工编四库并建 sysroot |
+| cmake 构建共享库时段错误（退出码 139） | `CMAKE_LINK_DEPENDS_USE_LINKER` 没关 | 检查库构建步骤里是否传了 `=OFF` |
 | json-c 头文件来自 Homebrew、链接报 Mach-O/架构错 | pkg-config 没隔离 | 确认 `PKG_CONFIG_LIBDIR` + `PKG_CONFIG_SYSROOT_DIR`，且 `PKG_CONFIG_PATH` 为空 |
 | 设备上运行报找不到 `libXXX.so.<数字>` | `ABIVERSION` 与设备上的库不一致 | 按设备 `apk info` 的包版本号核对 `PKG_ABI_VERSION` |
-| `setup.sh` 打印 musl 版本不一致警告 | zig 自带 musl ≠ SDK 的 musl | 换与 SDK 同版本的 zig，或改用 SDK 自带 gcc 链接 |
-| 改 `setup.sh` 后报 `unbound variable`（`local` 那几行） | macOS 自带 bash 3.2 会把一条 `local` 里所有右值先算完再赋值 | 每个变量单独一条 `local`（脚本里已注明） |
+| musl 版本自查显示 zig ≠ SDK | zig 自带 musl ≠ SDK 的 musl | 换与 SDK 同版本的 zig，或改用 SDK 自带 gcc 链接 |
+| 自编构建脚本报 `unbound variable`（`local` 那几行） | macOS 自带 bash 3.2 会把一条 `local` 里所有右值先算完再赋值 | 每个变量单独一条 `local` |
 
 ## 8. 下一步
 

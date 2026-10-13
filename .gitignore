@@ -7,10 +7,8 @@ bin/
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
-*.test
-
-# Output of the go coverage tool
+# Object / output files
+*.o
 *.out
 
 # Dependency directories
@@ -18,9 +16,6 @@ build/
 projs/
 repos/
 vendor/
-
-# Go workspace file
-go.work
 
 # Database
 *.db
@@ -30,7 +25,7 @@ go.work
 .air.toml
 .env
 
-# Agent working memory — never committed (AGENTS.md §1.1)
+# Agent working memory — never committed
 .ai-memory/
 
 # IDE
@@ -51,6 +46,5 @@ Thumbs.db
 *.log
 logs/
 
-# molly：从设备抄入的前端资源（tools/embed-assets.sh 生成，不进仓库）
-molly/internal/webassets/luci-static/*
-!molly/internal/webassets/luci-static/.gitkeep
+# molly：误编译到仓库根的单文件可执行（如 `odin build ... -out:m`）
+/m

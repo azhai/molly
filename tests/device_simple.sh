@@ -4,9 +4,9 @@
 # 覆盖 2026-10-09 的诉求「测一下简洁版各操作是否正常使用」：把 /lite 单页应用真正会打的
 # 请求，逐条以浏览器形态（旧式 JSON-RPC `method:"call", params:[SID,obj,m,p]`）复现并断言。
 #
-#   MOLLY_DEVICE_PASS=xxx ./molly/tests/device_simple.sh            # 默认 http://192.168.1.1:8080
-#   MOLLY_DEVICE_PASS=xxx ./molly/tests/device_simple.sh http://127.0.0.1:8080
-#   MOLLY_SIMPLE_CONC=40 MOLLY_DEVICE_PASS=xxx ./molly/tests/device_simple.sh
+#   MOLLY_DEVICE_PASS=xxx ./tests/device_simple.sh            # 默认 http://192.168.1.1:8080
+#   MOLLY_DEVICE_PASS=xxx ./tests/device_simple.sh http://127.0.0.1:8080
+#   MOLLY_SIMPLE_CONC=40 MOLLY_DEVICE_PASS=xxx ./tests/device_simple.sh
 #
 # 覆盖：
 #   A) 路由与外壳：`/` → 302 到 /lite/；/lite 前缀下任意路径都 200 出同一份 SPA（深链/刷新）；

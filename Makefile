@@ -1,65 +1,36 @@
-# molly —— 用 Go 复刻的 ImmortalWrt LuCI 服务端替换层（uhttpd + rpcd + ucode dispatcher）。
+# molly —— 用 Odin 复刻的 ImmortalWrt LuCI 服务端替换层（uhttpd + rpcd + ucode dispatcher）。
 #
-# 交叉编译目标是设备那一侧：**linux/arm64（v8a）+ musl**，用 zig cc 当 C 编译器。
-# 库（libubus / libuci / libubox / libblobmsg_json）的名字写在 internal/cbind 的
-# `#cgo linux LDFLAGS` 里，sysroot 只在源码之外给（cgo 会把 #cgo 里的 flag 判成
-# invalid flag，见 internal/cbind/cbind.go 的注释），所以这个文件只负责指路：
-# 编译器、GOOS/GOARCH/GOARM、sysroot。
+# 交叉编译目标是设备那一侧：linux/arm64（v8a）+ musl，**两段式**——Odin 不能交叉链接
+# linux/arm64（-linker 不吃 SDK 的 gcc，只产 .o），故由 zig cc 收尾链接 sysroot 里的
+# libubus / libuci / libubox / libblobmsg_json。完整构建配方在 build.sh，本文件只负责指路：
+# 编译器、sysroot、以及各验收目标的入口。
 #
 # 常用：
-#   make            原生构建（本机自测/快速迭代）
+#   make            原生构建（本机自测二进制）+ 交叉产物（设备二进制）
 #   make target     交叉编译设备产物 build/molly-arm64
 #   make deploy     交叉编译并部署到设备（默认 192.168.1.1:/usr/sbin/molly）
-#   make test       go test ./...
+#   make test       odin test 各包单测（host 跑，假数据后端）
 #   make smoke      起本机实例跑 tests/smoke.sh（300+ 条 HTTP 层断言）
-#   make lint       gofmt 检查 + go vet（CI 用的那步）
-#   make device-simple 真机验收简洁版 /lite（黑盒，需 MOLLY_DEVICE_PASS=xxx）
-#   make device-luci    真机验收专家版（对照基准，需 MOLLY_DEVICE_PASS=xxx）
+#   make fmt        odin fmt src
+#   make device-simple     真机验收简洁版 /lite（黑盒，需 MOLLY_DEVICE_PASS=xxx）
+#   make device-luci       真机验收专家版（对照基准，需 MOLLY_DEVICE_PASS=xxx）
 #   make help       列出所有目标
 #
 # 交叉编译需要 zig 与 ImmortalWrt 的 aarch64 sysroot，两者都能用变量覆盖：
 #   make target SYSROOT=/path/to/sysroot-aarch64_cortex-a53 ZIG=/opt/zig/zig
 
-MODULE := github.com/azhai/molly
-CMD    := *.go
-BIN    := build
-
+BIN        := build
 HOST_BIN   := $(BIN)/molly-host
 TARGET_BIN := $(BIN)/molly-arm64
 
-# ---- 交叉编译配置（设备：ImmortalWrt 25.12.2 / aarch64_cortex-a53 / musl）----
-GOOS_TARGET   ?= linux
-GOARCH_TARGET ?= arm64
-# v8a 就是 ARMv8-A。GOARM=8 只是把目标架构写明在命令行里；真正决定代码生成与 ABI 的
-# 是 zig 的 -target aarch64-linux-musl（走 cgo 时 Go 侧的 GOARM 不参与）。
-GOARM_TARGET  ?= 8
-# ARM64 微架构 tune（换设备只改这两个变量）：
-#   GOARM64    —— Go 代码生成的指令基线，格式 v8.N（可尾追 ,crypto / ,lse）。取 v8.0 为
-#                 ARMv8.0 保底，兼容所有 V8+ 路由；确认目标核带加密/LSE 原子时可提到
-#                 v8.0,crypto 或 v8.1（cortex-a53 无 LSE，勿用 v8.1 默认基线）。
-#   TARGET_CPU —— 给 zig clang 的 -mcpu，按目标核做调度/流水线优化。（clang 的 CPU 名用
-#                 下划线，如 cortex_a53；不是 GCC 的连字符 cortex-a53。zig 可用 -mcpu=help 列全表。）
-GOARM64       ?= v8.0
-TARGET_CPU    ?= cortex_a53
-ZIG           ?= zig
-# 注意目录名是 aarch64（工具链的命名），不是 arm64。
-SYSROOT       ?= $(HOME)/openwrt-sdks/sysroot-aarch64_cortex-a53
+# ---- 交叉编译配置（设备：ImmortalWrt / aarch64_cortex-a53 / musl）----
+# 注意目录名是 aarch64（工具链的命名），不是 arm64。真正的指令基线/tune 由 build.sh 里
+# zig 的 -target/-mcpu 决定（cortex-a53 无 LSE，用基础 aarch64）。
+ZIG     ?= zig
+SYSROOT ?= $(HOME)/openwrt-sdks/sysroot-aarch64_cortex-a53
 
-# C 侧（cgo）优化：-O2 兼顾体积与速度，-mcpu 按目标核调度；-ffunction/-fdata-sections
-# 把每个函数/数据拆独立段，配合下面链接期的 --gc-sections 丢弃未引用的 C 段再缩体积。
-CGO_CFLAGS  ?= --sysroot=$(SYSROOT) -I$(SYSROOT)/usr/include -O2 -mcpu=$(TARGET_CPU) -ffunction-sections -fdata-sections
-# 链接期按段回收未被引用的内容（与 -ffunction/-fdata-sections 配套）。
-CGO_LDFLAGS ?= --sysroot=$(SYSROOT) -Wl,--gc-sections
-
-TARGET_CC := $(ZIG) cc -target aarch64-linux-musl
-GO_ENV    := CGO_ENABLED=1 GOOS=$(GOOS_TARGET) GOARCH=$(GOARCH_TARGET) GOARM=$(GOARM_TARGET) GOARM64=$(GOARM64) \
-             CC="$(TARGET_CC)" CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)"
-
-# 额外的链接参数（主机 build/test 用，默认空）。
-LDFLAGS ?=
-# 目标产物专用链接参数：$(LDFLAGS) 基础上固定去符号表与 DWARF（-s -w，约减四成体积、
-# 去掉常驻的符号/调试数据）。target/target-embed 用它，主机 build 不受影响。
-TGT_LDFLAGS ?= $(LDFLAGS) -s -w
+# ---- Odin 单测覆盖的包（含 *_test.odin 的包；src/main.odin 是可执行入口不参与）----
+TEST_PKGS := src/http src/backend src/handlers src/luci src/assets
 
 # ---- 设备部署（make deploy 用）----
 HOST ?= 192.168.1.1
@@ -72,30 +43,18 @@ SSH ?= ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$(HO
 
 .DEFAULT_GOAL := all
 
-.PHONY: all build target target-embed test smoke device-luci device-simple fmt fmt-check vet lint deploy install-init clean help check-toolchain
+.PHONY: all build target test smoke fmt deploy install-init clean help check-toolchain device-luci device-simple
 
 all: clean build target
 
-## 原生构建（当前平台，给本机自测用）
+## 原生构建（当前平台，给本机自测/冒烟用）：build.sh --host → $(HOST_BIN)
 build:
 	@mkdir -p $(BIN)
-	go build -ldflags '$(LDFLAGS)' -o $(HOST_BIN) $(CMD)
-	@echo "→ $(HOST_BIN)"
+	./build.sh --host
 
-## 交叉编译设备产物：linux/arm64(v8a) + musl，按 cortex-a53 tune，去符号/路径以缩体积
+## 交叉编译设备产物：linux/arm64(v8a) + musl，两段式（odin .o + zig cc 链 shim/ubus/uci）→ $(TARGET_BIN)
 target: check-toolchain
-	@mkdir -p $(BIN)
-	$(GO_ENV) go build -trimpath -buildvcs=false -ldflags '$(TGT_LDFLAGS)' -o $(TARGET_BIN) $(CMD)
-	@echo "→ $(TARGET_BIN)  [$(GOOS_TARGET)/$(GOARCH_TARGET) $(GOARM64) · $(TARGET_CPU) · musl · $(SYSROOT)]"
-
-## 同 target，但把设备的前端资源也编进二进制（「只丢一个二进制上设备」也能跑）
-## 前置：./tools/embed-assets.sh <host> 从设备抄一份 webassets/luci-static
-target-embed: check-toolchain
-	@test -d webassets/luci-static || { \
-	  echo "webassets/luci-static 不存在。先跑：./tools/embed-assets.sh <host>"; exit 1; }
-	@mkdir -p $(BIN)
-	$(GO_ENV) go build -trimpath -buildvcs=false -tags embed_assets -ldflags '$(TGT_LDFLAGS)' -o $(TARGET_BIN)-embed $(CMD)
-	@echo "→ $(TARGET_BIN)-embed"
+	./build.sh --target
 
 ## 交叉编译前置检查：zig（当 C 编译器）与 sysroot 里的头文件/库
 check-toolchain:
@@ -108,11 +67,14 @@ check-toolchain:
 	@test -f "$(SYSROOT)/usr/lib/libubus.so" || \
 	  echo "  注意：$(SYSROOT)/usr/lib 下没有 libubus.so，链接可能过不去"
 
-## 单元测试（纯 Go，darwin 上跑假数据）
+## 单元测试（Odin，各包在 host 上跑假数据后端）
 test:
-	go test -count=1 ./...
+	@for p in $(TEST_PKGS); do \
+	  echo "==> odin test $$p"; \
+	  odin test $$p -collection:molly=src -define:ODIN_TEST_THREADS=1 || exit 1; \
+	done
 
-## 集成验收：起 7 个本机实例跑 HTTP 层断言
+## 集成验收：起本机实例跑 HTTP 层断言
 smoke:
 	./tests/smoke.sh
 
@@ -127,17 +89,9 @@ device-luci:
 	MOLLY_DEVICE_PASS='$(MOLLY_DEVICE_PASS)' MOLLY_LUCI_PREFIX=$${MOLLY_LUCI_PREFIX:-/admin} MOLLY_LUCI_SUB=$${MOLLY_LUCI_SUB-} \
 	  ./tests/device_luci.sh $(if $(BASE),$(BASE),http://$(HOST):8080)
 
+## 格式化（Odin）
 fmt:
-	gofmt -l -w .
-
-## 只检查不改（CI 用）
-fmt-check:
-	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "以下文件未格式化："; echo "$$out"; exit 1; fi
-
-vet:
-	go vet ./...
-
-lint: fmt-check vet
+	odin fmt src
 
 ## 部署到设备：先停服务再覆盖（直接覆盖会 Text file busy），最后拉起来并回状态
 deploy: target
@@ -163,4 +117,4 @@ help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /'
 	@echo
 	@echo "  常用变量：SYSROOT=$(SYSROOT)"
-	@echo "            ZIG=$(ZIG)  LDFLAGS='$(LDFLAGS)'  HOST=$(HOST)  DEST=$(DEST)"
+	@echo "            ZIG=$(ZIG)  HOST=$(HOST)  DEST=$(DEST)"

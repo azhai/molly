@@ -4,17 +4,22 @@
 
 | 模式 | 产物 | uci/ubus | 用途 |
 |---|---|---|---|
-| `./build.sh --host` | `build/molly-host`（Mach-O arm64） | `src/backend/darwin.odin` 的假数据 | 本地开发与端到端自测 |
-| `./build.sh --target` | `build/molly`（aarch64 ELF） | `src/backend/linux.odin` + 真 libuci/libubus | 真机 |
+| `./build.sh --host` | `build/molly-host`（Mach-O arm64） | `src/backend` 的 darwin provider 假数据 | 本地开发与端到端自测 |
+| `./build.sh --target` | `build/molly-arm64`（aarch64 ELF） | `src/backend` 的 linux provider + 真 libuci/libubus | 真机 |
 
 host 模式里 **HTTP、路由、dispatcher 全是真代码**，只有 uci/ubus 是假的。所以本地跑的解析器与真机上是同一份，只有后端数据来源不同——这是"无设备也能验证"的全部秘密。
 
 ## 2. 为什么目标平台必须两段式
 
 ```
-odin build src -build-mode:obj -target:linux_arm64 -o:size -out:build/molly.o
-zig cc -target aarch64-linux-musl --sysroot=$OPENWRT_SYSROOT -o build/molly build/molly*.o \
-       -L/usr/lib -luci -lubus -lblobmsg_json -lubox -Wl,-s
+# 段 1：Odin 只编不链，产目标文件
+odin build src -collection:molly=src -build-mode:obj -target:linux_arm64 -o:size -out:build/molly_arm64.o
+# 段 2：zig cc 先编 shim.c，再把 Odin .o + shim.o + 总线/uci 库链成可执行
+zig cc -target aarch64-linux-musl --sysroot=$OPENWRT_SYSROOT -I$OPENWRT_SYSROOT/usr/include -Isrc/native \
+     -c src/native/shim.c -o build/shim_arm64.o
+zig cc -target aarch64-linux-musl --sysroot=$OPENWRT_SYSROOT -L/usr/lib -o build/molly-arm64 \
+     build/molly_arm64.o build/shim_arm64.o -Wl,--gc-sections -Wl,-s \
+     -luci -lubus -lblobmsg_json -lubox -ljson-c -lm -lpthread
 ```
 
 两条实测硬约束决定了不能一步到位，**别改成一步**：
@@ -39,7 +44,7 @@ zig cc -target aarch64-linux-musl --sysroot=$OPENWRT_SYSROOT -o build/molly buil
 
 ```bash
 ./build.sh --host                     # 本地开发与自测
-./build.sh --target                   # aarch64 产物 build/molly
+./build.sh --target                   # aarch64 产物 build/molly-arm64
 OPT=speed ./build.sh --target         # 换优化等级（默认 size）
 GOSYMS=1 ./build.sh --target          # 不 strip，保留符号：真机第一次跑想抓崩溃栈时用
 OPENWRT_SYSROOT=/path ./build.sh --target   # 换 sysroot
@@ -47,7 +52,7 @@ OPENWRT_SYSROOT=/path ./build.sh --target   # 换 sysroot
 
 相关环境变量：`OPENWRT_SYSROOT`（默认 `$HOME/openwrt-sdks/sysroot-aarch64_cortex-a53`）、`ARCH`、`OPT`、`READELF`。
 
-`--target` 会先检查 `$OPENWRT_SYSROOT/usr/lib/libuci.so` 是否存在，不在就提示先跑 `./toolchain/setup.sh`。
+`--target` 会先检查 `$OPENWRT_SYSROOT/usr/lib/libubus.so` 与头文件目录是否存在，不在就提示按 [development-environment.md](development-environment.md) 先交叉编出四个库的 sysroot。
 
 写脚本时注意：`$VAR` 后面紧跟**全角标点**必须写成 `${VAR}`，否则 bash 会把全角字符的字节当成变量名的一部分，报 `unbound variable`。
 
@@ -61,7 +66,7 @@ build/molly-host: Mach-O 64-bit executable arm64
 体积: 824328 bytes
 
 # --target
-build/molly: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically linked,
+build/molly-arm64: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically linked,
              interpreter /lib/ld-musl-aarch64.so.1, stripped
 体积: 288688 bytes
     Class:   ELF64
@@ -100,13 +105,12 @@ build/molly: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamical
 ### 6.1 冒烟脚本（首选）
 
 ```bash
-./tests/http_smoke.sh          # 默认端口 18080（8080 常被占用）
-./tests/http_smoke.sh 18081    # 换端口
+./tests/smoke.sh           # 默认端口 18080 等（8080 常被占用）；或 `make smoke`
 ```
 
-脚本**自己起 `build/molly-host`、跑完杀掉**，服务端日志落在 `/tmp/molly-smoke.log`；必须先 `./build.sh --host`。它打印的行与 `AGENTS.md` 要求的记录格式一致：`通过 N，失败 M`。
+脚本**自己从 `build/molly-host` 起实例（先 `./build.sh --host`）、跑完杀掉**，服务端日志落在 `/tmp/molly-smoke.log`。它打印的行与验收记录格式一致：`通过 N，失败 M`。
 
-2026-09-26 实测：**通过 128，失败 0**。覆盖范围（按加入顺序）：
+当前基线：**通过 342，失败 0**。下表按加入顺序列出各步曾新增的覆盖点（保留为历史演进记录，数字为当时抽样）：
 
 | 批次 | 覆盖点 |
 |---|---|
@@ -142,18 +146,20 @@ curl -sD- -o/dev/null http://127.0.0.1:8080/cgi-bin/luci/admin/status/routes  # 
 ## 7. 真机部署（第 7 步，待设备）
 
 ```bash
-make target LDFLAGS='-s -w'            # 交叉编译设备产物 build/molly-arm64
-scp build/molly-arm64 root@<设备>:/tmp/molly
-ssh root@<设备> '/tmp/molly --listen 0.0.0.0:8081 --docroot /www --menu-dir /usr/share/luci/menu.d \
+make target                            # 交叉编译设备产物 build/molly-arm64
+make deploy                            # 停服务→覆盖 /usr/sbin/molly→拉起（需能连上设备的 SSH/密钥）
+# 并行观察原厂 uhttpd 时手动换个端口：
+scp build/molly-arm64 root@<设备>:/tmp/molly-new
+ssh root@<设备> '/tmp/molly-new --listen 0.0.0.0:8081 --docroot /www --menu-dir /usr/share/luci/menu.d \
   --luci-prefix /admin --luci-strip admin'
-# 不带 --luci-cgi = 专家版走内置 Go dispatcher（本站的目标形态）。
+# 不带 --luci-cgi = 专家版走内置 Odin dispatcher（本站的目标形态）。
 # 加上 --luci-cgi "/www/cgi-bin/luci" 才改交设备 ucode 渲染，用来对照与排查。
 ```
 
-**简洁版**（`/lite`，编译进二进制的单页站点）**不读 menu.d**——菜单是 `webassets/simple.Menu` 里内置的数据，
+**简洁版**（`/lite`，编译进二进制的单页站点）**不读 menu.d**——菜单是 `src/assets/menu.odin` 里内置的数据，
 所以它那份页面**不需要** `--menu-dir`。
-**专家版**（用 Go 重写的 LuCI，本站 `/admin`）要按 menu.d 建菜单树，所以**它才需要** `--menu-dir`；
-部署时别把它当「只给 ucode 用的参数」——内置 Go dispatcher 读的是同一个目录。
+**专家版**（用 Odin 重写的 LuCI，本站 `/admin`）要按 menu.d 建菜单树，所以**它才需要** `--menu-dir`；
+部署时别把它当「只给 ucode 用的参数」——内置 Odin dispatcher 读的是同一个目录。
 
 规则：
 
