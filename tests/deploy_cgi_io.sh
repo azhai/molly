@@ -2,8 +2,8 @@
 # cgi-io 一次性上机 + 自验：把 build/molly-arm64 换上设备、重启，随后**只用 HTTP** 当场
 # 验证 package-manager 依赖的 /cgi-exec 不再 405。
 #
-# 为什么有这个脚本：新代码在宿主门禁（go test + smoke 341/0）已证明 /cgi-exec 由 ServeCGIIO
-# 接管（旧二进制才会被 ServeStatic 判 405）。但设备仍跑旧二进制——设备拒 root 的 SSH 口令
+# 为什么有这个脚本：新代码在宿主门禁（make test + smoke 342/0）已证明 /cgi-exec 由
+# serve_cgi_io 接管（旧二进制才会被 serve_static 判 405）。但设备仍跑旧二进制——设备拒 root 的 SSH 口令
 # 登录（HTTP 同口令却可用），且没有任何 HTTP 路径能替换正在运行的可执行文件（file.write 的
 # ACL 不覆盖 /usr/sbin；对运行中程序 O_TRUNC 会 ETXTBSY）。所以「换二进制 + 重启」这步必须在
 # 有设备访问权的地方跑。本脚本把这步和验证合成一条命令，跑完就知道 405 有没有真被修掉。

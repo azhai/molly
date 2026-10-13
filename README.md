@@ -1,8 +1,8 @@
 # molly
 
-用 **Go** 复刻 ImmortalWrt LuCI 的服务端三层：**uhttpd**（HTTP + `/ubus` JSON-RPC + CGI）、**rpcd**（ubus 上的 `session`/`uci`/`file`/`luci` 对象）、**dispatcher**（菜单树 → 路径解析 → 渲染）。
+用 **Odin** 复刻 ImmortalWrt LuCI 的服务端三层：**uhttpd**（HTTP + `/ubus` JSON-RPC + CGI）、**rpcd**（ubus 上的 `session`/`uci`/`file`/`luci` 对象）、**dispatcher**（菜单树 → 路径解析 → 渲染）。
 
-两套界面里，**简洁版**（`/lite`）是自研单页应用；**专家版**（本站 `/admin`）是**用 Go 重写的 LuCI**——菜单树、ACL 裁树、路径语义逐条对齐上游，界面与操作跟原版一致。
+两套界面里，**简洁版**（`/lite`）是自研单页应用；**专家版**（本站 `/admin`）是**用 Odin 重写的 LuCI**——菜单树、ACL 裁树、路径语义逐条对齐上游，界面与操作跟原版一致。
 
 **不动**的是：`/etc/config`（uci）、ubusd 消息总线、`/www` 静态文件。
 
@@ -29,17 +29,17 @@
 | P3-6 | 入站 ACL：自持 `/usr/share/rpcd/acl.d/*.json`（权限组 + `!` 取反 + 表/数组两形态）+ `/ubus` 前置校验（对象查找 `-32000` → ACL `-32002` → 参数 `-32602`，fail-closed）+ dispatcher 的 `depends.acl` 裁树（缺组 → 404；只有 read → 只读） | 已完成（真机 golden 待对比） |
 | P3-8″-T1 | `/cgi-bin/luci` 子进程桥接（复刻 uhttpd 的 ucode CGI 兜底形态，`--luci-cgi`） | 已完成（设备 golden 对比待做） |
 | P3-7 | `/ubus/subscribe`（SSE：ACL 点 `:subscribe` + 事件总线 + 分帧推送；linux 侧真 ubus 订阅已实现，darwin 侧端到端可验） | 已完成（linux 的真订阅待真机验证） |
-| P3-9 | 收尾：移除 transitional 模式（启动 WARN）、真机验收脚本（`tests/device_smoke.sh` + `tests/golden.sh`）、P4 清单 | 代码侧已完成（真机项待跑） |
-| P3 | 继续：真机 golden 轮（`./tests/golden.sh device <host>` → 接管 → `compare`）与 `./tests/device_smoke.sh` | 进行中 |
+| P3-9 | 收尾：移除 transitional 模式（启动 WARN）、真机验收脚本（`tests/device_simple.sh` + `tests/device_luci.sh`）、P4 清单 | 代码侧已完成（真机项待跑） |
+| P3 | 继续：真机验收轮（`make device-simple` + `make device-luci`，对照设备 ucode 基准） | 已完成（设备验收全绿） |
 
 > **接管步骤（务必先读）**
 > molly 现在自己提供 `session`/`uci`/`file`/`luci-rpc`（P3-2…P3-5）、`/ubus` 的**入站 ACL**
 > （P3-6，按 `/usr/share/rpcd/acl.d/*.json`，含 dispatcher 的 `depends.acl` 裁树）与
 > `/ubus/subscribe` 的 SSE（P3-7）。设备上 rpcd 还占着同名对象时，molly 的注册会失败
 > （非致命，**逐对象**打一行诊断）——要接管就先 `/etc/init.d/rpcd stop`，再重启 molly。
-> 接管后跑 `./tests/device_smoke.sh` 一把验收（含真实 crypt 登录、uci 写路径、SSE）。
+> 接管后跑 `make device-simple` + `make device-luci` 一把验收（含真实 crypt 登录、uci 写路径、SSE、cgi-io）。
 > 启动时不再有「transitional mode」这回事（P3-9 删掉了那条 WARN）。
-> 专家版的默认渲染是**内置 Go dispatcher**（`internal/luci`，目标形态）；`--luci-cgi` 把整段前缀
+> 专家版的默认渲染是**内置 Odin dispatcher**（`src/luci`，目标形态）；`--luci-cgi` 把整段前缀
 > 交给设备 ucode 渲染，那是**对照与排查**用的基准（ADR 0003 的 T1），不是部署形态。
 > 内置那份还没有模板层：无会话访问带 `depends.acl` 的路径按上游回 **403 +
 > `X-LuCI-Login-Required: yes` + 登录提示页**（P3-6 收尾起，不再是整站裸 404），而 cbi/view/template
@@ -50,8 +50,9 @@
 ```bash
 brew install odin zig cmake llvm
 
-./toolchain/setup.sh    # 交叉编译 libuci/libubus/libubox/libblobmsg_json 到 sysroot（幂等）
-./build.sh --host       # macOS 原生构建；uci/ubus 走假数据，其余全是真代码
+# 交叉设备产物前，需先用 brew + zig 编出 libuci/libubus/libubox/libblobmsg_json 的 sysroot
+# （步骤见 docs/development-environment.md；spike/01-toolchain/ 是冻结的工具链基准）
+./build.sh --host       # macOS 原生构建；uci/ubus 走假数据，其余全是真代码 → build/molly-host
 ./build/molly-host --listen 127.0.0.1:8080 --docroot tests/fixtures/www --menu-dir tests/fixtures/menu.d
 ```
 
@@ -63,20 +64,20 @@ curl -s               http://127.0.0.1:8080/ubus/list    # ubus 对象/方法签
 curl -s               http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview   # dispatcher 占位页
 ```
 
-门禁（按顺序，见 `AGENTS.md` §4.1）：
+门禁（按顺序，见 `docs/testing.md`）：
 
 ```bash
-./tests/unit.sh                                          # 单元测试：odin test（65 个用例 / 4 个包）
-./tests/http_smoke.sh                                    # 集成 + 接口验收 259 项（内置 dispatcher 模式）
-./tests/cgi_smoke.sh                                     # /cgi-bin/luci 子进程桥接验收 30 项（桩 CGI，无需 ucode）
+make test         # 单元：odin test 五个含 _test.odin 的包（http/backend/handlers/luci/assets）
+make smoke        # 集成 + 接口验收（tests/smoke.sh，内置 dispatcher 模式，黑盒 HTTP 断言）
+make target       # 交叉编译设备产物 build/molly-arm64（两段式：odin .o + zig cc 链 shim/ubus/uci）
 ```
 
 配置要点：
 
 - **两套界面**（`docs/interfaces.md` §3.1）：
-  - **简洁版** = 我们自己实现的 Go+HTML **单页应用**（`/lite`，`/` 是 302 入口），十个页面：仪表盘 / 内外网 / 无线 / DHCP / 系统 / 日志 / 服务 / 存储 / 诊断 / 备份。页面是编译进二进制的单文件（`webassets/simple/index.html`），**菜单内置在 Go 代码里（不读 menu.d）**，不依赖 ucode / LuCI 主题 / uhttpd，具体动作全部经 `/ubus`。仪表盘是首屏（`/lite/#/dash`），**不含「重启」**——该功能只在「系统」页。设备额外需要的命令授权集中在 `tools/molly-acl.json`；
-  - **专家版** = **用 Go 重写的 LuCI**（`--luci-prefix` 给的路径，本站 `/admin`）：菜单树、ACL 裁树、路径语义按上游 `dispatcher.uc` 逐条复刻，由内置 Go dispatcher 渲染（`internal/luci`）；`--luci-cgi` 才改交设备 ucode，用于对照与排查。**差距**：视图层尚未落地，cbi/view/template 类页面现在回 501（带 `action.type/view/menu`），页面要一个个补；
-  - 两套界面各自都有登录页与退出入口，但都落在**同一组 `/auth/{login,logout,password}` 端点**上（cookie `path=/`、会话是同一个 `session` 对象），于是登录一次两边都在、退出一次两边都没。**差距**：专家版（内置 Go dispatcher）现在只出「需要登录」的提示页，还没有可用的登录表单（`internal/luci/render.go` 的 `renderLoginRequired`），要按上游补；
+  - **简洁版** = 我们自己实现的 Odin+HTML **单页应用**（`/lite`，`/` 是 302 入口），十个页面：仪表盘 / 内外网 / 无线 / DHCP / 系统 / 日志 / 服务 / 存储 / 诊断 / 备份。页面是编译进二进制的单文件（`webassets/simple/index.html`），**菜单内置在 Odin 代码里（`src/assets/menu.odin`，不读 menu.d）**，不依赖 ucode / LuCI 主题 / uhttpd，具体动作全部经 `/ubus`。仪表盘是首屏（`/lite/#/dash`），**不含「重启」**——该功能只在「系统」页。设备额外需要的命令授权集中在 `tools/molly-acl.json`；
+  - **专家版** = **用 Odin 重写的 LuCI**（`--luci-prefix` 给的路径，本站 `/admin`）：菜单树、ACL 裁树、路径语义按上游 `dispatcher.uc` 逐条复刻，由内置 Odin dispatcher 渲染（`src/luci`）；`--luci-cgi` 才改交设备 ucode，用于对照与排查。**差距**：视图层尚未落地，cbi/view/template 类页面现在回 501（带 `action.type/view/menu`），页面要一个个补；
+  - 两套界面各自都有登录页与退出入口，但都落在**同一组 `/auth/{login,logout,password}` 端点**上（cookie `path=/`、会话是同一个 `session` 对象），于是登录一次两边都在、退出一次两边都没。**差距**：专家版（内置 Odin dispatcher）现在只出「需要登录」的提示页，还没有可用的登录表单（`src/luci/render.odin` 的登录提示渲染），要按上游补；
   - 两者**共用同一个会话 cookie**（`sysauth_molly`，`path=/`），任一边登录过，另一边直接可用；登录/退出都走 `/auth/{login,logout,password}`。
 - `--menu-dir` 默认 `/usr/share/luci/menu.d`；macOS 上要显式指向 `tests/fixtures/menu.d`。
 - `--luci-cgi` 非空时，**专家版前缀**整体交给该子进程执行；设备上填
@@ -86,12 +87,12 @@ curl -s               http://127.0.0.1:8080/cgi-bin/luci/admin/status/overview  
   `500 invalid CGI response (exit 1)`（细节见 `docs/interfaces.md` §5.5）。
   留空则用内置的 Odin dispatcher：只出占位页（会按会话 ACL 裁树、标只读、无会话给登录提示）。
 
-目标机产物（`build/molly` 是 aarch64 ELF）：
+目标机产物（`build/molly-arm64` 是 aarch64 ELF）：
 
 ```bash
 ./build.sh --target
-scp build/molly root@<设备>:/tmp/
-ssh root@<设备> '/tmp/molly --listen 0.0.0.0:8081 --docroot /www'
+scp build/molly-arm64 root@<设备>:/tmp/molly-new
+ssh root@<设备> '/tmp/molly-new --listen 0.0.0.0:8081 --docroot /www'
 ```
 
 与原厂 uhttpd 并行观察时**换端口**（8081），不要直接顶掉 80 端口。
@@ -99,16 +100,18 @@ ssh root@<设备> '/tmp/molly --listen 0.0.0.0:8081 --docroot /www'
 ## 目录结构
 
 ```
-build.sh                       构建入口：--host / --target
-toolchain/setup.sh             用 brew + zig 交叉编译出 uci/ubus/libubox/libblobmsg_json 的 sysroot
+build.sh                       构建入口：--host（→ build/molly-host）/ --target（→ build/molly-arm64，两段式 odin .o + zig cc）
+Makefile                       门禁指路：build / target / test / smoke / deploy / install-init / device-*
 src/main.odin                  参数解析、装配、URL 规范化、路由分发
-src/http/{uri,server,request,response,limits,mime}.odin   HTTP/1.1 层（手写，Odin 无 HTTP 库）
-src/handlers/{static,ubus_http,cgi_luci}.odin              静态文件、/ubus 两个形态的 JSON-RPC、/cgi-bin/luci dispatcher
-src/luci/{menu,render}.odin                                读 menu.d/*.json 建菜单树、路径解析、占位页渲染
-src/backend/{backend,darwin,linux}.odin                    跨平台契约 + darwin 假数据 + linux 真实现
-src/backend/bindings/{libc,blob,blobmsg,ubus,uci}.odin      仅 linux 编译的 foreign import 与 static inline 复刻
-tests/http_smoke.sh            macOS 本地端到端验收
-tests/fixtures/                macOS 测试用的 docroot 与 menu.d fixture
+src/http/                      HTTP/1.1 层（手写，Odin 无 HTTP 库）：uri / request / response / server / limits / mime
+src/handlers/                  路由与业务粘合：auth / static / simple(/lite) / luci / dispatch / router / cgi / cgi_io / cgi_run / ubus_http / ubus_sse
+src/luci/                      读 menu.d/*.json 建菜单树、路径解析、占位页渲染：menu / render
+src/backend/                   跨平台契约 + darwin 假数据 / linux 真实现：backend / session / file_object / uci_object / luci_object / cgi_io / deps / event_bus / iwinfo / process_spawn / platform_hooks / bindings
+src/native/                    C shim（zig 编）：shim.c / shim.h（ubus/uci/blobmsg 直连所需的 C 侧）
+src/assets/                    简洁版菜单与内嵌资源（取代旧 Go glue）：menu.odin / embedded.odin（由 tools/embed-simple.py 生成）
+webassets/                     静态资源：luci-static/**、simple/index.html（前端不重写，原样保留）
+tools/                         molly.init（procd 启动）、molly-acl.json（设备命令授权）、embed-simple.py（资源内嵌）
+tests/                         smoke.sh（本机黑盒）、device_simple.sh / device_luci.sh（真机验收）、fixtures/
 spike/01-toolchain/            工具链 spike，已冻结（回归基准，不参与产品构建）
 ```
 
@@ -123,6 +126,5 @@ P2 的本地可验证范围到第 6 步收口（三件套全绿）；第 7 步�
 | [docs/testing.md](docs/testing.md) | 单元 / 集成 / 接口三层测试的覆盖范围与判据、执行流程、覆盖边界与**不能**证明什么 |
 | [docs/architecture.md](docs/architecture.md) | 三层职责边界、模块划分、一次请求的调用链、单向依赖规则与跨平台分层机制 |
 | [docs/interfaces.md](docs/interfaces.md) | 进程 CLI、HTTP 通用契约与上限、路由表、`/ubus` 与 `/cgi-bin/luci` 契约、backend 窄接口 |
-| [AGENTS.md](AGENTS.md) | 协作规则、架构约束、验证纪律（人和 Agent 都读） |
 
 本仓库文档为**中文单语**，不采用双语对照文档集。当前任务的计划与进展写在 `.ai-memory/`（工作记忆，不纳入版本控制）。

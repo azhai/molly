@@ -1,5 +1,5 @@
 #!/bin/sh /etc/rc.common
-# molly —— ImmortalWrt LuCI 服务端替换层（Go）。挂在 :8080，与 stock uhttpd(:80) 并存。
+# molly —— ImmortalWrt LuCI 服务端替换层（Odin）。挂在 :8080，与 stock uhttpd(:80) 并存。
 #
 # 关键参数（对照部署同源，只把 docroot/cgi 换成本机的 /www）：
 #   --docroot /www                     读设备原生静态资源与 luci-static（只读，不改 /www）
@@ -13,7 +13,7 @@
 #
 # 依赖：桥接态（--luci-cgi + 系统总线）的登录与会话 ACL 交给总线上的 rpcd，故 rpcd 必须在
 # 线；ubusd 是所有 ubus 调用的底座。两者由下面的 start_service 前置与 molly 进程内就绪探测
-# 共同保证（见 internal/backend/deps_linux.go）。
+# 共同保证（见 src/backend/deps.odin）。
 
 START=95
 STOP=10

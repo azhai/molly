@@ -3,13 +3,13 @@
 # 以及 /cgi-bin/luci 的 dispatcher（菜单树 / depends / ACL 裁树 / 登录提示）与
 # CGI 子进程桥。
 #
-# 对应 Odin 版的 tests/http_smoke.sh + tests/cgi_smoke.sh（合并成一份）。
+# 一份脚本同时盖住：集成 + 接口（/ubus / dispatcher）+ CGI 子进程桥。
 # 失败数不为 0 时脚本退出码非 0。
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 PORT="${PORT:-18080}"
-# CGI 桥用 5 个桩脚本，各自一个实例（对应 Odin 版 tests/cgi_smoke.sh）：echo 环境与
+# CGI 桥用 5 个桩脚本，各自一个实例：echo 环境与
 # body、status 头透传、broken 无输出退出码、noctype 缺 Content-Type、sizeprobe 64KB body。
 CGI_PORT="${CGI_PORT:-18081}"
 CGI2_PORT="${CGI2_PORT:-18082}"
@@ -28,10 +28,12 @@ CGI3_BASE="http://127.0.0.1:$CGI3_PORT"
 CGI4_BASE="http://127.0.0.1:$CGI4_PORT"
 CGI5_BASE="http://127.0.0.1:$CGI5_PORT"
 
-go build -o "$BIN" . || exit 1
+# 产物由 Odin 构建入口给出（阶段 5 接线）：默认 ./build.sh --host 写 build/molly-host。
+: "${MOLLY_BUILD:=./build.sh --host}"
+$MOLLY_BUILD || exit 1
 
 # 会话 ACL 的 acl.d 目录：darwin 的默认相对路径在 molly/ 下不成立，用环境变量覆盖
-export GOMOLLY_ACL_DIR="$ROOT/tests/fixtures/acl.d"
+export MOLLY_ACL_DIR="$ROOT/tests/fixtures/acl.d"
 
 PIDS=()
 start_server() { # start_server <端口> [额外参数...]
@@ -159,7 +161,7 @@ check "/cgi-bin/luci 无 cookie → 403" "403" "$(status GET /cgi-bin/luci)"
 check "/cgi-bin/luci 无 cookie 带 X-LuCI-Login-Required" "yes" \
   "$(header /cgi-bin/luci X-LuCI-Login-Required)"
 # 边界：/cgi-bin/luci-static **不是** /cgi-bin/luci 前缀，不能被 dispatcher 抢走。
-# 现在这里回 403（docroot 的 /cgi-bin/* 一律不外发，见 internal/handlers/static.go），
+# 现在这里回 403（docroot 的 /cgi-bin/* 一律不外发，见 src/handlers/static.odin），
 # 而 dispatcher 接管时会回 404——两者不同，正好说明它没被 dispatcher 吃掉。
 check "/cgi-bin/luci-static 不被抢走（边界）" "403" "$(status GET /cgi-bin/luci-static)"
 
@@ -454,8 +456,8 @@ check "无 cookie：要登录的路径 → 403（不是 404）" "403" \
   "$(status GET /cgi-bin/luci/admin/status/overview)"
 check "无 cookie：带 X-LuCI-Login-Required 头" "yes" \
   "$(header /cgi-bin/luci/admin/status/overview X-LuCI-Login-Required)"
-# 头名按字节透传（CGI 桥与登录页都走 RespondFull）：Go 的 h.Add 会规范化成
-# `X-Luci-…`，与 Odin 版不一致——这一条专门盯它。
+# 头名按字节透传（CGI 桥与登录页都走 Respond_Full）：规范化成 `X-Luci-…` 的实现会
+# 与这里的字节预期不一致——这一条专门盯它。
 check "无 cookie：头名按字节透传（不规范化）" "X-LuCI-Login-Required: yes" \
   "$(header_line /cgi-bin/luci/admin/status/overview X-LuCI-Login-Required)"
 check "无 cookie：提示页是登录提示" "1" \
@@ -550,7 +552,7 @@ check "HEAD 到登录提示页也没有 body" "0" \
 # ---- /cgi-bin/luci 子进程桥（--luci-cgi）----
 echo
 echo "== /cgi-bin/luci 子进程桥（--luci-cgi）=="
-# 对应 Odin 版 tests/cgi_smoke.sh：桩脚本替掉设备上的 ucode dispatcher，验的是**桥接**本身
+# 桩脚本替掉设备上的 ucode dispatcher，验的是**桥接**本身
 # ——环境变量、请求体透传、响应头解析与透传、错误路径。设备上把 --luci-cgi 换成 /www/cgi-bin/luci。
 out=$(body_of "$CGI_BASE/cgi-bin/luci")
 check "CGI 裸前缀 200" "200" "$(code_of "$CGI_BASE/cgi-bin/luci")"
@@ -589,7 +591,7 @@ check "CGI 64KB body 完整到达（无死锁）" "len=65536" \
 check "CGI Status: 302 透传" "302" "$(code_of "$CGI2_BASE/cgi-bin/luci")"
 check "CGI Location 透传" "/cgi-bin/luci/" "$(header_of Location "$CGI2_BASE/cgi-bin/luci")"
 # 会话 cookie 的 path 被放宽成 `/`（两套界面共用同一个 cookie 槽位，见
-# internal/handlers/cgi.go 的 widenSessionCookiePath）；其余 cookie 原样透传。
+# src/handlers/cgi.odin 的 widen_session_cookie_path）；其余 cookie 原样透传。
 check "CGI 会话 Set-Cookie 的 path 放宽到 /" "sysauth=deadbeef; path=/" \
   "$(header_of Set-Cookie "$CGI2_BASE/cgi-bin/luci")"
 check "CGI Cache-Control 透传" "no-store" "$(header_of Cache-Control "$CGI2_BASE/cgi-bin/luci")"
@@ -613,8 +615,7 @@ check "CGI keep-alive 复用同一连接" "1" \
 echo
 echo "== P3-2 session 对象 =="
 # 语义依据 rpcd session.c；断言里带行号，改契约前先回去看那一行。
-# jget '<python 表达式后缀>'：从 stdin 的 JSON 里取值；jq1 是 json_get 的别名
-# （与 Odin 版 http_smoke.sh 同名，便于逐条对照）。
+# jget '<python 表达式后缀>'：从 stdin 的 JSON 里取值；jq1 是 json_get 的别名。
 jget() { python3 -c 'import sys,json; d=json.load(sys.stdin); print(eval("d"+sys.argv[1]))' "$1"; }
 jq1() { json_get "$@"; }
 
@@ -969,7 +970,7 @@ rm -f /tmp/molly-dhcp.leases /tmp/molly-odhcpd.leases
 
 # ---- 专家版前缀可配（--luci-prefix /admin）+ 简洁版单前缀 ----
 #
-# 再起一份实例：专家版（Go 复刻的 LuCI）让到 /admin，简洁版只有 /lite 一个前缀。
+# 再起一份实例：专家版（Odin 复刻的 LuCI）让到 /admin，简洁版只有 /lite 一个前缀。
 # 目的是钉住三件事——
 #   ① 「前缀是一个同源值」：它同时是路由判据、CGI 的 SCRIPT_NAME、PATH_INFO 切分点，
 #      还被注入进简洁版页面（expert 字段 → 「前往专家版」的 href）。任何一处不同步都会在这里露馅。
@@ -1090,6 +1091,15 @@ check "cgi-io: POST /cgi-upload → 200（不再是 405）" "200" \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B2/cgi-upload" -d 'sessionid=x')"
 check "cgi-io: /cgi-upload 回 JSON 带 failure" "1" \
   "$(curl -s -X POST "$B2/cgi-upload" -d 'sessionid=x' | grep -c '"failure"' || true)"
+# 真 multipart 上传（curl -F 生 boundary）：走完整解析→backend→未授权会话 fail-closed，
+# 回 200 JSON {failure:true,message:"permission denied"}（BOGUS_SID 非空非默认，但 file.write ACL 里没有）。
+UPL_SRC=$(mktemp)
+printf 'molly-upload-smoke-payload\n' > "$UPL_SRC"
+check "cgi-io: /cgi-upload 真 multipart 未授权会话 → failure permission denied" "1" \
+  "$(curl -s -X POST "$B2/cgi-upload" \
+        -F "sessionid=$BOGUS_SID" -F 'filename=/tmp/molly_upl_out.bin' -F "filedata=@$UPL_SRC" \
+      | grep -c 'permission denied' || true)"
+rm -f "$UPL_SRC"
 # 边界：非 cgi-io 的确切路径不被误吞（/cgi-exec/x 落静态 → GET 404）
 check "cgi-io: /cgi-exec/x 不误吞" "404" \
   "$(curl -s -o /dev/null -w '%{http_code}' "$B2/cgi-exec/x")"

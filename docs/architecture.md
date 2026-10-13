@@ -8,7 +8,7 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 
 | 上游组件 | 职责 | molly 的对应物 | P2 状态 |
 |---|---|---|---|
-| `uhttpd` | HTTP/1.1 服务 + `/ubus` 插件 + CGI 转发 | `src/http/`（传输）+ `src/handlers/{static,ubus_http,cgi_luci}.odin` | 已实现 |
+| `uhttpd` | HTTP/1.1 服务 + `/ubus` 插件 + CGI 转发 | `src/http/`（传输）+ `src/handlers/`（`static` / `ubus_http` / `router` / `luci` / `cgi` / `cgi_io`） | 已实现 |
 | `rpcd` | ubus 上的 `session` / `uci` / `file` / `luci` 对象（认证、会话、配置、ACL） | `src/backend/` —— 对象实现（`session`/`uci`/`file`/`luci-rpc`）+ 入站 ACL | P3：molly 已自持四个对象（P3-2…P3-5）与入站 ACL（P3-6，`/usr/share/rpcd/acl.d/*.json`）；设备 rpcd 仅作参照（决策 7） |
 | `ucode` dispatcher | `menu.d` → 菜单树 → 路径解析 → 渲染 | `src/luci/`（`menu.odin` 语义 + `render.odin` 占位页） | 已实现（模板渲染属 P3） |
 
@@ -18,9 +18,9 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 
 | 层 | 目录 | 职责（一句话） | 允许依赖 |
 |---|---|---|---|
-| **接口层** | `main.go`、`internal/handlers/` | 把 HTTP 请求映射成业务调用：进程装配、CLI、路由分派、handler | `httpx`、`luci`、`backend` |
-| **业务层** | `internal/httpx/`、`internal/luci/`、`webassets/` | `httpx`：HTTP/1.1 传输与安全边界；`luci`：菜单树与 depends 语义；`webassets`：编译进二进制的静态资源（简洁版单页 + 自研站点） | `httpx` 谁都不依赖；`luci` → `backend` |
-| **数据层** | `internal/backend/` | 平台相关的 uci / ubus 访问，各 provider 同名同签名 | 不依赖任何上层 |
+| **接口层** | `src/main.odin`、`src/handlers/` | 把 HTTP 请求映射成业务调用：进程装配、CLI、路由分派、handler | `http`、`luci`、`backend` |
+| **业务层** | `src/http/`、`src/luci/`、`src/assets/` | `http`：HTTP/1.1 传输与安全边界；`luci`：菜单树与 depends 语义；`assets`：编译进二进制的静态资源与简洁版菜单 | `http` 谁都不依赖；`luci` → `backend` |
+| **数据层** | `src/backend/` | 平台相关的 uci / ubus 访问，各 provider 同名同签名 | 不依赖任何上层 |
 
 ```
                  main.odin
@@ -30,7 +30,7 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
    handlers/                 http/            ← 传输层：谁都不依赖（叶子）
    ├─ static.odin ──────────► http            （uri / request / response / limits / mime / server）
    ├─ ubus_http.odin ───────► http, backend
-   └─ cgi_luci.odin ────────► http, luci
+   └─ luci.odin / router.odin ─► http, luci, handlers/cgi
                                  │
                                  ▼
                               luci/            ← 菜单语义：只依赖 backend
@@ -39,10 +39,10 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
                                  │
                                  ▼
                               backend/         ← 平台层：只依赖 bindings
-                              ├─ backend.odin       契约 + 共享类型/常量
-                              ├─ darwin.odin        #+build darwin：假数据
-                              ├─ linux.odin         #+build linux：真 libuci/libubus
-                              └─ bindings/*.odin    #+build linux：C 绑定 + 布局断言
+                              ├─ backend.odin            契约 + 共享类型/常量
+                              ├─ object_provider_* + uci_provider_* / process_spawn_* / platform_hooks_*
+                              │                          #+build darwin：假数据 / #+build linux：真 libuci/libubus
+                              └─ bindings/ + src/native   #+build linux：C 绑定 shim.odin + zig 编的 shim.c
 ```
 
 ## 3. 各层的模块清单
@@ -52,9 +52,8 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 | 文件 | 内容 |
 |---|---|
 | `backend.odin` | **契约**（写在文件头的注释里）+ 共享类型与常量：`Call_Result` / `Call_Outcome`、`Uci_Section` / `Uci_Option`、`UBUS_STATUS_*` 与 `ubus_error_message`。Odin 不允许「只声明不实现」的 proc，所以这层是「注释即接口 + 两个 provider 提供同名实现」。 |
-| `darwin.odin` | `#+build darwin` 的 provider：罐头 JSON 与假 uci 配置（`FAKE_UCI`），让 macOS 上能验证所有平台无关代码。 |
-| `linux.odin` | `#+build linux` 的 provider：`ubus_invoke_fd` 真调用、`uci_load` + 结构体遍历；全局单例 context + `sync.Mutex` 串行化（libubus/libuci 非线程安全）。 |
-| `bindings/*.odin` | 仅 linux 编译的 C 绑定：`libc`（只绑 `free`）、`blob`、`blobmsg`、`ubus`、`uci`。结构体布局按 `sysroot/usr/include/uci.h` 写，并配 `#assert(size_of/offset_of)` 兜底。 |
+| `object_provider_{darwin,linux}.odin`、`uci_provider_*`、`process_spawn_*`、`platform_hooks_*`、`luci_provider_linux`、`iwinfo_provider_linux` | 按 `#+build darwin` / `#+build linux` 切分的同名 provider：darwin 给罐头 JSON 与假 uci 配置，让 macOS 上能验证所有平台无关代码；linux 走真 `ubus_invoke` / `uci_load` + 结构体遍历，libubus/libuci 非线程安全故用全局单例 + 锁串行化。 |
+| `bindings/shim.odin` + `src/native/shim.c` | C 绑定层：`bindings/shim.odin` 声明 foreign import 与布局断言，真正连 uci/ubus/blobmsg 的 C helper 在 `src/native/shim.c`（zig 编译，只 linux 链接）。 |
 
 对外暴露的只有三件事：`list_objects`、`call_object`、`uci_config_sections`（加错误文案表）。
 **判定逻辑不在这里**——`depends` 的语义留在 `src/luci`，与上游 ucode 同层。
@@ -83,22 +82,22 @@ molly 用 Odin 复刻 ImmortalWrt LuCI 的**服务端三层**。本文是架构�
 
 | 文件 | 内容 |
 |---|---|
-| `main.go` | CLI 解析、`--listen/--docroot/--menu-dir/--luci-prefix/--luci-render/--luci-strip`、SIGPIPE 忽略、`http.Server` 装配、`handle` 路由分派、路径边界匹配。 |
+| `src/main.odin` | CLI 解析、`--listen/--docroot/--menu-dir/--luci-prefix/--luci-render/--luci-strip`、SIGPIPE 忽略、`http.Server` 装配、`handle` 路由分派、路径边界匹配。 |
 | `handlers/static.odin` | `/www` 下的静态文件（目录 → `index.html`，非 GET/HEAD → 405）。`/cgi-bin/*` 一律 403——上游 uhttpd 只执行它、从不吐脚本正文，见 `interfaces.md` §3。 |
 | `handlers/ubus_http.odin` | `/ubus` 的三种形态与 JSON-RPC 信封（详见 `interfaces.md` §4）。 |
-| `handlers/luci.go` + `handlers/cgi.go` | **专家版前缀**（用 Go 重写的 LuCI）的两种渲染模式：默认 → `luci.dispatch`（内置 Go dispatcher）→ 200/404/501/**403 登录提示**（带 `X-LuCI-Login-Required: yes`），只接 GET/HEAD；`--luci-cgi` 非空 → 整段前缀交给设备 ucode 子进程（ADR 0003 的 T1），只作**对照与排查**。前缀是变量（`--luci-prefix`），因为同一值还要当 CGI 的 `SCRIPT_NAME` 用。 |
-| `handlers/simple.go` | **简洁版**（`/lite`，`/` 是 302 入口）：把 `webassets/simple` 的单页发出去（**整个前缀下任意路径**都回同一份 HTML，路由在 `#/` 片段）。菜单来自 Go 侧的 `webassets/simple.Menu`，**不读 menu.d**，渲染不经过 ucode。注入项（`__CFG__`）是 sid + 菜单 + 专家版前缀（页面据此出「前往专家版」链接）。 |
-| `handlers/auth.go` | 会话与口令：登录、`/auth/logout`、改密码（`POST /auth/password`）。 |
-| `handlers/static.go` | docroot 下的静态文件；`/cgi-bin/*` 一律 403（上游 uhttpd 只执行它、从不吐脚本正文）。 |
-| `handlers/cgi_exec.odin` | CGI 桥接：环境构造（纯函数）→ `fork`/`execve` → 响应解析（纯函数）→ 透传状态与额外头。两个纯函数有单元测试，桩脚本有 `tests/cgi_smoke.sh`。 |
+| `handlers/luci.odin` + `handlers/cgi.odin` | **专家版前缀**（用 Odin 重写的 LuCI）的两种渲染模式：默认 → `luci.dispatch`（内置 Odin dispatcher）→ 200/404/501/**403 登录提示**（带 `X-LuCI-Login-Required: yes`），只接 GET/HEAD；`--luci-cgi` 非空 → 整段前缀交给设备 ucode 子进程（ADR 0003 的 T1），只作**对照与排查**。前缀是变量（`--luci-prefix`），因为同一值还要当 CGI 的 `SCRIPT_NAME` 用。 |
+| `handlers/simple.odin` | **简洁版**（`/lite`，`/` 是 302 入口）：把 `webassets/simple` 的单页发出去（**整个前缀下任意路径**都回同一份 HTML，路由在 `#/` 片段）。菜单来自 Odin 侧的 `src/assets/menu.odin`，**不读 menu.d**，渲染不经过 ucode。注入项（`__CFG__`）是 sid + 菜单 + 专家版前缀（页面据此出「前往专家版」链接）。 |
+| `handlers/auth.odin` | 会话与口令：登录、`/auth/logout`、改密码（`POST /auth/password`）；改密的 shadow/openssl 原语按 `auth_linux.odin`（真机）/ `auth_darwin.odin`（桩）切分。 |
+| `handlers/cgi.odin` + `handlers/cgi_run.odin` | CGI 子进程桥（`--luci-cgi`）：环境构造（SCRIPT_NAME/PATH_INFO 切分）→ 走 `spawn` 拉起 ucode → 解析响应头与 body → 透传状态与额外头。 |
+| `handlers/cgi_io.odin` | **`/cgi-exec`、`/cgi-download`、`/cgi-upload`、`/cgi-backup`** 四端点（fs.exec_direct / read_direct / ui.uploadFile + 专家版备份）：会话取 POST 表单里的 `sessionid`，鉴权/落盘在 `backend/cgi_io.odin`，upload 侧还含 `multipart/form-data` 解析。 |
 
 ## 4. 一次请求的调用链
 
 ```
 accept（server.odin，超额 503）
   └─ 连接线程：连接私有 arena + keep-alive 循环
-       ├─ httpx 解析请求行/头/body（超限 → 413/411，非法 → 400）
-       ├─ handle（main.go）
+       ├─ http 解析请求行/头/body（超限 → 413/411，非法 → 400）
+       ├─ handle（main.odin）
        │    ├─ normalize_path（400 / 403 在这里终结）
        │    ├─ matches_prefix("/ubus")            → handlers.serve_ubus
        │    │     ├─ GET  /ubus/list[/<path>]     → backend.list_objects
@@ -117,10 +116,10 @@ accept（server.odin，超额 503）
 |---|---|---|---|
 | `GET /index.html` | `handlers/static` | 无（`core:os`） | 200 + `text/html; charset=utf-8` |
 | `POST /ubus/call/session` | `handlers/ubus_http` | `backend.call_object` | 200 + JSON-RPC 信封 |
-| `GET /cgi-bin/luci/admin/status/overview` | `handlers/cgi_luci` → `luci.dispatch` | `backend.uci_config_sections`（仅当节点有 `depends.uci`） | 200 + 占位页 |
+| `GET /cgi-bin/luci/admin/status/overview` | `handlers/luci` → `luci.dispatch` | `backend.uci_config_sections`（仅当节点有 `depends.uci`） | 200 + 占位页 |
 
 **每次请求的内存**：HTTP 侧是「连接私有 arena + 每请求 `reset`」（`server.odin:91-114`）；
-ubus 对象那侧没有连接的概念，所以四个 handler（`linux.odin` 的 session/uci/file/luci）
+ubus 对象那侧没有连接的概念，所以四个 handler（backend 的 linux provider 里 session/uci/file/luci）
 **各自起一个 `Dynamic_Arena`**，并把 `context.allocator` 也指向它——params、中间树、回复串、
 cstring 副本都随 handler 返回一起释放。契约就是 `docs/interfaces.md` §7.1 的那条：
 「回复串一律指向调用方给的 `alloc`（每请求 arena），实现不得返回需要调用方 `free` 的堆内存」。
@@ -146,7 +145,7 @@ cstring 副本都随 handler 返回一起释放。契约就是 `docs/interfaces.
 6. **新增平台 = 新增 provider**：加一个 `#+build <platform>` 文件，写同名同签名的
    proc；签名漂移会在该平台的编译期暴露（macOS 上每次构建走的都是 darwin 那份）。
 
-验证（`AGENTS.md` §4.1 的门禁之外，规则本身可以随时 grep 复核）：
+验证（门禁 `make test` / `make smoke` / `make device-*` 之外，规则本身可以随时 grep 复核）：
 
 ```bash
 # 下面三条都应该**没有输出**（末尾的 || echo 只是让 set -e 下的脚本别中断）
@@ -194,8 +193,7 @@ molly 用「段名字典序」替代——语义等价性以可复现为先（`m
   **逐对象**打一行诊断）——要接管就先 `/etc/init.d/rpcd stop`。**不再有** transitional 提示行，
   也**不再有**占位页的「ACL 未实施」横幅。
   **尚未收口**：登录**表单**本身（上游由 dispatcher 渲染 `sysauth` 并 `Set-Cookie`；
-  这里走 `--luci-cgi` 的 ucode 侧，内置 dispatcher 只给登录提示页），以及**真机 golden 对比 /
-  真机验收**（`tests/golden.sh` + `tests/device_smoke.sh`，在设备上跑）。
+  这里走 `--luci-cgi` 的 ucode 侧，内置 dispatcher 只给登录提示页），以及**真机验收**（`make device-simple` + `make device-luci`，在设备上跑）。
 - **不写 `/tmp/luci-indexcache`**：改用进程内 mtime 失效缓存，避免与真 LuCI 的缓存格式打架。
 - **一连接一线程 vs uloop**（风险 R4，已按 ADR 0001 解决）：ubus 对象注册与事件都在
   **专用 ubus 线程**里跑 uloop；`/ubus/subscribe` 的 SSE 用**每订阅一根管道**把通知从
@@ -204,8 +202,8 @@ molly 用「段名字典序」替代——语义等价性以可复现为先（`m
 - **请求体超 64KB**：molly 回 413，上游 ubus 插件回 200 + `-32700` 并关连接——这是 HTTP 层的既有决策。
 - **linux 侧只做到编译校验**：`uci_config_sections` 的遍历与 `#assert` 的布局断言都不等于运行期正确性，
   真机行为属第 7 步。
-- **专家版前缀有两种模式**（ADR 0003）：默认是**内置 Go dispatcher**（`internal/luci`）——本站的
+- **专家版前缀有两种模式**（ADR 0003）：默认是**内置 Odin dispatcher**（`src/luci`）——本站的
   **目标形态**，`tests/smoke.sh` 覆盖它的建树/depends/firstchild/通配/ACL 裁树/登录判定；
   视图层尚未落地，cbi/view/template 类节点回 501 并带 `action.type/view/menu`，那是待补的页面清单。
   给了 `--luci-cgi` 则整段前缀交给设备上的 ucode dispatcher（复刻 uhttpd 的 `ucode_prefix` 接线，
-  `tests/cgi_smoke.sh` 用桩脚本覆盖桥接本身）——那条现在是**对照与排查**用的基准，不是部署形态。
+  `tests/smoke.sh` 用桩 CGI（`tests/fixtures/cgi/`）覆盖桥接本身）——那条现在是**对照与排查**用的基准，不是部署形态。

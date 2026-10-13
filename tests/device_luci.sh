@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 # 设备验收（**对照基准**）：molly 以 T1 桥接把专家版前缀交给设备 ucode 渲染（ADR 0003）。
 #
-# 只走 HTTP，**与实现无关**：Odin 版与 Go 版（molly）用同一份脚本验收——
+# 只走 HTTP，**与实现无关**：无论专家版渲染内置在 Odin dispatcher 还是交设备 ucode 桥接，
+# 都用同一份脚本验收——
 # 前提是目标以「T1 形态」起：`--luci-cgi "<ucode> <CGI 兜底脚本>"`（可选 `--ubus-socket`）。
 #
-#   MOLLY_DEVICE_PASS=xxx ./molly/tests/device_luci.sh            # 默认 http://192.168.1.1:8080
-#   MOLLY_DEVICE_PASS=xxx ./molly/tests/device_luci.sh http://192.168.1.1:8080
+#   MOLLY_DEVICE_PASS=xxx ./tests/device_luci.sh            # 默认 http://192.168.1.1:8080
+#   MOLLY_DEVICE_PASS=xxx ./tests/device_luci.sh http://192.168.1.1:8080
 #
 #   专家版前缀由部署给（别写死）：MOLLY_LUCI_PREFIX=挂载前缀（默认 /cgi-bin/luci，
 #   本站 /admin）；MOLLY_LUCI_SUB=前缀之后 URL 里那段（默认 /admin，配 --luci-strip admin
 #   的站给空串）。本机部署（/admin + strip admin）：
 #     MOLLY_DEVICE_PASS=xxx MOLLY_LUCI_PREFIX=/admin MOLLY_LUCI_SUB= \
-#       ./molly/tests/device_luci.sh
+#       ./tests/device_luci.sh
 #
-# 覆盖（对应 2026-10-07 的真机验收记录，见 .ai-memory/go-port-plan.md）：
+# 覆盖（对应 2026-10-07 的真机验收记录）：
 #   0) 未登录：$LUCI/ 必须 403 + `x-luci-login-required: yes`
 #   1) 表单登录：302 + Set-Cookie（sysauth_*）
 #
-# 注：专家版的目标形态是内置 Go dispatcher（用 Go 重写的 LuCI），不是这条 ucode 桥接；
+# 注：专家版的目标形态是内置 Odin dispatcher（用 Odin 重写的 LuCI），不是这条 ucode 桥接；
 # 本脚本留着是为了拿原版行为当基准。前缀由部署给（本站 /admin），别写死。
 #   2) 9 个页面全 200 且不再要求登录
 #   3) 5 个静态资源全 200

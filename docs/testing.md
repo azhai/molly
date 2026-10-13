@@ -1,34 +1,35 @@
 # 测试：分层、覆盖范围与执行流程
 
-molly 的测试按三层组织，每层解决不同问题、判据也不同。**只看一层绿就宣布完成是错的**
-（`AGENTS.md` §6.2）：单元测试不碰 socket，集成测试不覆盖真机库，语义回归只覆盖抽样到的差异。
+molly 的测试按三层组织，每层解决不同问题、判据也不同。**只看一层绿就宣布完成是错的**：
+单元测试不碰 socket，集成测试不覆盖真机库，语义回归只覆盖抽样到的差异。
 
 ## 1. 三层测试与各自的判据
 
 | 层 | 文件 / 命令 | 回答什么问题 | 通过判据 | **不能**证明什么 |
 |---|---|---|---|---|
-| 单元 | `src/*/*_test.odin` → `./tests/unit.sh` | 单个纯函数的语义：路径规范化、MIME、`depends` 判定、菜单树解析、错误文案、CGI 环境/响应翻译、**`session` 对象的十方法语义**、**入站 ACL 的组判定（`fnmatch`/`!` 取反/write 蕴含 read）、acl.d 两种形态加载、`depends.acl` 裁树与只读、无会话 + `auth.login` → 登录提示（P3-6）**、**`uci` 的只读语义（S1）、delta/changes 语义（S2）与写路径的计划层 + 五个写操作与 apply 系的方法层（S3/S4）**、**`file` 的路径规范化（全量折叠表）与 md5（RFC 1321 向量）**、**`luci-rpc` 的租约行解析（dnsmasq/odhcpd 两格式、duid2ea、expires 双规则）**、**iwinfo 的位数组渲染与后端名失效保护** | 4 个包全 `ok`（当前 68 个用例）；`All tests were successful`，且无 `leak` 警告 | 不碰 socket、不组成真实 HTTP 帧 |
-| 集成 | `tests/http_smoke.sh` | 整条链路：监听 → 请求解析 → 路由 → handler → 响应字节（真起 server、真 curl） | `通过 N，失败 0`（当前 265 项） | 不覆盖真机 `libuci`/`libubus` 行为 |
-| 接口 | `tests/http_smoke.sh` + `tests/cgi_smoke.sh` 里按接口分节的断言（`/ubus` 两种 JSON-RPC 形态、**入站 ACL 的前置校验（对象不存在 `-32000` 优先于 ACL、会话销毁后 fail-closed `-32002`、acl.d 与 grant 合并进同一张 ACL 表）**、`session` 对象十方法、`luci-rpc` 的 `getBoardJSON`/`getDHCPLeases`/`getDUIDHints`（family 过滤与 blobmsg 的类型缺省行为、duid%iaid 去重）、`file` 的 `read`+`write`+`remove`+`md5`+`stat`/`lstat`/`list`+`exec`（PATH 查找 4、env+会话 6、两层 ACL：路径对象与整条命令行串）（含**各方法权限名不同**的断言：只授 read/write 时 stat/list 被 6 拒、补授 list 后放行；base64 写读、append 不截断、md5 对目录 8、递归删除、`list` 的 target）、`uci` 的 `configs`/`get`/`changes`/`state`/`commit`/`revert` 、`set`/`add`/`delete`/`rename`/`order` 与 apply 系（`confirm`/`rollback` 的 5、`apply` 的 4）、`/cgi-bin/luci` 的 action 分派（含 **`depends.acl` 裁树与登录判定**：无 cookie → 403 + `X-LuCI-Login-Required: yes` + 登录提示页正文与路径、哨兵会话（有会话但缺组）→ 404、只读会话 → 200 + `readonly=yes`、撤销 write 后恢复可见）、**`/ubus/subscribe` 的 SSE**（ACL 点 `:subscribe` → 未授权回 `{"code":-13}`、未知对象回 `{"code":4}`、授权后 `text/event-stream`、假事件源推一条后收到 `event:`/`data:` 帧）、CGI 环境与响应头透传） | 对外契约：状态码、正文形状、错误码、`Content-Type`、CGI 变量、会话生命周期 | 同上（cgi_smoke 当前 30 项）；契约条款钉在断言里——改契约必须先改断言 | 不覆盖真机 acl.d 的内容与 golden（fixture 是裁剪版 + 一个测试专用组）；登录**表单**与 `Set-Cookie` 属 `--luci-cgi` 的 ucode 侧（这里只到 403 + 提示页）；`state`/`commit`/`revert` 的真行为只在 linux 上 |
+| 单元 | `src/*/*_test.odin` → `make test`（`odin test` 逐包） | 单个纯函数的语义：路径规范化、MIME、`depends` 判定、菜单树解析、错误文案、CGI 环境/响应翻译、**multipart 解析**、**`session` 对象的十方法语义**、**入站 ACL 的组判定（`fnmatch`/`!` 取反/write 蕴含 read）、acl.d 两种形态加载、`depends.acl` 裁树与只读、无会话 + `auth.login` → 登录提示（P3-6）**、**`uci` 的只读语义（S1）、delta/changes 语义（S2）与写路径的计划层 + 五个写操作与 apply 系的方法层（S3/S4）**、**`file` 的路径规范化（全量折叠表）与 md5（RFC 1321 向量）**、**`luci-rpc` 的租约行解析**、**iwinfo 的位数组渲染与后端名失效保护**、**简洁版菜单内嵌（`src/assets`）** | 5 个包全 `ok`（当前 84 个用例）；`All tests were successful`，且无 `leak` 警告 | 不碰 socket、不组成真实 HTTP 帧 |
+| 集成 | `tests/smoke.sh` → `make smoke` | 整条链路：监听 → 请求解析 → 路由 → handler → 响应字节（真起 server、真 curl） | `通过 N，失败 0`（当前 342 项） | 不覆盖真机 `libuci`/`libubus` 行为 |
+| 接口 | `tests/smoke.sh` 里按接口分节的断言（`/ubus` 两种 JSON-RPC 形态、**入站 ACL 的前置校验（对象不存在 `-32000` 优先于 ACL、会话销毁后 fail-closed `-32002`、acl.d 与 grant 合并进同一张 ACL 表）**、`session` 对象十方法、`luci-rpc` 的 `getBoardJSON`/`getDHCPLeases`/`getDUIDHints`（family 过滤与 blobmsg 的类型缺省行为、duid%iaid 去重）、`file` 的 `read`+`write`+`remove`+`md5`+`stat`/`lstat`/`list`+`exec`（PATH 查找 4、env+会话 6、两层 ACL：路径对象与整条命令行串）（含**各方法权限名不同**的断言：只授 read/write 时 stat/list 被 6 拒、补授 list 后放行；base64 写读、append 不截断、md5 对目录 8、递归删除、`list` 的 target）、`uci` 的 `configs`/`get`/`changes`/`state`/`commit`/`revert` 、`set`/`add`/`delete`/`rename`/`order` 与 apply 系（`confirm`/`rollback` 的 5、`apply` 的 4）、`/cgi-bin/luci` 的 action 分派（含 **`depends.acl` 裁树与登录判定**：无 cookie → 403 + `X-LuCI-Login-Required: yes` + 登录提示页正文与路径、哨兵会话（有会话但缺组）→ 404、只读会话 → 200 + `readonly=yes`、撤销 write 后恢复可见）、**`/ubus/subscribe` 的 SSE**（ACL 点 `:subscribe` → 未授权回 `{"code":-13}`、未知对象回 `{"code":4}`、授权后 `text/event-stream`、假事件源推一条后收到 `event:`/`data:` 帧）、CGI 环境与响应头透传） | 对外契约：状态码、正文形状、错误码、`Content-Type`、CGI 变量、会话生命周期 | 同上（集成与接口共用 `tests/smoke.sh` 一份脚本）；契约条款钉在断言里——改契约必须先改断言 | 不覆盖真机 acl.d 的内容与 golden（fixture 是裁剪版 + 一个测试专用组）；登录**表单**与 `Set-Cookie` 属 `--luci-cgi` 的 ucode 侧（这里只到 403 + 提示页）；`state`/`commit`/`revert` 的真行为只在 linux 上 |
 | 语义回归（离线取证） | `.ai-memory/r8_probe.py` | dispatcher 与上游 luci 提交 `d6167ea` 的语义是否一致 | `不一致条目: 0 / 11` | 只覆盖探针列出的 11 条 + 真实样本统计；不是门禁 |
-| 真机验收（在设备上跑） | `tests/device_smoke.sh` + `tests/golden.sh` + `molly/tests/device_luci.sh` | 只在设备上才成立的那些：`ubus -v list` 里有 molly 的四对象与 `molly.probe`、真实 `/etc/shadow`+`crypt` 登录、uci 写路径（**只碰自建的 `/etc/config/mollytest`**）、`/ubus/subscribe` 真收帧、rpcd 与 molly 的**逐字段 golden 对比**（`/ubus` 探针 + HTTP 面）、以及 **T1 桥接承接原版 LuCI 的端到端验收**（登录→页面→静态→RPC→批量→并发，见 `molly/tests/device_luci.sh`） | device_smoke 的 **HTTP 面 / crypt 登录 / SSE 三节须全绿**；`golden.sh` 须为「差异 0 或只剩 §7.1 列出的已记录偏离」；`device_luci.sh` 须「失败 0」；§1（ubus 列表格式）与 §7（RSS 崩溃）仍**不能**以「失败 0」为准——见下 §7.1 | 不覆盖并发压测曲线与 RSS 曲线（`--rss` 只报数，不判） |
+| 真机验收（在设备上跑） | `tests/device_simple.sh`（`make device-simple`）+ `tests/device_luci.sh`（`make device-luci`） | 只在设备上才成立的那些：`ubus -v list` 里有 molly 的四对象与 `molly.probe`、真实 `/etc/shadow`+`crypt` 登录、uci 写路径（**只碰自建的 `/etc/config/mollytest`**）、`/ubus/subscribe` 真收帧、**cgi-io 四端点**（exec/download/upload/backup）、以及 **T1 桥接承接原版 LuCI 的端到端验收**（登录→页面→静态→RPC→批量→并发，见 `tests/device_luci.sh`） | 两套均须「失败 0」（当前 device_simple 39/0、device_luci 47/0） | 不覆盖并发压测曲线与 RSS 曲线（脚本只报数，不判） |
 
 ## 2. 单元测试
 
 运行：
 
 ```bash
-./tests/unit.sh                                   # 三个包一次跑完（输出「通过 N，失败 M（包数）」）
-odin test -collection:molly=src src/luci          # 只跑一个包
+make test                                       # 五个含 _test.odin 的包一次跑完（odin test 循环）
+odin test -collection:molly=src src/luci -define:ODIN_TEST_THREADS=1   # 只跑一个包
 odin test -collection:molly=src src/luci -define:ODIN_TEST_NAMES=luci.test_first_child_order_tiebreak_and_skips
 ```
 
 | 包 | 覆盖点 |
 |---|---|
-| `src/http` | `normalize_path`（Ok / Bad / Escaping 三类，含 `%2e%2e`、`%00`、截断编码、控制字符、查询串剥离、空段与 `.` 折算）、`content_type_for`（大小写、不跨 `/`、未收录扩展名不猜 `text/plain`） |
+| `src/http` | `normalize_path`（Ok / Bad / Escaping 三类，含 `%2e%2e`、`%00`、截断编码、控制字符、查询串剥离、空段与 `.` 折算） |
 | `src/luci` | `apply_spec` 逐键处理与逐键合并、`@type` 形态、通配 action 与 `effective_action`、落到根的规格被忽略、无 `depends` 时 `satisfied` 重算、`check_depends` 的 fs 四类型与 object-AND / array-OR、uci 的 `true` / 具名 section / `@type` / option 值与 list 成员、`first_child` 的权重与并列定序与 `firstchild_ineligible`、`at_section_type`、`auth.login` 解析（含类型不符整键忽略）与「无会话 → 登录提示 / 有会话 → 按 ACL 解析 / `ctx.auth` 最后者胜」 |
 | `src/backend` | `ubus_error_message`（表内 + 表外 `Unknown error: N`）、`uci_config_sections` 契约（具名 / 匿名 section、option 值、缺失 config `ok=false`、空 config）、`session` 对象（login 成功/错密码/未知用户/缺参、`create` 的 timeout 与 expires、`set`/`get`/`unset` 的键过滤与清空、`grant`/`revoke`/`access` 的精确命中与 `fnmatch` 通配与 scope 清空、哨兵会话不可销毁、`NOT_FOUND`/`INVALID_ARGUMENT`/`METHOD_NOT_FOUND` 三个状态码、`fnmatch` 与 `acl_id_len`）、`file` 路径核心（`file_canonicalize_path` 的 16 条折叠表、ENOENT → 4）、`uci` 只读（`uci_verify_*` 的三种入口与边界、`uci_match_option` 的切词与 list、`uci_match_section` 的 `empty\|\|match`、`uci_dump_*` 的 `.index`/匿名键、`uci_find_section` 的 `@type[idx]`、`configs`/`get` 的整链与 2/4/8/3 四个错误码）、`uci` 的 delta（`uci_dump_change_json` 的七种 type 与 `order` 的数字 value、`section` 为空被丢掉、`changes` 的两种形态与 4、写方法「ACL 先于平台能力」的 6/8、`uci_purge_dir` 的「删文件但不递归」）、**`uci` 写路径的计划层**（`uci_plan_merge_set` 的 5 种分支：不存在/同值不动/异值 set/list→标量先删再 set/数组先删再 add_list、数组里坏元素跳过且整体成功、空数组与全坏元素 → 2、浮点与对象 → 2；`uci_plan_merge_delete` 的三种形态与聚合码、`uci_plan_add_value` 的「不删旧值/任一坏元素即 2」、五个写操作方法层的参数校验顺序（必需参数 2 先于 ACL 6、语法校验在 6 之后、平台能力最后 8）与「最后一个 rv 覆盖 vs 首个错误优先」） |
-| `src/handlers` | CGI 桥接的翻译层：环境构造（`SCRIPT_NAME`/`PATH_INFO`/`QUERY_STRING`/`HTTP_*`/`CONTENT_*`、头名规范化、方法映射）与响应解析（`Status:`、`Content-Type` 必需、LF LF 容错、`Content-Length`/`Connection` 丢弃） |
+| `src/handlers` | CGI 桥接的翻译层：环境构造（`SCRIPT_NAME`/`PATH_INFO`/`QUERY_STRING`/`HTTP_*`/`CONTENT_*`、头名规范化、方法映射）与响应解析（`Status:`、`Content-Type` 必需、LF LF 容错、`Content-Length`/`Connection` 丢弃）；`/cgi-upload` 侧的 `multipart_boundary`（quoted/unquoted、大小写不敏感）、`multipart_field_name`（跳过 `filename=` 里的 `name` 子串）、`parse_multipart`（多段、二进制 filedata、尾 CRLF 剥离） |
+| `src/assets` | 简洁版菜单内嵌：`test_embedded_asset_present` 等（确认 `embedded.odin` 与 `menu.odin` 在编译期就位） |
 
 约定（踩过的坑都写在下面）：
 
@@ -45,7 +46,7 @@ odin test -collection:molly=src src/luci -define:ODIN_TEST_NAMES=luci.test_first
    `#caller_location`（不是消息），传字符串会编译失败。
 5. 用例里注明对应的上游行号（`dispatcher.uc:171-196` 这种），让回归网可审计。
 
-当前规模：`src/http` 4 + `src/luci` 18 + `src/backend` 40 + `src/handlers` 6 = **68 个用例**。
+当前规模：`src/http` 2 + `src/backend` 32 + `src/handlers` 39 + `src/luci` 8 + `src/assets` 3 = **84 个用例**。
 
 **写用例时别踩的坑**：`append` 到**从 map 里取出的零值 `[dynamic]T`**、往**零值 `map`**
 （如 `json.Object{}`）里插入、以及**不带分配器的 `strings.clone` / `strings.join`**，
@@ -59,14 +60,15 @@ odin test -collection:molly=src src/luci -define:ODIN_TEST_NAMES=luci.test_first
 
 **本机测不到的那一半**：`#+build linux` 的代码在 macOS 上**根本不会编译**，而用例全用
 `Dynamic_Arena`——linux 侧「用默认堆分配器当请求 arena」「克隆了不释放」这类问题，
-单测与 smoke **都看不见**（arena 会兜住一切）。动 `linux.odin` 时只能靠人眼过一遍
-分配/释放配对，设备上的判据是 P3-9 的 RSS 曲线。
+单测与 smoke **都看不见**（arena 会兜住一切）。动 backend 的 linux provider
+（`uci_provider_linux.odin` / `object_provider_linux.odin` / `process_spawn_linux.odin` 等）
+时只能靠人眼过一遍分配/释放配对，设备上的判据是 P3-9 的 RSS 曲线。
 
 ## 3. 集成测试
 
 ```bash
 ./build.sh --host        # smoke 需要 build/molly-host 先存在
-./tests/http_smoke.sh    # 默认端口 18080，也可 ./tests/http_smoke.sh 18081
+./tests/smoke.sh         # 默认端口 18080，也可 ./tests/smoke.sh 18081；或 `make smoke`
 ```
 
 脚本自己起 `build/molly-host --docroot tests/fixtures/www --menu-dir tests/fixtures/menu.d`、
@@ -104,25 +106,24 @@ python3 .ai-memory/r8_probe.py
 - 它不是门禁（依赖 `/tmp/r8/` 的离线样本），但改了 `apply_spec` / `check_depends` /
   通配 action 就必须跑。
 
-## 6. 执行流程（本地，按 `AGENTS.md` §4.1 的顺序）
+## 6. 执行流程（本地）
 
 ```bash
-./tests/unit.sh                  # 1. 单元：纯函数语义
-./build.sh --host                # 2. 编译（顺带类型检查测试代码）
-./tests/http_smoke.sh            # 3. 集成 + 接口：内置 dispatcher 模式
-./tests/cgi_smoke.sh             # 4. 集成 + 接口：/cgi-bin/luci 子进程桥接（桩 CGI）
-./build.sh --target              # 5. 改过 linux-only 代码 / 绑定 / 链接参数时必跑
-python3 .ai-memory/r8_probe.py   # 6. 改过 dispatcher 语义时必跑
+make test                      # 1. 单元：五个包 84 例，纯函数语义
+./build.sh --host              # 2. 编译（顺带类型检查测试代码）
+make smoke                     # 3. 集成 + 接口：一份 tests/smoke.sh，含 dispatcher / cgi / cgi-io / SSE 断言
+./build.sh --target            # 4. 改过 linux-only 代码 / 绑定 / 链接参数时必跑
+python3 .ai-memory/r8_probe.py # 5. 改过 dispatcher 语义时必跑（离线探针，非门禁）
 ```
 
-每条命令的结果按 `AGENTS.md` §4.2 记进 `.ai-memory/<当前计划>.md` 的进度段，
+每条命令的结果记进 `.ai-memory/<当前计划>.md` 的进度段，
 格式：命令 + 退出状态 + `通过 N，失败 M`。
 
 ## 7. 覆盖边界（必须知道）
 
 - **平台**：单元测试与 smoke 都在 macOS 上跑，走的是 darwin provider（假 uci/ubus）。
   linux 侧（真 `libuci`/`libubus`）目前**只有编译 + 链接校验**（`./build.sh --target`）：
-  `src/backend/bindings/uci.odin` 的 `#assert` 只保证结构体尺寸与偏移，
+  `src/backend/bindings/shim.odin` 的 `#assert` 只保证结构体尺寸与偏移，
   **不保证** libuci 的运行期行为。运行期正确性属第 7 步真机联调。
 - **依赖宿主文件系统**：fs 相关用例读 `/etc/hosts`、`/etc`、`/bin/sh`（macOS 上稳定存在）；
   断言里没有写 `/tmp` 之类可能被清空的路径。
@@ -149,67 +150,48 @@ python3 .ai-memory/r8_probe.py   # 6. 改过 dispatcher 语义时必跑
 - **已知偏差**：`luci-app-sms-tool-js.json` 是对象尾逗号（非严格 JSON），molly 用
   `core:encoding/json` 严格解析 → 整文件丢（7 条路径）。上游 ucode 是否容忍待第 7 步实测。
 
-### 7.1 真机验收：已知脚本-环境不匹配与已记录偏离
+### 7.1 真机验收：已记录偏离与历史教训
 
-`tests/device_smoke.sh` / `tests/golden.sh` 在 ImmortalWrt 25.12 上跑时，下列几条**不代表
-molly 缺陷**，不能直接以「失败 0 / 差异 0」判定。其中第 2 条**已修好**（口径落进脚本本身），
-第 4 条是修好之后由 HTTP 面查出来的**真实偏离**：
+> 下列条目最早由历史脚本 `tests/device_smoke.sh` / `tests/golden.sh` 在 ImmortalWrt 25.12
+> 上拓出来（两脚本已退役，仓库内不再包含）；它们得到的**偏离与口径已迁移到**
+> 现役的 `tests/device_simple.sh`（39/0）与 `tests/device_luci.sh`（47/0）里。保留这一小节
+> 是为了防止后续改动重新引入同一类坑。
 
-1. **`device_smoke.sh` §1 全 FAIL（脚本-环境不匹配）**：本机 `ubus -v list` 是现代格式
-   `'molly.probe' @c89edfd6`（对象名带单引号 + `@id`），`ubus -v call` 回的是 **tab 缩进** JSON；
-   脚本按 `grep -c '^molly\.probe'` / `grep -c "^session\$"` 与 `tr -d ' \n'` 取值。
-   证据：系统总线上 rpcd 的对象同样带引号（`'bridger' @a7c1d83d`），非 molly 独有。
-2. **`golden.sh compare` 已按正确口径修好**（历史 DIFF 10/10 是假失败，不再是脚本-环境
-   不匹配）。旧写法设备侧是 `ubus -v call` 的**裸回复 + 无会话**，molly 侧是
-   `/ubus/call/<obj>` 的 **JSON-RPC 信封**——形状与 ACL 授权都不同，故不可能零差异。
-   `tests/golden.sh` 现在自己保证三条口径：
-   - **两侧都走 HTTP**（`POST <base>/ubus/call/<obj>`）：**不能**用 `ubus` CLI 抓设备侧，
-     CLI 不经 uhttpd 的 ACL，混用会把「两侧都拒绝」误报成 molly 缺陷。实测同一份数据
-     两个口径不同：`uci configs` 的 CLI 回 18 个 config / HTTP 回 `-32002`；
-     `file read /etc/hostname` 的 CLI 空 / HTTP `-6`。
-   - **两侧各带 root SID**：设备侧 `MOLLY_DEVICE_PASS`，molly 侧 `MOLLY_SID` 或
-     `MOLLY_PASS`（脚本自己 `POST /ubus/` 登录）。**任一侧缺失时 compare 直接 `exit 2`**，
-     不给出没有意义的「零差异」。
-   - **剥信封**：带 `jsonrpc` 的对象取 `result`（只有 `error` 时归一成
-     `{"__rpc-error__":{code,message}}`）；会话 id 掩成 `<sid>`（两侧各自登录，sid 必然
-     不同）；再 `sort_keys` 重排后逐对 diff。
-   口径成立后的实测（10 只读探针，设备 rpcd vs molly）：`session.list`、`uci.configs`、
-   `uci.get` 判 **ok**；`file.stat`/`file.list` 的 `uid`/`gid`/`user`/`group` 与
-   `session.get {}` 的 session 自服务例外属 §9.3 已记录偏离；`uci changes` 的 DIFF 是
-   **真缺陷**（该调用令 molly 段错误，进程消失后后续探针全 connection refused）。
-   **HTTP 面也纳入了同一份 compare**（ADR 0003 T1 要锁的那些页面）：原厂 uhttpd(:80) vs
-   molly(:8080)，只比状态码 + 契约头（`norm_http` 的白名单；`Date`/`Server`/`Content-Length`/
-   连接类等实现固有的头剔除；头名一律小写后比——uhttpd 自己都不统一，页面响应发
-   `content-type:`、静态发 `Content-Type:`；cookie 名与 sid 掩掉）。实测 7 个 HTTP 探针：
-   `/cgi-bin/luci/`、`/cgi-bin/luci/admin/status/overview` 与三条 `/ubus/list*` 判 **ok**
-   （T1 桥接出的页面头与原厂一致），另两条见第 4 项。
-3. **`device_smoke.sh` §7 `--rss` 崩溃（脚本缺陷）**：line 198 `"...$rss（目标…"` 里全角括号
-   紧跟变量名，`set -uo pipefail` 下被当成 `$rss（目标…` 变量 → `rss: unbound variable`。
-   RSS 改为另行单测（实测 molly `VmRSS 10,056 kB`）。
-4. **静态面的两条真实偏离（曾记为 R7，2026-10-07 已对齐）**：由 `golden.sh` 的 HTTP 面查出。
-   当时 `.html` 带 charset、404 是 `text/plain`，都与 uhttpd 不一致。现在两版实现（Odin
-   `src/http/mime.odin` + `src/handlers/static.odin`、Go `internal/httpx/mime.go` +
-   `internal/handlers/response.go`）已按**真机实测**逐条对齐：
-   - **MIME 表不带 charset**，`.js` 是 `text/javascript`（不是 `application/javascript`），
-     表外扩展名一律 `application/octet-stream`——实测 uhttpd 对 ico/woff/woff2/ttf/eot/otf/
-     mjs/map/webmanifest/md/csv/webm/webp/avif 全是它。取样脚本与 36 个扩展名的实测表见
-     `.ai-memory/go-port-plan.md` 2026-10-07 条目。
-   - **404 是 `text/html`**，正文 `<h1>Not Found</h1>The requested URL <路径> was not found
-     on this server.`。**故意偏离**：uhttpd 把请求路径原样回显，molly 做 HTML 转义（把未转义
-     的请求数据拼进 HTML 是 XSS 面）。正文不参与 golden。
-   契约断言同步更新（`tests/http_smoke.sh`、`src/http/mime_test.odin`、`molly/tests/smoke.sh`、
-   `molly/internal/httpx/uri_test.go`，并各加一条 404 Content-Type 断言）。
-   对齐后 golden 的 **HTTP 面 7 对全 ok**，只剩 `/ubus` 面 §9.3 的已记录偏离（3 处）。
+1. **`ubus -v list` 与 `ubus -v call` 的现代输出格式**：本机回 `'molly.probe' @c89edfd6`（对象名
+   带单引号 + `@id`）与 tab 缩进 JSON，**不是**早期估计的裸格式。证据：系统总线上 rpcd 的对象同样
+   带引号（`'bridger' @a7c1d83d`），非 molly 独有。新脚本不能直接 `grep -c '^molly\.probe'`。
+2. **golden 对比必须两侧同走 HTTP**：旧写法设备侧用 `ubus` CLI（裸回复 + 无会话）、molly 侧用
+   `/ubus/call/<obj>`（JSON-RPC 信封 + ACL）——形状与授权都不同，不可能零差异。口径：
+   - **两侧都走 HTTP**（`POST <base>/ubus/call/<obj>`）：CLI 不经 uhttpd 的 ACL，混用会把
+     「两侧都拒绝」误报成 molly 缺陷。实测 `uci configs` CLI 返 18 个 config / HTTP 返 `-32002`；
+     `file read /etc/hostname` CLI 空 / HTTP `-6`。
+   - **两侧各带 root SID**；会话 id 掩成 `<sid>`；剥 `jsonrpc` 信封取 `result`，错误归一为
+     `{"__rpc-error__":{code,message}}`；`sort_keys` 后逐对 diff。
+   确立口径后的实测（10 只读探针）：`session.list`、`uci.configs`、`uci.get` 判 **ok**；
+   `file.stat`/`file.list` 的 `uid`/`gid`/`user`/`group` 与 `session.get {}` 属 session 自
+   服务例外（已记录偏离）。
+3. **RSS 不能内嵌全角括号**：历史脚本里 `"...$rss（目标…"` 在 `set -uo pipefail` 下被当成
+   `$rss（目标…` 变量 → `unbound variable`。现行写法：变量一律 `${VAR}` 包裹，全角标点不贴
+   变量名。实测 molly `VmRSS ≈ 10,056 kB`。
+4. **静态面的两条对齐（2026-10-07）**：当初与 uhttpd 不一致（`.html` 带 charset、404 是
+   `text/plain`），现在 `src/http/mime.odin` + `src/handlers/static.odin` 已按真机逐条对齐：
+   - **MIME 表不带 charset**，`.js` 是 `text/javascript`（不是 `application/javascript`），表外
+     扩展名一律 `application/octet-stream`——实测 uhttpd 对 ico/woff/woff2/ttf/eot/otf/mjs/map/
+     webmanifest/md/csv/webm/webp/avif 全是它。
+   - **404 是 `text/html`**，正文 `<h1>Not Found</h1>The requested URL <路径> was not found on
+     this server.`。**故意偏离**：uhttpd 把请求路径原样回显，molly 做 HTML 转义（把未转义的
+     请求数据拼进 HTML 是 XSS 面）。
+   契约断言在 `tests/smoke.sh` 与 `src/http/uri_test.odin` 里各有一条 404 Content-Type 守护。
 
-`device_smoke.sh` 的 **HTTP 面（§2）/ crypt 登录（§3）/ SSE（§5）三节**在真机上是可用的判据，
-应保持全绿；§4 的 uci 写路径依赖前置 `session grant`，而在设备 acl.d 下 grant 本身被
-`-32002` 拒（与真机 rpcd 行为逐项一致），属脚本设计问题，默认关闭。
+现行两个真机脚本里 **HTTP 面 / crypt 登录 / SSE** 三块属于可用判据，应保持全绿；uci 写路径
+在设备 acl.d 下受限于 `session grant` 会回 `-32002`（与真机 rpcd 行为逐项一致），对应断言默认
+关闭，只在自建 `/etc/config/mollytest` 上走写。
 
 ## 8. 加一个用例
 
 1. **单元**：在 `<file>_test.odin` 里加 `@(test)`，用例名写清规则，注释里带上上游行号；
-   需要分配器就用 `mk_arena()` / `defer drop_arena(ar)`；跑 `./tests/unit.sh`。
-2. **接口 / 集成**：在 `tests/http_smoke.sh` 对应的分节加一行 `check`，并在
+   需要分配器就用 `mk_arena()` / `defer drop_arena(ar)`；跑 `make test`。
+2. **接口 / 集成**：在 `tests/smoke.sh` 对应的分节加一行 `check`，并在
    `docs/build-and-run.md` §6.1 的覆盖表里登记批次与项数。
 3. **语义**：若新规则来自上游，先在 `.ai-memory/r8_probe.py` 的 `EXPECT` 里加一条
    （期望状态 + 期望 view），再改代码——先让探针红，再让它绿。
